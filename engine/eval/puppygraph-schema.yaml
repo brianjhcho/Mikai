@@ -1,0 +1,79 @@
+# PuppyGraph schema for MIKAI Supabase tables
+# Upload via: PuppyGraph web UI (http://localhost:8080) → Schema tab → Upload YAML
+# Or via REST: curl -XPOST -u puppygraph:puppygraph123 -H "Content-Type: application/x-yaml" \
+#   --data-binary @engine/eval/puppygraph-schema.yaml http://localhost:7474/schema
+
+catalog:
+  name: mikai
+  jdbc:
+    driver: org.postgresql.Driver
+    url: jdbc:postgresql://aws-0-us-west-2.pooler.supabase.com:5432/postgres?user=postgres.zlkiggprhnrulsoeazgm&ssl=true
+    username: postgres.zlkiggprhnrulsoeazgm
+    password: Iu7HEV0mECkk4O5I
+
+vertices:
+  - label: Node
+    mappings:
+      - catalog: mikai
+        schema: public
+        table: nodes
+        id:
+          field: id
+          type: String
+        properties:
+          - field: label
+            type: String
+          - field: content
+            type: String
+          - field: node_type
+            type: String
+          - field: source_id
+            type: String
+
+  - label: Source
+    mappings:
+      - catalog: mikai
+        schema: public
+        table: sources
+        id:
+          field: id
+          type: String
+        properties:
+          - field: label
+            type: String
+          - field: type
+            type: String
+
+edges:
+  - label: Relationship
+    from:
+      vertex: Node
+      field: id
+    to:
+      vertex: Node
+      field: id
+    mappings:
+      - catalog: mikai
+        schema: public
+        table: edges
+        from_field: from_node
+        to_field: to_node
+        properties:
+          - field: relationship
+            type: String
+          - field: note
+            type: String
+
+  - label: BelongsTo
+    from:
+      vertex: Node
+      field: id
+    to:
+      vertex: Source
+      field: id
+    mappings:
+      - catalog: mikai
+        schema: public
+        table: nodes
+        from_field: id
+        to_field: source_id

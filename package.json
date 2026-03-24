@@ -1,0 +1,52 @@
+{
+  "name": "mikai",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "mcp": "tsx surfaces/mcp/server.ts",
+    "sync": "tsx sources/apple-notes/sync.js",
+    "sync:notes": "tsx sources/apple-notes/sync-direct.js",
+    "sync:local": "tsx sources/local-files/sync.js",
+    "sync:imessage": "tsx sources/imessage/sync.js",
+    "sync:gmail": "tsx sources/gmail/sync.js",
+    "sync:all": "npm run sync && npm run sync:local && npm run sync:imessage && npm run sync:gmail",
+    "build-graph": "tsx engine/graph/build-graph.js",
+    "build-segments": "tsx engine/graph/build-segments.js",
+    "run-rule-engine": "tsx engine/inference/run-rule-engine.js",
+    "ingest": "tsx engine/ingestion/ingest-cli.ts",
+    "scheduler:install": "launchctl load engine/scheduler/com.mikai.daily-sync.plist",
+    "scheduler:run": "bash engine/scheduler/daily-sync.sh",
+    "cleanup": "node scripts/cleanup-sources.js",
+    "watch-claude": "node scripts/watch-claude-exports.js",
+    "watch:claude-code": "tsx scripts/watch-claude-code.js",
+    "eval": "tsx engine/eval/eval-nodes.ts",
+    "eval:stall": "tsx engine/eval/eval-stall.ts",
+    "eval:segments": "tsx engine/eval/eval-segments.ts",
+    "test": "tsx engine/eval/test-suite.ts --all",
+    "test:quick": "tsx engine/eval/test-suite.ts --quick",
+    "test:segments": "tsx engine/eval/test-suite.ts --segments",
+    "test:retrieval": "tsx engine/eval/test-suite.ts --retrieval",
+    "test:cost": "tsx engine/eval/test-suite.ts --cost",
+    "test:brief": "tsx engine/eval/eval-brief-routing.ts",
+    "lint": "eslint"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.78.0",
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@supabase/supabase-js": "^2.99.0",
+    "better-sqlite3": "^12.8.0",
+    "googleapis": "^171.4.0",
+    "playwright": "^1.58.2",
+    "voyageai": "^0.2.1",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^20",
+    "eslint": "^9",
+    "pg": "^8.20.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5"
+  }
+}
