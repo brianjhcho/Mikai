@@ -39,7 +39,7 @@ When you ask Claude "what tensions am I holding about my company?", MIKAI retrie
 ### Step 1: Install and set up
 
 ```bash
-npx @mikai/mcp init
+npx @chobus/mikai init
 ```
 
 This creates a local database, downloads the embedding model (~130MB, one-time), and prints the Claude Desktop config to copy-paste. No cloud accounts needed — everything runs on your machine.
@@ -47,7 +47,7 @@ This creates a local database, downloads the embedding model (~130MB, one-time),
 ### Step 2: Sync your notes
 
 ```bash
-npx @mikai/mcp sync
+npx @chobus/mikai sync
 ```
 
 Ingests your Apple Notes automatically. Or drop any `.md`, `.txt`, or `.json` files into `~/.mikai/import/`.
@@ -55,7 +55,7 @@ Ingests your Apple Notes automatically. Or drop any `.md`, `.txt`, or `.json` fi
 ### Step 3: Build the graph
 
 ```bash
-npx @mikai/mcp build
+npx @chobus/mikai build
 ```
 
 Extracts your intent graph (concepts, tensions, decisions, questions) + searchable segments + stall scores. Uses Claude Haiku (~$0.01 per note).
@@ -93,7 +93,7 @@ If Claude surfaces something you recognize as accurate and non-obvious — somet
 The `init` wizard offers to install a launchd scheduler that syncs + builds every 30 minutes automatically. Or run the full pipeline manually:
 
 ```bash
-npx @mikai/mcp sync && npx @mikai/mcp build
+npx @chobus/mikai sync && npx @chobus/mikai build
 ```
 
 ---
@@ -146,11 +146,11 @@ Tensions and contradictions surface first because that's where synthesis is most
 ### Quick start (local-first)
 
 ```bash
-npx @mikai/mcp init             # Set up database + model + config
-npx @mikai/mcp sync             # Sync Apple Notes + import folder
-npx @mikai/mcp build            # Extract graph + segments + score
-npx @mikai/mcp status           # Knowledge base stats
-npx @mikai/mcp serve            # Start MCP server (stdio)
+npx @chobus/mikai init             # Set up database + model + config
+npx @chobus/mikai sync             # Sync Apple Notes + import folder
+npx @chobus/mikai build            # Extract graph + segments + score
+npx @chobus/mikai status           # Knowledge base stats
+npx @chobus/mikai serve            # Start MCP server (stdio)
 ```
 
 ### Advanced (developers / Supabase users)

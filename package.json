@@ -1,5 +1,5 @@
 {
-  "name": "@mikai/mcp",
+  "name": "@chobus/mikai",
   "version": "0.3.0",
   "private": false,
   "type": "module",
@@ -9,9 +9,11 @@
   "files": [
     "bin/",
     "lib/",
-    "engine/",
-    "surfaces/",
-    "sources/"
+    "engine/graph/",
+    "engine/ingestion/",
+    "engine/inference/",
+    "engine/scheduler/",
+    "surfaces/mcp/"
   ],
   "scripts": {
     "mcp": "tsx surfaces/mcp/server.ts",
