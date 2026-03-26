@@ -215,4 +215,4 @@ Run the comparison across all 5 test queries. Compute average delta in tension/c
 | PuppyGraph returns >= 2 more relevant tension nodes on average | Migrate to FalkorDB before Phase 2 |
 | Delta < 2 (marginal difference) | Stay on Supabase; graph traversal adds negligible recall |
 
-Record the decision and evidence in `04_DECISION_LOG.md` as a new ARCH decision entry before starting Phase 2.
+Record the decision and evidence in `docs/DECISIONS.md` as a new ARCH decision entry before starting Phase 2.

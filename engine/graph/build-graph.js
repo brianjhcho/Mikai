@@ -67,7 +67,7 @@ const ACTION_VERBS = /\b(buy|book|schedule|call|send|order|sign up|register|appl
 // (SMS legal disclaimers, email CTA boilerplate, URL-only fragments) and should
 // never become nodes regardless of action-verb presence.
 const BOILERPLATE_PATTERNS = [
-  /msg rates?.*apply/i,          // "Msg rates may apply" (was: /msg rates? apply/i)
+  /msg rates?.*apply/i,          // "Msg rates may apply"
   /std msg/i,
   /unsubscribe/i,
   /view in (browser|email)/i,
@@ -84,6 +84,20 @@ const BOILERPLATE_PATTERNS = [
   /download (our|the) app/i,     // CTA boilerplate
   /upon.*conclusion.*trial/i,    // subscription fine print
   /please pay by/i,              // payment reminders with no context
+  /reschedule or cancel/i,       // appointment app CTA
+  /cancel.*for a full refund/i,  // refund policy boilerplate
+  /cancellation is complete/i,   // subscription cancellation confirmation
+  /if you change your mind.*renew/i, // re-subscribe nudge
+  /renew.*pro now/i,             // subscription renewal CTA
+  /order minim/i,                // delivery order minimums
+  /you.?ll hear their stories/i, // podcast/stream promo
+  /urgent update.*client info/i, // phishing/security boilerplate
+  /one year ago.*we wrote/i,     // newsletter callback
+  /part \d+ of the schedule/i,   // legal/legislative text
+  /bill into parliament/i,       // legislative text
+  /legislation which is not/i,   // legislative text
+  /login links? pointing/i,      // security warning boilerplate
+  /free plan/i,                  // plan downgrade notice
 ];
 
 function isBoilerplateLine(line) {
@@ -344,15 +358,45 @@ async function main() {
         }
       }
 
-      // Step 4: Batch insert all nodes in one round trip
+      // Step 4: Dedup check — skip nodes that are near-duplicates of existing nodes
+      //         from the same source (similarity > 0.92). Prevents 30-min sync from
+      //         creating duplicates. Uses Supabase RPC for vector comparison.
       const confidence_weight = SOURCE_WEIGHTS[source.type] ?? 0.5;
-      const nodesToInsert = graph.nodes.map((node, j) => ({
+      let dedupSkipped = 0;
+      const keepIndices = [];
+
+      if (!REBUILD) {
+        for (let j = 0; j < graph.nodes.length; j++) {
+          const { data: similar } = await supabase.rpc('search_nodes', {
+            query_embedding: embeddings[j],
+            match_count: 1,
+          });
+          const topMatch = similar?.[0];
+          if (topMatch && topMatch.similarity > 0.92) {
+            dedupSkipped++;
+          } else {
+            keepIndices.push(j);
+          }
+        }
+        if (dedupSkipped > 0) console.log(`  dedup: skipped ${dedupSkipped} near-duplicate nodes`);
+      } else {
+        for (let j = 0; j < graph.nodes.length; j++) keepIndices.push(j);
+      }
+
+      if (keepIndices.length === 0) {
+        console.log('  all nodes are duplicates — skipping');
+        counts.skipped++;
+        continue;
+      }
+
+      // Batch insert only non-duplicate nodes
+      const nodesToInsert = keepIndices.map(j => ({
         source_id:        source.id,
-        content:          node.content,
-        label:            node.label,
-        node_type:        node.type,
+        content:          graph.nodes[j].content,
+        label:            graph.nodes[j].label,
+        node_type:        graph.nodes[j].type,
         embedding:        embeddings[j],
-        has_action_verb:  ACTION_VERBS.test(node.content),
+        has_action_verb:  ACTION_VERBS.test(graph.nodes[j].content),
         confidence_weight,
       }));
 

@@ -217,7 +217,7 @@ Format for each entry:
 ## D-022: Schema Stays Minimal Until Phase Needs It
 **Date:** 2026-03-14
 **Source:** Architecture design session
-**Decision:** Do not add desire_level, extraction_method, confidence_score, first_seen_at, last_seen_at, occurrence_count, predictions table, or node_clusters table until the phase that needs them begins. Schema additions are documented in 02_ARCHITECTURE_STACK.md as planned but not yet migrated.
+**Decision:** Do not add desire_level, extraction_method, confidence_score, first_seen_at, last_seen_at, occurrence_count, predictions table, or node_clusters table until the phase that needs them begins. Schema additions are documented in docs/ARCHITECTURE.md as planned but not yet migrated.
 **Why:** Premature schema additions create nullable columns with no data and no extraction logic to populate them. They add cognitive overhead without value. Phase 1 does not require desire-level classification. Add columns when the extraction logic that populates them is being built.
 **Rejected:** Adding all future schema columns now for "forward compatibility" (adds complexity without function until the extraction layer is ready).
 **Revisit if:** A Phase 2 build task is blocked because the schema addition wasn't made earlier.
@@ -580,7 +580,7 @@ Avg tension edge delta: **+1.2** (gate was ≥2). Multi-hop traversal adds nodes
 
 ## D-037: MCP Write Tools — mark_resolved and add_note
 **Date:** 2026-03-22
-**Source:** P0-1 from 08_ARCHITECTURE_GAPS.md
+**Source:** P0-1 from docs/ARCHITECTURE_GAPS.md
 **Decision:** Add two write tools to the MCP server: `mark_resolved(node_id)` sets `resolved_at = now()` on a node, and `add_note(content, label?)` creates a new source + segments directly from conversation. Both are deterministic writes — no LLM needed.
 **Why:** Without write tools, Claude cannot record user corrections during conversation. This breaks the trust loop: Claude surfaces a stalled item → user says "I did that" → next session Claude surfaces it again. The write tools close this loop.
 **Rejected:** Full LLM-based Update Resolver (expensive, non-deterministic). Letta-style agent self-editing (requires full runtime adoption).

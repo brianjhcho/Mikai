@@ -62,7 +62,7 @@ Estimated retrieval quality: 50-60% on LongMemEval (vs Hindsight's 91.4%).
 ### Gap 5: No Temporal Validity on Edges or Nodes
 Schema has only `created_at`. Cannot answer "what did I believe about X in January?" Cannot expire superseded beliefs. Cannot track belief revision.
 
-The epistemic design doc (07_EPISTEMIC_DESIGN.md) explicitly requires distinguishing episodic from semantic memory. The schema cannot express this.
+The epistemic design doc (docs/EPISTEMIC_DESIGN.md) explicitly requires distinguishing episodic from semantic memory. The schema cannot express this.
 
 **Fix:** Add `valid_from TIMESTAMPTZ` and `expired_at TIMESTAMPTZ` columns to edges table. Cheap to add now, expensive to retrofit later.
 **Effort:** 1 hour (schema) + 1 day (extraction prompt update).

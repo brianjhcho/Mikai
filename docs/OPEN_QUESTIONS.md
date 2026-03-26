@@ -99,7 +99,7 @@ In v1 the user selects the synthesis mode manually. Phase 2 should infer it auto
 
 ---
 
-*Add new open questions below. Number sequentially. When resolved, move to 04_DECISION_LOG.md with the resolution.*
+*Add new open questions below. Number sequentially. When resolved, move to docs/DECISIONS.md with the resolution.*
 
 ---
 
@@ -170,9 +170,9 @@ Proving the engine in isolation is the right Phase 1 call. But an engine with no
 ---
 
 ## O-019: Supabase schema drift — documented vs. actual
-The schema in `02_ARCHITECTURE_STACK.md` does not match what is actually deployed. The live `sources` table has at minimum: `label TEXT`, `chunk_count INT`, `raw_content TEXT`, `source TEXT` columns not in the documented DDL. The `edges` table now has a `note TEXT` column added via migration (`infra/supabase/add_edge_note.sql`). The `nodes` table has a `label TEXT` column (used as the primary identifier during extraction) and `node_type TEXT` (not `type`).
+The schema in `docs/ARCHITECTURE.md` does not match what is actually deployed. The live `sources` table has at minimum: `label TEXT`, `chunk_count INT`, `raw_content TEXT`, `source TEXT` columns not in the documented DDL. The `edges` table now has a `note TEXT` column added via migration (`infra/supabase/add_edge_note.sql`). The `nodes` table has a `label TEXT` column (used as the primary identifier during extraction) and `node_type TEXT` (not `type`).
 **Status:** Active. Documentation is the source of truth for new sessions — if it's wrong, build decisions will be wrong.
-**Resolution path:** Run a `\d sources`, `\d nodes`, `\d edges` schema dump from Supabase and reconcile with the documented DDL. Update `02_ARCHITECTURE_STACK.md` to match live state before the next major build session.
+**Resolution path:** Run a `\d sources`, `\d nodes`, `\d edges` schema dump from Supabase and reconcile with the documented DDL. Update `docs/ARCHITECTURE.md` to match live state before the next major build session.
 **Related:** ARCH-001, ARCH-007, ARCH-017
 
 ---

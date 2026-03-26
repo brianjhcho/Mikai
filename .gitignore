@@ -56,18 +56,8 @@ engine/scheduler/logs/
 scripts/.claude-code-synced.json
 sources/apple-notes/.synced-direct.json
 
-# Internal strategy docs — not for public repo
-MIKAI Projects/
-MIKAI_Three_Paths_Strategic_Map.md
-MIKAI_WORKING_STATE.md
-MIKAI_Project_Setup_Framework.md
-MIKAI-designdiscussion-v1.md
-PROJECT_INSTRUCTIONS.md
-00_STRATEGIC_LESSONS.md
-01_PRODUCT_VISION.md
-03_PRD_CURRENT.md
-PHASE1_SCOPE.md
-06_THREAD_EXPORTS.md
+# Private strategy docs — local only, not for public repo
+private/
 
 # OMC internal state
 .omc/

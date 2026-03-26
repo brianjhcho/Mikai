@@ -60,7 +60,7 @@ Every sophisticated memory system (biological and artificial) has two phases:
 
 **Phase 2: Long-Term Memory (evaluate + commit)**
 - An evaluation pass determines what's worth keeping
-- Content is classified: fragment vs structured ideation vs processed reflection (07_EPISTEMIC_DESIGN.md)
+- Content is classified: fragment vs structured ideation vs processed reflection (docs/EPISTEMIC_DESIGN.md)
 - Relationships are established: supports, contradicts, unresolved_tension
 - Beliefs are tracked over time: what changed, when, why
 - Analogous to: cortical consolidation in neuroscience, Letta's "core memory", MIKAI's Track A graph nodes
@@ -94,7 +94,7 @@ But the transition between them is a **manual full-corpus extraction pass** (`bu
 - Contradiction detection between new segments and existing nodes
 - Temporal invalidation of superseded beliefs
 - Confidence scoring that evolves as evidence accumulates
-- Fragment-to-pattern-to-belief progression described in 07_EPISTEMIC_DESIGN.md
+- Fragment-to-pattern-to-belief progression described in docs/EPISTEMIC_DESIGN.md
 
 ### What Each Competitor's Evaluation Bridge Looks Like
 
@@ -416,4 +416,4 @@ Critical path: 3.5 → 4A → 4D → 5A → 5C. Everything else is parallel work
 
 ---
 
-*This document should be read alongside 08_ARCHITECTURE_GAPS.md (what's broken) and 07_EPISTEMIC_DESIGN.md (the philosophical foundations). Review before each phase gate.*
+*This document should be read alongside docs/ARCHITECTURE_GAPS.md (what's broken) and docs/EPISTEMIC_DESIGN.md (the philosophical foundations). Review before each phase gate.*

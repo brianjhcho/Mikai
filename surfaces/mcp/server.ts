@@ -59,12 +59,12 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const VOYAGE_API_KEY = process.env.VOYAGE_API_KEY;
 
-if (!SUPABASE_URL || !SUPABASE_KEY) {
+if (!process.env.MIKAI_LOCAL && (!SUPABASE_URL || !SUPABASE_KEY)) {
   process.stderr.write('MIKAI MCP: Missing SUPABASE_URL or SUPABASE_SERVICE_KEY\n');
   process.exit(1);
 }
 
-if (!VOYAGE_API_KEY) {
+if (!process.env.MIKAI_LOCAL && !VOYAGE_API_KEY) {
   process.stderr.write('MIKAI MCP: Missing VOYAGE_API_KEY\n');
   process.exit(1);
 }
@@ -719,6 +719,204 @@ async function addNote(content: string, label?: string): Promise<string> {
   return `Note saved: '${noteLabel}' — ${segments.length} segment(s) created.`;
 }
 
+// ── Local SQLite backend (when MIKAI_LOCAL=true) ──────────────────────────────
+
+const USE_LOCAL = process.env.MIKAI_LOCAL === 'true';
+let localDb: any = null;
+let localStore: any = null;
+let localEmbed: ((text: string) => Promise<number[]>) | null = null;
+let localEmbedDocs: ((texts: string[]) => Promise<number[][]>) | null = null;
+
+if (USE_LOCAL) {
+  process.stderr.write('MIKAI MCP: using local SQLite backend\n');
+  const homedir = (await import('os')).homedir();
+  const configPath = (await import('path')).join(homedir, '.mikai', 'config.json');
+  try {
+    const config = JSON.parse((await import('fs')).readFileSync(configPath, 'utf8'));
+    localStore = await import('../../lib/store-sqlite.js');
+    localDb = localStore.openDatabase(config.dbPath);
+    const embedMod = await import('../../lib/embeddings-local.js');
+    localEmbed = embedMod.embedText;
+    localEmbedDocs = embedMod.embedDocuments;
+    process.stderr.write(`MIKAI MCP: SQLite loaded (${config.dbPath})\n`);
+  } catch (err: any) {
+    process.stderr.write(`MIKAI MCP: local backend failed — ${err.message}\n`);
+    process.stderr.write('MIKAI MCP: falling back to Supabase\n');
+  }
+}
+
+// ── Local tool implementations ────────────────────────────────────────────────
+
+async function localSearchKnowledge(query: string, matchCount: number): Promise<string> {
+  if (!localDb || !localEmbed || !localStore) throw new Error('Local backend not initialized');
+  const embedding = await localEmbed(query);
+  const segments = localStore.searchSegments(localDb, embedding, matchCount);
+  if (segments.length === 0) return 'No relevant segments found.';
+
+  const lines: string[] = ['## Relevant passages from your notes and threads\n'];
+  for (const seg of segments) {
+    const similarity = Math.round((seg.similarity ?? 0) * 100);
+    lines.push(`### [${seg.topic_label}]`);
+    lines.push(`Source: "${seg.source_label ?? 'unknown'}" (${seg.source_origin ?? 'unknown'}) — ${similarity}% match`);
+    lines.push('');
+    lines.push(seg.processed_content);
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
+async function localSearchGraph(query: string): Promise<string> {
+  if (!localDb || !localEmbed || !localStore) throw new Error('Local backend not initialized');
+  const embedding = await localEmbed(query);
+  const seedNodes = localStore.searchNodes(localDb, embedding, 5);
+  if (seedNodes.length === 0) return 'No relevant nodes found in the knowledge graph.';
+
+  const seedIds = seedNodes.map((n: any) => n.id);
+  const seedIdSet = new Set(seedIds);
+  const edges = localStore.getEdgesTouchingNodes(localDb, seedIds);
+
+  const connectedPriority = new Map<string, number>();
+  for (const edge of edges) {
+    const priority = EDGE_PRIORITY[edge.relationship] ?? 99;
+    for (const nodeId of [edge.from_node, edge.to_node]) {
+      if (seedIdSet.has(nodeId)) continue;
+      const current = connectedPriority.get(nodeId) ?? 99;
+      if (priority < current) connectedPriority.set(nodeId, priority);
+    }
+  }
+
+  const remainingSlots = Math.max(0, 15 - seedNodes.length);
+  const connectedIds = [...connectedPriority.entries()]
+    .sort((a, b) => a[1] - b[1])
+    .slice(0, remainingSlots)
+    .map(([id]) => id);
+
+  let connectedNodes: any[] = [];
+  if (connectedIds.length > 0) {
+    const placeholders = connectedIds.map(() => '?').join(',');
+    connectedNodes = localDb.prepare(`SELECT * FROM nodes WHERE id IN (${placeholders})`).all(...connectedIds)
+      .map((n: any) => ({ ...n, isSeed: false }));
+  }
+
+  const allIds = new Set([...seedIds, ...connectedIds]);
+  const filteredEdges = edges.filter((e: any) => allIds.has(e.from_node) && allIds.has(e.to_node));
+
+  return serializeNodes(
+    [...seedNodes.map((n: any) => ({ ...n, isSeed: true })), ...connectedNodes],
+    filteredEdges,
+    seedIds,
+  );
+}
+
+async function localGetTensions(limit: number): Promise<string> {
+  if (!localDb || !localStore) throw new Error('Local backend not initialized');
+  const tensions = localStore.getNodesByType(localDb, 'tension', limit);
+  if (tensions.length === 0) return 'No tension nodes found in the knowledge graph.';
+
+  const tensionIds = tensions.map((n: any) => n.id);
+  const edgeData = localStore.getEdgesTouchingNodes(localDb, tensionIds);
+
+  const edgeCounts = new Map<string, number>();
+  for (const id of tensionIds) edgeCounts.set(id, 0);
+  for (const edge of edgeData) {
+    if (edgeCounts.has(edge.from_node)) edgeCounts.set(edge.from_node, (edgeCounts.get(edge.from_node) ?? 0) + 1);
+    if (edgeCounts.has(edge.to_node)) edgeCounts.set(edge.to_node, (edgeCounts.get(edge.to_node) ?? 0) + 1);
+  }
+
+  const ranked = tensions.sort((a: any, b: any) => (edgeCounts.get(b.id) ?? 0) - (edgeCounts.get(a.id) ?? 0)).slice(0, limit);
+
+  const lines: string[] = [`## Top ${ranked.length} tension nodes (by edge count)\n`];
+  for (const node of ranked) {
+    const count = edgeCounts.get(node.id) ?? 0;
+    const stall = node.stall_probability != null ? ` | stall_probability: ${Number(node.stall_probability).toFixed(2)}` : '';
+    lines.push(`### ${node.label} (${count} edges${stall})`);
+    lines.push(node.content);
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
+async function localGetStalled(threshold: number): Promise<string> {
+  if (!localDb || !localStore) throw new Error('Local backend not initialized');
+  const nodes = localStore.getNodesAboveStall(localDb, threshold, 20);
+  if (nodes.length === 0) return `No stalled nodes found with stall_probability > ${threshold}.`;
+
+  const lines: string[] = [`## Stalled nodes (stall_probability > ${threshold})\n`];
+  for (const node of nodes) {
+    const prob = Number(node.stall_probability).toFixed(2);
+    lines.push(`### [${node.node_type.toUpperCase()}] ${node.label} — stall: ${prob}`);
+    lines.push(node.content);
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
+async function localGetStatus(): Promise<string> {
+  if (!localDb || !localStore) throw new Error('Local backend not initialized');
+  const stats = localStore.getStats(localDb);
+
+  const lines = [
+    'MIKAI Knowledge Base Status (Local)',
+    '────────────────────────────',
+    `Sources: ${stats.totalSources} total`,
+  ];
+  for (const [type, count] of Object.entries(stats.sourcesByType)) {
+    lines.push(`  ${type}: ${count}`);
+  }
+  lines.push('', `Segments: ${stats.totalSegments}`, `Nodes: ${stats.totalNodes}`, '',
+    `Last ingestion: ${stats.lastIngestion ?? 'N/A'}`,
+    `Last segmentation: ${stats.lastSegmentation ?? 'N/A'}`);
+  return lines.join('\n');
+}
+
+async function localGetBrief(): Promise<string> {
+  if (!localDb || !localStore) throw new Error('Local backend not initialized');
+  const stats = localStore.getStats(localDb);
+  const tensions = localStore.getNodesByType(localDb, 'tension', 5);
+  const stalled = localStore.getNodesAboveStall(localDb, 0.7, 3);
+
+  const tensionLines = tensions.map((n: any) => `• ${n.label}`).join('\n');
+  const stalledLines = stalled.map((n: any) => `• ${n.label}`).join('\n');
+
+  return [
+    `MIKAI Knowledge Base | ${stats.totalSources} sources | ${stats.totalSegments} segments`,
+    '', 'Tensions (top 5):', tensionLines || '• (none)',
+    '', 'Stalled (top 3):', stalledLines || '• (none)',
+    '', '→ For depth: search_knowledge, search_graph, get_tensions, get_stalled tools available',
+  ].join('\n');
+}
+
+async function localMarkResolved(nodeId: string): Promise<string> {
+  if (!localDb || !localStore) throw new Error('Local backend not initialized');
+  const node = localDb.prepare('SELECT id, label FROM nodes WHERE id = ?').get(nodeId) as any;
+  if (!node) return `Node not found: no node with id "${nodeId}".`;
+  localStore.updateNode(localDb, nodeId, { resolved_at: new Date().toISOString(), stall_probability: 0 });
+  return `Node "${node.label}" marked as resolved.`;
+}
+
+async function localAddNote(content: string, label?: string): Promise<string> {
+  if (!localDb || !localStore || !localEmbedDocs) throw new Error('Local backend not initialized');
+  const noteLabel = label ?? content.slice(0, 60).trimEnd();
+
+  const { id: sourceId } = localStore.insertSource(localDb, {
+    type: 'note', label: noteLabel, raw_content: content, source: 'mcp-note', chunk_count: 1,
+  });
+
+  const { smartSplit } = await import('../../engine/graph/smart-split.js') as any;
+  const splits = smartSplit(content, 'mcp-note');
+  const segments = splits.length > 0 ? splits : [{ topic_label: noteLabel, condensed_content: content }];
+  const embeddings = await localEmbedDocs(segments.map((s: any) => s.condensed_content));
+
+  localStore.insertSegments(localDb, segments.map((s: any, i: number) => ({
+    source_id: sourceId,
+    topic_label: s.topic_label,
+    processed_content: s.condensed_content,
+    embedding: embeddings[i],
+  })));
+
+  return `Note saved: '${noteLabel}' — ${segments.length} segment(s) created.`;
+}
+
 // ── MCP server setup ──────────────────────────────────────────────────────────
 
 const server = new McpServer({
@@ -737,7 +935,7 @@ server.registerTool(
   },
   async ({ query, match_count }) => {
     const count = match_count ?? 8;
-    const result = await searchKnowledge(query, count);
+    const result = USE_LOCAL && localDb ? await localSearchKnowledge(query, count) : await searchKnowledge(query, count);
     return { content: [{ type: 'text', text: result }] };
   },
 );
@@ -751,7 +949,7 @@ server.registerTool(
     },
   },
   async ({ query }) => {
-    const result = await searchGraph(query);
+    const result = USE_LOCAL && localDb ? await localSearchGraph(query) : await searchGraph(query);
     return { content: [{ type: 'text', text: result }] };
   },
 );
@@ -765,7 +963,7 @@ server.registerTool(
     },
   },
   async ({ limit }) => {
-    const result = await getTensions(limit ?? 10);
+    const result = USE_LOCAL && localDb ? await localGetTensions(limit ?? 10) : await getTensions(limit ?? 10);
     return { content: [{ type: 'text', text: result }] };
   },
 );
@@ -779,7 +977,7 @@ server.registerTool(
     },
   },
   async ({ threshold }) => {
-    const result = await getStalled(threshold ?? 0.7);
+    const result = USE_LOCAL && localDb ? await localGetStalled(threshold ?? 0.7) : await getStalled(threshold ?? 0.7);
     return { content: [{ type: 'text', text: result }] };
   },
 );
@@ -791,7 +989,7 @@ server.registerTool(
     inputSchema: {},
   },
   async () => {
-    const result = await getStatus();
+    const result = USE_LOCAL && localDb ? await localGetStatus() : await getStatus();
     return { content: [{ type: 'text', text: result }] };
   },
 );
@@ -803,7 +1001,7 @@ server.registerTool(
     inputSchema: {},
   },
   async () => {
-    const result = await getBrief();
+    const result = USE_LOCAL && localDb ? await localGetBrief() : await getBrief();
     return { content: [{ type: 'text', text: result }] };
   },
 );
@@ -817,7 +1015,7 @@ server.registerTool(
     },
   },
   async ({ node_id }) => {
-    const result = await markResolved(node_id);
+    const result = USE_LOCAL && localDb ? await localMarkResolved(node_id) : await markResolved(node_id);
     return { content: [{ type: 'text', text: result }] };
   },
 );
@@ -832,7 +1030,7 @@ server.registerTool(
     },
   },
   async ({ content, label }) => {
-    const result = await addNote(content, label);
+    const result = USE_LOCAL && localDb ? await localAddNote(content, label) : await addNote(content, label);
     return { content: [{ type: 'text', text: result }] };
   },
 );

@@ -27,105 +27,44 @@ When you ask Claude "what tensions am I holding about my company?", MIKAI retrie
 
 ---
 
-## Getting Started (30 minutes)
+## Getting Started (5 minutes)
 
 ### Prerequisites
 
-- macOS (for Apple Notes and iMessage connectors)
+- macOS
 - [Node.js](https://nodejs.org/) v20+
-- A [Supabase](https://supabase.com/) project (free tier works)
 - [Claude Desktop](https://claude.ai/download) with MCP enabled
-- API keys: [Anthropic](https://console.anthropic.com/) + [Voyage AI](https://www.voyageai.com/)
+- [Anthropic API key](https://console.anthropic.com/) (you already have this if you use Claude Desktop)
 
-### Step 1: Clone and install
-
-```bash
-git clone https://github.com/yourusername/mikai.git
-cd mikai
-npm install
-```
-
-### Step 2: Set up Supabase
-
-Create a new Supabase project. Enable the `pgvector` extension:
-
-```sql
-CREATE EXTENSION IF NOT EXISTS vector;
-```
-
-Run the schema migrations in order:
+### Step 1: Install and set up
 
 ```bash
-# In the Supabase SQL editor, run each file:
-infra/supabase/create_core_tables.sql
-infra/supabase/add_source_field.sql
-infra/supabase/add_edge_note.sql
-infra/supabase/add_feature_store_columns.sql
-infra/supabase/add_segments_table.sql
-infra/supabase/add_extraction_logs.sql
-infra/supabase/speed_optimisations.sql
+npx @mikai/mcp init
 ```
 
-### Step 3: Configure environment
+This creates a local database, downloads the embedding model (~130MB, one-time), and prints the Claude Desktop config to copy-paste. No cloud accounts needed — everything runs on your machine.
+
+### Step 2: Sync your notes
 
 ```bash
-cp .env.example .env.local
+npx @mikai/mcp sync
 ```
 
-Edit `.env.local`:
+Ingests your Apple Notes automatically. Or drop any `.md`, `.txt`, or `.json` files into `~/.mikai/import/`.
+
+### Step 3: Build the graph
 
 ```bash
-ANTHROPIC_API_KEY=sk-ant-...
-VOYAGE_API_KEY=pa-...
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_SERVICE_KEY=eyJ...
+npx @mikai/mcp build
 ```
 
-### Step 4: Ingest your first source
+Extracts your intent graph (concepts, tensions, decisions, questions) + searchable segments + stall scores. Uses Claude Haiku (~$0.01 per note).
 
-The fastest path — sync your Apple Notes:
+### Step 4: Connect Claude Desktop
 
-```bash
-npm run sync:notes
-```
+Copy the config JSON that `init` printed into `~/Library/Application Support/Claude/claude_desktop_config.json`. Restart Claude Desktop.
 
-Or drop markdown files into `sources/local-files/export/markdown/` and run:
-
-```bash
-npm run sync:local
-```
-
-### Step 5: Build the graph
-
-```bash
-# Extract reasoning structure (uses Claude Haiku — ~$0.01 per note)
-npm run build-graph
-
-# Build searchable segments (uses Voyage AI embeddings — ~$0.001 per note)
-npm run build-segments
-
-# Score nodes for stall detection (free — rule engine, no API calls)
-npm run run-rule-engine
-```
-
-### Step 6: Connect Claude Desktop
-
-Add MIKAI to your Claude Desktop MCP config at `~/Library/Application Support/Claude/claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "mikai": {
-      "command": "npx",
-      "args": ["tsx", "/absolute/path/to/mikai/surfaces/mcp/server.ts"]
-    }
-  }
-}
-```
-
-Restart Claude Desktop.
-
-### Step 7: Try it
+### Step 5: Try it
 
 Open Claude Desktop and ask:
 
@@ -151,16 +90,10 @@ If Claude surfaces something you recognize as accurate and non-obvious — somet
 
 ### Automatic sync
 
-Install the daily scheduler (runs every 30 minutes via macOS launchd):
+The `init` wizard offers to install a launchd scheduler that syncs + builds every 30 minutes automatically. Or run the full pipeline manually:
 
 ```bash
-npm run scheduler:install
-```
-
-Or run the full pipeline manually:
-
-```bash
-npm run scheduler:run
+npx @mikai/mcp sync && npx @mikai/mcp build
 ```
 
 ---
@@ -168,7 +101,7 @@ npm run scheduler:run
 ## Architecture
 
 ```
-You write/think/email/message
+You write/think/clip/email/message
         │
         ▼
    Source Connectors          ← Ingest raw content (zero LLM)
@@ -179,7 +112,7 @@ You write/think/email/message
    Track C: Smart Split        ← Structural segmentation (zero LLM)
         │
         ▼
-   Supabase (Postgres + pgvector)
+   Local SQLite + sqlite-vec   ← Everything on your machine
    ├── sources (raw content)
    ├── nodes (concepts, tensions, decisions, questions)
    ├── edges (supports, contradicts, unresolved_tension, ...)
@@ -188,6 +121,8 @@ You write/think/email/message
         ▼
    MCP Server (8 tools)       ← Claude Desktop queries your graph
 ```
+
+**Local-first by default.** No cloud database, no third-party storage. Your data stays on your machine. Embeddings run locally via Nomic nomic-embed-text-v1.5 (768-dim). The only API call is Claude Haiku for graph extraction.
 
 ### The Epistemic Edge Vocabulary
 
@@ -206,37 +141,30 @@ Tensions and contradictions surface first because that's where synthesis is most
 
 ---
 
-## Pipeline Commands
+## Commands
+
+### Quick start (local-first)
 
 ```bash
-# Ingest
-npm run sync:notes              # Apple Notes (direct)
-npm run sync:local              # Local markdown/JSON/HTML files
-npm run sync:imessage           # iMessage
-npm run sync:gmail              # Gmail
+npx @mikai/mcp init             # Set up database + model + config
+npx @mikai/mcp sync             # Sync Apple Notes + import folder
+npx @mikai/mcp build            # Extract graph + segments + score
+npx @mikai/mcp status           # Knowledge base stats
+npx @mikai/mcp serve            # Start MCP server (stdio)
+```
 
-# Extract
+### Advanced (developers / Supabase users)
+
+```bash
+npm run sync:notes              # Apple Notes (direct osascript)
+npm run sync:local              # Local markdown/JSON/HTML files
+npm run sync:imessage           # iMessage (requires Full Disk Access)
+npm run sync:gmail              # Gmail (requires OAuth setup)
 npm run build-graph             # Build knowledge graph (Track A + B)
 npm run build-segments          # Build searchable segments (Track C)
 npm run run-rule-engine         # Score stall probability
-
-# Evaluate
-npm run eval                    # Interactive node quality eval
-npm run eval:stall              # Stall detection quality eval
-npm run test                    # Full test suite
-
-# Run
-npm run mcp                     # Start MCP server (stdio)
-npm run scheduler:run           # Full pipeline (all syncs + extract)
-```
-
-### Useful flags
-
-```bash
 npm run build-graph -- --dry-run          # Preview without API calls
 npm run build-graph -- --rebuild          # Re-extract everything
-npm run build-graph -- --source-id <uuid> # Process one source
-npm run sync:local -- --force             # Re-ingest all files
 ```
 
 ---
