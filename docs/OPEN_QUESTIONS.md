@@ -290,3 +290,35 @@ The "memory passport" concept: one memory system feeding Claude, ChatGPT, Cursor
 **Status:** Strategic question. Partially addressed by MCP server + API endpoints.
 **Resolution path:** Define the integration surface for non-MCP consumers (REST API, webhooks, SDK). Test with ChatGPT custom instructions import.
 **Related:** D-031 (MCP as Phase 3), D-038 (tiered memory)
+
+---
+
+## O-035: Should the extraction prompt be rewritten for thread/task detection?
+The current extraction prompt produces reasoning maps (tensions, beliefs, edges). Noonchi requires activity maps (threads, states, progression). These may coexist (L3 = reasoning structure, L4 = task state) or the prompt may need to shift toward detecting task-state signals rather than epistemic relationships.
+**Status:** Active. Raised by the noonchi strategic reframe (2026-03-26).
+**Resolution path:** Test both approaches on 20 sources: (a) current reasoning-map prompt, (b) a new thread/task-state prompt. Compare which produces more actionable output for "where are you with X?" queries. They may coexist — L3 graph for deep reasoning, L4 thread-state for next-step inference.
+**Related:** O-025, NOONCHI_STRATEGIC_ANALYSIS.md
+
+---
+
+## O-036: Can thread-state classification be done with zero LLM?
+If reasoning-state transitions (exploring → evaluating → decided → acting → stalled) are detectable from temporal activity patterns + simple heuristics (like the current stall detection rule engine), the cost stays near zero. Only next-step inference would need LLM synthesis.
+**Status:** Active. Critical for cost structure of the noonchi layer.
+**Resolution path:** Prototype state classification rules against Brian's existing data. Measure accuracy against manually labeled thread states. If rule-based accuracy > 80%, LLM is only needed for next-step inference.
+**Related:** D-026 (LLM reserved for 3 roles), NOONCHI_STRATEGIC_ANALYSIS.md
+
+---
+
+## O-037: When should the memory layer be replaced with open-source?
+V1 ships with the current SQLite/Supabase stack. Graphiti (temporal KG, MIT license), Cognee (cognitive memory, 12K+ GitHub stars), and Letta (agent memory OS) are all open-source and well-funded. MIKAI's value is L4 (task-state awareness), not L2 (memory infrastructure).
+**Status:** Active. Strategic build-vs-adopt question.
+**Resolution path:** Trigger for evaluation: when temporal reasoning or memory benchmarks become a competitive requirement that the current stack can't meet, or when a competitor's open-source memory layer is clearly superior and integration cost is < 2 weeks.
+**Related:** NOONCHI_STRATEGIC_ANALYSIS.md, MEMORY_ARCHITECTURE_THESIS.md
+
+---
+
+## O-038: Does the V1 "cross-app memory" framing attract noonchi users or memory users?
+If beta users come for memory and stay for memory, the noonchi thesis needs re-examination. If they come for memory and say "I wish it could tell me what to do next," the thesis is validated.
+**Status:** Active. Will be answered by beta user behavior (20-user target).
+**Resolution path:** In beta onboarding, ask: "What would make this 10x more useful?" Track whether answers cluster around better memory/recall or toward task-awareness/next-steps.
+**Related:** O-015, O-017, NOONCHI_STRATEGIC_ANALYSIS.md

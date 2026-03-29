@@ -73,6 +73,11 @@ export interface EdgeRow {
   note: string | null;
   weight: number;
   created_at: string;
+  fact: string | null;
+  valid_at: string | null;
+  invalid_at: string | null;
+  expired_at: string | null;
+  episodes: string;
 }
 
 export interface EdgeInsert {
@@ -80,6 +85,9 @@ export interface EdgeInsert {
   to_node: string;
   relationship: string;
   note?: string;
+  fact?: string;
+  valid_at?: string;
+  invalid_at?: string;
 }
 
 export interface SegmentRow {
@@ -378,13 +386,46 @@ export function insertEdge(db: Database.Database, row: EdgeInsert): { id: string
   try {
     const id = randomUUID();
     db.prepare(`
-      INSERT INTO edges (id, from_node, to_node, relationship, note)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(id, row.from_node, row.to_node, row.relationship, row.note ?? null);
+      INSERT INTO edges (id, from_node, to_node, relationship, note, fact, valid_at, invalid_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      row.from_node,
+      row.to_node,
+      row.relationship,
+      row.note ?? null,
+      row.fact ?? null,
+      row.valid_at ?? null,
+      row.invalid_at ?? null,
+    );
     return { id };
   } catch {
     return null;
   }
+}
+
+export function expireEdge(db: Database.Database, edgeId: string, invalidAt: string): void {
+  db.prepare(`
+    UPDATE edges SET expired_at = datetime('now'), invalid_at = ? WHERE id = ?
+  `).run(invalidAt, edgeId);
+}
+
+export function getEdgesBetweenNodes(db: Database.Database, nodeId1: string, nodeId2: string): EdgeRow[] {
+  return db.prepare(`
+    SELECT * FROM edges
+    WHERE (from_node = ? AND to_node = ?) OR (from_node = ? AND to_node = ?)
+    ORDER BY created_at DESC
+  `).all(nodeId1, nodeId2, nodeId2, nodeId1) as EdgeRow[];
+}
+
+export function getActiveEdges(db: Database.Database, nodeIds: string[]): EdgeRow[] {
+  if (nodeIds.length === 0) return [];
+  const placeholders = nodeIds.map(() => '?').join(',');
+  return db.prepare(`
+    SELECT * FROM edges
+    WHERE (from_node IN (${placeholders}) OR to_node IN (${placeholders}))
+      AND expired_at IS NULL
+  `).all(...nodeIds, ...nodeIds) as EdgeRow[];
 }
 
 export function getEdgesTouchingNodes(db: Database.Database, nodeIds: string[]): EdgeRow[] {

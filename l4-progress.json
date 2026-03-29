@@ -1,0 +1,17 @@
+{
+  "last_run_at": "2026-03-28T21:27:57.831Z",
+  "duration_ms": 117476,
+  "threads_total": 1640,
+  "threads_by_state": {
+    "acting": 15,
+    "completed": 315,
+    "decided": 4,
+    "evaluating": 20,
+    "exploring": 602,
+    "stalled": 684
+  },
+  "stalled_count": 0,
+  "with_next_steps": 0,
+  "avg_sources_per_thread": 1.1,
+  "total_delivery_events": 0
+}

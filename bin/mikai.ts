@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 /**
- * bin/mikai.js — CLI entry point for MIKAI
+ * bin/mikai.ts — CLI entry point for MIKAI
  *
  * Subcommands:
  *   init    — Create ~/.mikai/, SQLite DB, detect API key, print Claude config
@@ -10,11 +10,11 @@
  *   status  — Print knowledge base stats
  *
  * Usage:
- *   npx @mikai/mcp init
- *   npx @mikai/mcp serve
- *   npx @mikai/mcp sync
- *   npx @mikai/mcp build
- *   npx @mikai/mcp status
+ *   npx @chobus/mikai init
+ *   npx @chobus/mikai serve
+ *   npx @chobus/mikai sync
+ *   npx @chobus/mikai build
+ *   npx @chobus/mikai status
  */
 
 import fs from 'fs';
@@ -117,7 +117,7 @@ async function cmdInit() {
   if (setupSync.toLowerCase() !== 'n') {
     const plistName = 'com.mikai.auto-sync';
     const plistPath = path.join(os.homedir(), 'Library', 'LaunchAgents', `${plistName}.plist`);
-    const syncScript = path.join(pkgRoot, 'bin', 'mikai.js');
+    const syncScript = path.join(pkgRoot, 'bin', 'mikai.ts');
 
     const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -154,8 +154,8 @@ async function cmdInit() {
 
   console.log('\n===================================');
   console.log('Setup complete! Next steps:');
-  console.log('  1. npx @mikai/mcp sync     # Ingest your Apple Notes');
-  console.log('  2. npx @mikai/mcp build    # Build knowledge graph');
+  console.log('  1. npx @chobus/mikai sync     # Ingest your Apple Notes');
+  console.log('  2. npx @chobus/mikai build    # Build knowledge graph');
   console.log('  3. Restart Claude Desktop');
   console.log('  4. Ask Claude: "What tensions am I holding?"');
   console.log('===================================\n');

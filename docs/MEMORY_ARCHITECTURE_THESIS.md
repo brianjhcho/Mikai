@@ -241,25 +241,37 @@ Partially — through the `add_note` and `mark_resolved` MCP tools. Claude (the 
 
 ---
 
-## The Three-Layer Architecture (Revised)
+## The Four-Layer Architecture (Revised 2026-03-26)
+
+*Updated to reflect the noonchi strategic reframe. See `docs/NOONCHI_STRATEGIC_ANALYSIS.md` for full analysis.*
 
 ```
-LAYER 3: INTENTION-BEHAVIOR GAP DETECTION (the real moat)
+LAYER 4: TASK-STATE AWARENESS — THE PRODUCT (noonchi)
 ═══════════════════════════════════════════════════════════
-  Not "what does this person want?" (Mem0 can answer that)
-  But "where is this person stuck, and why?"
+  Not "what does this person think?" (every memory system does that)
+  But "where are they in their thinking, and what should they do next?"
 
+  Thread detection: same topic across Notes + Gmail + iMessage + Claude
+  State classification: exploring → evaluating → decided → acting → stalled → completed
+  Next-step inference: given state + trajectory, what's the logical next action?
+  Intention-behavior gap: cross-reference Track A (said) vs Track B (did)
+
+  No competitor is building this because:
+  1. Requires multi-source data pipeline (4+ source types)
+  2. Requires cross-source thread detection (novel problem)
+  3. Requires reasoning-stage classification (no existing benchmark)
+  4. Optimization target (action) is structurally opposed to engagement
+
+  The memory layer below is commodity. This layer is the product.
+  If the memory layer can be adopted from OSS (Graphiti, Cognee), do it.
+
+LAYER 3: INTENTION-BEHAVIOR GAP DETECTION (the moat within L4)
+═══════════════════════════════════════════════════════════
   Cross-reference Track A (stated intentions from authored content)
   vs Track B (actual behavior from email, messages, calendar)
 
   Optimize for ACTION (dismiss rate < 30%)
   Training signal: user acts or dismisses surfaced intentions
-
-  No competitor is building this because:
-  1. Requires multi-source data (authored + behavioral)
-  2. Requires cross-track inference
-  3. Optimization target (action) is structurally opposed to engagement
-  4. The evaluation methodology doesn't exist yet (MIKAI must create it)
 
 LAYER 2: MEMORY INFRASTRUCTURE (commodity — adopt best patterns)
 ═══════════════════════════════════════════════════════════
@@ -270,6 +282,10 @@ LAYER 2: MEMORY INFRASTRUCTURE (commodity — adopt best patterns)
   Retrieval: Vector + BM25 + graph traversal (adopt from Hindsight)
   Conflict resolution: Temporal invalidation (adopt from Graphiti)
   Active forgetting: Confidence decay (adopt from Supermemory)
+
+  NOTE: This entire layer could be replaced by an OSS competitor's
+  memory engine (Graphiti, Cognee, Letta) if theirs becomes clearly
+  superior. MIKAI's value is L4, not L2.
 
 LAYER 1: MEMORY INTERFACE (commodity — MCP standard)
 ═══════════════════════════════════════════════════════════

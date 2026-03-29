@@ -13,7 +13,9 @@
     "engine/ingestion/",
     "engine/inference/",
     "engine/scheduler/",
-    "surfaces/mcp/"
+    "surfaces/mcp/",
+    "engine/l4/",
+    "engine/l3/"
   ],
   "scripts": {
     "mcp": "tsx surfaces/mcp/server.ts",
@@ -41,7 +43,14 @@
     "test:retrieval": "tsx engine/eval/test-suite.ts --retrieval",
     "test:cost": "tsx engine/eval/test-suite.ts --cost",
     "test:brief": "tsx engine/eval/eval-brief-routing.ts",
-    "lint": "eslint"
+    "lint": "eslint",
+    "l4": "tsx engine/l4/run-l4-pipeline.ts",
+    "l4:detect": "tsx engine/l4/run-l4-pipeline.ts --detect-only",
+    "l4:classify": "tsx engine/l4/run-l4-pipeline.ts --classify-only",
+    "l4:infer": "tsx engine/l4/run-l4-pipeline.ts --infer-only",
+    "l4:no-llm": "tsx engine/l4/run-l4-pipeline.ts --skip-infer",
+    "l3:upgrade": "tsx engine/l3/run-l3-upgrade.ts",
+    "l3:sync-fts": "tsx engine/l3/run-l3-upgrade.ts --sync-fts-only"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",

@@ -278,4 +278,4 @@ Full decision log: `docs/DECISIONS.md`
 
 ---
 
-*This document describes the architecture as built. For the epistemic foundations, see `docs/EPISTEMIC_DESIGN.md`. For competitive positioning and the evaluation bridge design, see `docs/MEMORY_ARCHITECTURE_THESIS.md`. For gaps and risks, see `docs/ARCHITECTURE_GAPS.md`.*
+*This document describes the architecture as built (L1-L3: memory interface, memory infrastructure, graph/retrieval). For the strategic direction — task-state awareness as the product layer (L4) above memory — see `docs/NOONCHI_STRATEGIC_ANALYSIS.md`. For competitive positioning and the evaluation bridge design, see `docs/MEMORY_ARCHITECTURE_THESIS.md`. For the epistemic foundations, see `docs/EPISTEMIC_DESIGN.md`. For gaps and risks, see `docs/ARCHITECTURE_GAPS.md`.*

@@ -27,6 +27,13 @@ import { z } from 'zod';
 import { McpServer }          from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { createClient }        from '@supabase/supabase-js';
+import { initL4Schema } from '../../engine/l4/schema.js';
+import {
+  getActiveThreads, getThread, getStalledThreads,
+  getThreadsWithNextSteps, getThreadMembers, getL4Stats,
+  getTransitionHistory, getThreadEdges,
+} from '../../engine/l4/store.js';
+import { inferForSingleThread } from '../../engine/l4/infer-next-step.js';
 
 // ── Env loader ────────────────────────────────────────────────────────────────
 // Mirror the pattern used in engine/graph/build-segments.js
@@ -735,6 +742,7 @@ if (USE_LOCAL) {
     const config = JSON.parse((await import('fs')).readFileSync(configPath, 'utf8'));
     localStore = await import('../../lib/store-sqlite.js');
     localDb = localStore.openDatabase(config.dbPath);
+    initL4Schema(localDb);
     const embedMod = await import('../../lib/embeddings-local.js');
     localEmbed = embedMod.embedText;
     localEmbedDocs = embedMod.embedDocuments;
@@ -1032,6 +1040,172 @@ server.registerTool(
   async ({ content, label }) => {
     const result = USE_LOCAL && localDb ? await localAddNote(content, label) : await addNote(content, label);
     return { content: [{ type: 'text', text: result }] };
+  },
+);
+
+// ── L4 Tools: Task-State Awareness ───────────────────────────────────────────
+
+server.registerTool(
+  'get_threads',
+  {
+    description: 'List active threads — topics tracked across your apps. Shows state (exploring/evaluating/decided/acting/stalled), source types involved, and next steps if available. Use this to understand what the user is currently working on and thinking about.',
+    inputSchema: {
+      state: z.enum(['exploring', 'evaluating', 'decided', 'acting', 'stalled', 'completed']).optional().describe('Filter by thread state'),
+      limit: z.number().optional().default(10).describe('Max threads to return'),
+      include_stalled: z.boolean().optional().default(true).describe('Include stalled threads'),
+    },
+  },
+  async (args) => {
+    if (!localDb) return { content: [{ type: 'text' as const, text: 'L4 requires local mode (MIKAI_LOCAL=1)' }] };
+
+    let threads;
+    if (args.state) {
+      threads = localDb.prepare(
+        'SELECT * FROM threads WHERE state = ? AND resolved_at IS NULL ORDER BY last_activity_at DESC LIMIT ?'
+      ).all(args.state, args.limit ?? 10);
+    } else {
+      threads = getActiveThreads(localDb, args.limit ?? 10);
+    }
+
+    if (!threads || threads.length === 0) {
+      return { content: [{ type: 'text' as const, text: 'No active threads found. Run the L4 pipeline first: npm run l4' }] };
+    }
+
+    const stats = getL4Stats(localDb);
+    let output = `## Active Threads (${stats.totalThreads} total)\n\n`;
+    output += `States: ${Object.entries(stats.byState).map(([k, v]) => `${k}: ${v}`).join(', ')}\n\n`;
+
+    for (const thread of threads as any[]) {
+      const sourceTypes = JSON.parse(thread.source_types || '[]');
+      output += `### ${thread.label}\n`;
+      output += `- **State**: ${thread.state}`;
+      if (thread.stall_probability > 0.5) output += ` ⚠️ stall risk: ${(thread.stall_probability * 100).toFixed(0)}%`;
+      output += `\n`;
+      output += `- **Sources**: ${sourceTypes.join(', ') || 'unknown'} (${thread.source_count} total)\n`;
+      output += `- **Active**: ${thread.first_seen_at} → ${thread.last_activity_at}\n`;
+      if (thread.next_step) output += `- **Next step**: ${thread.next_step}\n`;
+      output += `\n`;
+    }
+
+    return { content: [{ type: 'text' as const, text: output }] };
+  },
+);
+
+server.registerTool(
+  'get_thread_detail',
+  {
+    description: 'Get detailed view of a single thread — its full state history, member segments/nodes, and relationships to other threads. Use when the user asks about a specific topic or when you need deep context on one thread.',
+    inputSchema: {
+      thread_id: z.string().describe('The thread ID to inspect'),
+      include_content: z.boolean().optional().default(false).describe('Include full segment/node content'),
+    },
+  },
+  async (args) => {
+    if (!localDb) return { content: [{ type: 'text' as const, text: 'L4 requires local mode (MIKAI_LOCAL=1)' }] };
+
+    const thread = getThread(localDb, args.thread_id);
+    if (!thread) return { content: [{ type: 'text' as const, text: `Thread not found: ${args.thread_id}` }] };
+
+    const members = getThreadMembers(localDb, args.thread_id);
+    const transitions = getTransitionHistory(localDb, args.thread_id);
+    const edges = getThreadEdges(localDb, args.thread_id);
+
+    let output = `## Thread: ${thread.label}\n\n`;
+    output += `| Field | Value |\n|-------|-------|\n`;
+    output += `| State | ${thread.state} |\n`;
+    output += `| Confidence | ${(thread.confidence * 100).toFixed(0)}% |\n`;
+    output += `| Stall risk | ${((thread.stall_probability ?? 0) * 100).toFixed(0)}% |\n`;
+    output += `| Sources | ${thread.source_count} (${JSON.parse(thread.source_types || '[]').join(', ')}) |\n`;
+    output += `| First seen | ${thread.first_seen_at} |\n`;
+    output += `| Last activity | ${thread.last_activity_at} |\n`;
+    if (thread.next_step) output += `| Next step | ${thread.next_step} |\n`;
+    output += `\n`;
+
+    if (transitions.length > 0) {
+      output += `### State History\n`;
+      for (const t of transitions) {
+        output += `- ${t.from_state ?? '(new)'} → **${t.to_state}**: ${t.reason ?? 'no reason'} (${t.created_at})\n`;
+      }
+      output += `\n`;
+    }
+
+    const segmentIds = members.filter((m: any) => m.segment_id).map((m: any) => m.segment_id!);
+    const nodeIds = members.filter((m: any) => m.node_id).map((m: any) => m.node_id!);
+    output += `### Members: ${members.length} total (${segmentIds.length} segments, ${nodeIds.length} nodes)\n\n`;
+
+    if (args.include_content && segmentIds.length > 0) {
+      const placeholders = segmentIds.map(() => '?').join(',');
+      const segments = localDb.prepare(
+        `SELECT topic_label, processed_content FROM segments WHERE id IN (${placeholders}) LIMIT 10`
+      ).all(...segmentIds) as any[];
+      for (const seg of segments) {
+        output += `> **${seg.topic_label}**: ${seg.processed_content.slice(0, 200)}...\n\n`;
+      }
+    }
+
+    if (edges.length > 0) {
+      output += `### Related Threads\n`;
+      for (const e of edges as any[]) {
+        const otherId = e.from_thread === args.thread_id ? e.to_thread : e.from_thread;
+        const direction = e.from_thread === args.thread_id ? '→' : '←';
+        output += `- ${direction} ${e.relationship}: ${otherId}${e.note ? ` (${e.note})` : ''}\n`;
+      }
+    }
+
+    return { content: [{ type: 'text' as const, text: output }] };
+  },
+);
+
+server.registerTool(
+  'get_next_steps',
+  {
+    description: 'The noonchi surface — what should the user do next? Returns prioritized next steps across all active threads, with stalled threads highlighted. This is the primary L4 tool — use it at the START of conversations to give proactive, actionable guidance.',
+    inputSchema: {
+      limit: z.number().optional().default(5).describe('Max threads to show next steps for'),
+      refresh: z.boolean().optional().default(false).describe('Re-run inference to generate fresh next steps (slower, uses LLM)'),
+    },
+  },
+  async (args) => {
+    if (!localDb) return { content: [{ type: 'text' as const, text: 'L4 requires local mode (MIKAI_LOCAL=1)' }] };
+
+    if (args.refresh) {
+      const active = getActiveThreads(localDb, args.limit ?? 5);
+      for (const thread of active) {
+        await inferForSingleThread(localDb, thread.id);
+      }
+    }
+
+    const threads = getThreadsWithNextSteps(localDb, args.limit ?? 5);
+    const stalled = getStalledThreads(localDb, 0.5, 3);
+
+    if (threads.length === 0 && stalled.length === 0) {
+      return { content: [{ type: 'text' as const, text: 'No next steps available. Run the L4 pipeline first: npm run l4' }] };
+    }
+
+    let output = `## What to Do Next\n\n`;
+
+    if (stalled.length > 0) {
+      output += `### ⚠️ Stalled\n`;
+      for (const t of stalled) {
+        output += `- **${t.label}** (${t.state}, stall: ${((t.stall_probability ?? 0) * 100).toFixed(0)}%)`;
+        if (t.next_step) output += `\n  → ${t.next_step}`;
+        output += `\n`;
+      }
+      output += `\n`;
+    }
+
+    output += `### Active\n`;
+    const seen = new Set(stalled.map((s) => s.id));
+    for (const t of threads) {
+      if (seen.has(t.id)) continue;
+      output += `- **${t.label}** (${t.state})`;
+      output += `\n  → ${t.next_step}`;
+      const sourceTypes = JSON.parse(t.source_types || '[]');
+      if (sourceTypes.length > 1) output += `\n  _Tracked in: ${sourceTypes.join(', ')}_`;
+      output += `\n`;
+    }
+
+    return { content: [{ type: 'text' as const, text: output }] };
   },
 );
 
