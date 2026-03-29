@@ -14,6 +14,7 @@
  *   npx tsx engine/l4/run-l4-pipeline.ts --detect-only
  *   npx tsx engine/l4/run-l4-pipeline.ts --skip-infer  # detect + classify only
  *   npx tsx engine/l4/run-l4-pipeline.ts --infer-only   # re-run inference on existing threads
+ *   npx tsx engine/l4/run-l4-pipeline.ts --skip-resolve # skip entity resolution (Stage 0)
  *   npm run l4                                          # via package.json script
  */
 
@@ -71,6 +72,7 @@ const detectOnly = args.includes('--detect-only');
 const classifyOnly = args.includes('--classify-only');
 const inferOnly = args.includes('--infer-only');
 const skipInfer = args.includes('--skip-infer');
+const skipResolve = args.includes('--skip-resolve');
 
 async function main(): Promise<void> {
   const startTime = Date.now();
@@ -85,6 +87,18 @@ async function main(): Promise<void> {
   initDatabase(db);   // Ensure L3 tables exist
   initL4Schema(db);   // Ensure L4 tables exist
   console.log('L4 schema initialized.\n');
+
+  // ── Stage 0: Entity Resolution (create cross-source edges in L3 graph) ──
+  if (!inferOnly && !classifyOnly && !skipResolve) {
+    console.log('── Stage 0: Entity Resolution ──────────────────');
+    const startMs = Date.now();
+    const { resolveEntities } = await import('../l3/entity-resolution.js');
+    const resolveResult = await resolveEntities(db);
+    console.log(`  Cross-source edges created: ${resolveResult.edgesCreated}`);
+    console.log(`  Strong matches: ${resolveResult.strongMatches}`);
+    console.log(`  Weak matches: ${resolveResult.weakMatches}`);
+    console.log(`  Duration: ${((Date.now() - startMs) / 1000).toFixed(1)}s\n`);
+  }
 
   // ── Stage 1: Detect Threads ──────────────────────────────────────────────
   if (!classifyOnly && !inferOnly) {

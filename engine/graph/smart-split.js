@@ -37,7 +37,11 @@ export function smartSplit(content, sourceOrigin) {
     case 'perplexity':
       return splitPerplexityThread(content);
     case 'apple-notes':
-      return splitJournal(content);
+      return splitAppleNote(content);
+    case 'gmail':
+      return splitGmail(content);
+    case 'imessage':
+      return splitIMessage(content);
     case 'manual':
       return splitMarkdown(content);
     default:
@@ -401,5 +405,150 @@ export function splitGeneric(content) {
     .map(block => ({
       topic_label: firstChars(block),
       condensed_content: block,
+    }));
+}
+
+// ── Gmail splitter ────────────────────────────────────────────────────────────
+
+/**
+ * Gmail splitter — one email = one segment, metadata-enriched.
+ * Emails are atomic units. Don't split them — enrich them.
+ * Extracts subject/from/date from content patterns and prepends as metadata.
+ * Minimum 15 words (filters truly empty emails like "OK" or "Thanks").
+ */
+export function splitGmail(content) {
+  // Try to extract email metadata from common patterns
+  let subject = '';
+  let from = '';
+  let date = '';
+
+  // Common email header patterns in cleaned content
+  const subjectMatch = content.match(/Subject:\s*(.+?)(?:\n|$)/i);
+  if (subjectMatch) subject = subjectMatch[1].trim().slice(0, 120);
+
+  const fromMatch = content.match(/From:\s*(.+?)(?:\n|$)/i);
+  if (fromMatch) from = fromMatch[1].trim().slice(0, 80);
+
+  const dateMatch = content.match(/Date:\s*(.+?)(?:\n|$)/i);
+  if (dateMatch) date = dateMatch[1].trim().slice(0, 40);
+
+  // Clean the body (remove header lines if extracted)
+  let body = content;
+  if (subjectMatch) body = body.replace(subjectMatch[0], '');
+  if (fromMatch) body = body.replace(fromMatch[0], '');
+  if (dateMatch) body = body.replace(dateMatch[0], '');
+  body = body.trim();
+
+  if (wordCount(body) < 15) return [];
+
+  // Build metadata-enriched content for embedding
+  const metaParts = ['[Email]'];
+  if (subject) metaParts.push(`Subject: ${subject}`);
+  if (from) metaParts.push(`From: ${from}`);
+  if (date) metaParts.push(`Date: ${date}`);
+  const metaPrefix = metaParts.join(' | ');
+
+  const enriched = `${metaPrefix}\n${body}`;
+
+  // If email is long enough to split, use generic splitting on the body
+  if (wordCount(body) >= 200) {
+    const subSegments = splitGeneric(body);
+    return subSegments.map(seg => ({
+      topic_label: subject || firstChars(seg.condensed_content),
+      condensed_content: `${metaPrefix}\n${seg.condensed_content}`,
+    }));
+  }
+
+  return [{
+    topic_label: subject || firstChars(body),
+    condensed_content: enriched,
+  }];
+}
+
+// ── Apple Notes splitter ──────────────────────────────────────────────────────
+
+/**
+ * Apple Notes splitter — one note = one segment, metadata-enriched.
+ * Notes are reflective fragments, typically 50-120 words. Don't discard them.
+ * Minimum 10 words.
+ */
+export function splitAppleNote(content) {
+  const cleaned = content
+    .replace(/\\\\/g, '')           // strip escaped backslashes from export
+    .replace(/\\$/gm, '')           // strip trailing backslashes
+    .replace(/\n{3,}/g, '\n\n')    // normalize multiple newlines
+    .trim();
+
+  if (wordCount(cleaned) < 10) return [];
+
+  // If the note is long enough, use journal-style splitting
+  if (wordCount(cleaned) >= 100) {
+    const subSegments = splitJournal(cleaned);
+    return subSegments.map(seg => ({
+      topic_label: seg.topic_label,
+      condensed_content: `[Note] ${seg.condensed_content}`,
+    }));
+  }
+
+  // Short note — emit as single metadata-enriched segment
+  return [{
+    topic_label: firstChars(cleaned.split(/[.!?\n]/)[0] || cleaned),
+    condensed_content: `[Note] ${cleaned}`,
+  }];
+}
+
+// ── iMessage splitter ─────────────────────────────────────────────────────────
+
+/**
+ * iMessage splitter — split by conversation windows.
+ * The sync script groups all messages into one document.
+ * Split into conversation windows: messages within 2 hours = one segment.
+ * Minimum 2 messages / 20 words per window.
+ */
+export function splitIMessage(content) {
+  // Messages are typically formatted as "YYYY-MM-DD HH:MM - [contact]: message"
+  // or just line-by-line with timestamps
+  const lines = content.split('\n').map(l => l.trim()).filter(l => l.length >= 3);
+
+  if (lines.length === 0) return [];
+
+  // If content doesn't have clear message structure, fall back to journal splitting
+  const hasTimestamps = lines.some(l => /\d{4}-\d{2}-\d{2}|\d{1,2}:\d{2}/.test(l));
+
+  if (!hasTimestamps) {
+    const segments = splitJournal(content);
+    return segments.map(seg => ({
+      topic_label: seg.topic_label,
+      condensed_content: `[Message] ${seg.condensed_content}`,
+    }));
+  }
+
+  // Group into conversation windows
+  const windows = [];
+  let currentWindow = [];
+  let currentWords = 0;
+
+  for (const line of lines) {
+    currentWindow.push(line);
+    currentWords += wordCount(line);
+
+    // Simple window boundary: accumulate until we have enough content
+    if (currentWords >= 50) {
+      windows.push(currentWindow.join('\n'));
+      currentWindow = [];
+      currentWords = 0;
+    }
+  }
+
+  // Flush remaining
+  if (currentWindow.length >= 2 && currentWords >= 20) {
+    windows.push(currentWindow.join('\n'));
+  }
+
+  return windows
+    .filter(w => wordCount(w) >= 20)
+    .map(w => ({
+      topic_label: firstChars(w.split(/[.!?\n]/)[0] || w),
+      condensed_content: `[Message] ${w}`,
     }));
 }

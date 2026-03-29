@@ -41,20 +41,20 @@ export function enrichWithGraphSignals(
 
   // Query edges where both endpoints are within this thread's members
   const placeholders = memberNodeIds.map(() => '?').join(',');
-  let edges: { edge_type: string; count: number }[];
+  let edges: { relationship: string; count: number }[];
   try {
     edges = db.prepare(`
-      SELECT edge_type, COUNT(*) as count FROM edges
+      SELECT relationship, COUNT(*) as count FROM edges
       WHERE from_node IN (${placeholders}) AND to_node IN (${placeholders})
-      GROUP BY edge_type
-    `).all(...memberNodeIds, ...memberNodeIds) as { edge_type: string; count: number }[];
+      GROUP BY relationship
+    `).all(...memberNodeIds, ...memberNodeIds) as { relationship: string; count: number }[];
   } catch {
     return empty;
   }
 
   if (edges.length === 0) return empty;
 
-  const edgeTypes = edges.map(e => e.edge_type);
+  const edgeTypes = edges.map(e => e.relationship);
   const totalEdges = edges.reduce((sum, e) => sum + e.count, 0);
 
   // Confidence boost: graph edges between members = structurally related, not just semantically similar

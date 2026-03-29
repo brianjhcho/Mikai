@@ -50,7 +50,9 @@
     "l4:infer": "tsx engine/l4/run-l4-pipeline.ts --infer-only",
     "l4:no-llm": "tsx engine/l4/run-l4-pipeline.ts --skip-infer",
     "l3:upgrade": "tsx engine/l3/run-l3-upgrade.ts",
-    "l3:sync-fts": "tsx engine/l3/run-l3-upgrade.ts --sync-fts-only"
+    "l3:sync-fts": "tsx engine/l3/run-l3-upgrade.ts --sync-fts-only",
+    "l3:resolve": "tsx engine/l3/run-entity-resolution.ts",
+    "l3:resolve:force": "tsx engine/l3/run-entity-resolution.ts --force"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",

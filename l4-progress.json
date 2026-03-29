@@ -1,17 +1,17 @@
 {
-  "last_run_at": "2026-03-28T21:27:57.831Z",
-  "duration_ms": 117476,
-  "threads_total": 1640,
+  "last_run_at": "2026-03-29T19:19:38.390Z",
+  "duration_ms": 579959,
+  "threads_total": 1716,
   "threads_by_state": {
-    "acting": 15,
-    "completed": 315,
-    "decided": 4,
-    "evaluating": 20,
-    "exploring": 602,
-    "stalled": 684
+    "acting": 445,
+    "completed": 332,
+    "decided": 63,
+    "evaluating": 190,
+    "exploring": 612,
+    "stalled": 74
   },
-  "stalled_count": 0,
+  "stalled_count": 62,
   "with_next_steps": 0,
-  "avg_sources_per_thread": 1.1,
+  "avg_sources_per_thread": 1.2,
   "total_delivery_events": 0
 }

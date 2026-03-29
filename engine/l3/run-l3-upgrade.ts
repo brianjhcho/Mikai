@@ -1,12 +1,13 @@
 #!/usr/bin/env tsx
 /**
  * engine/l3/run-l3-upgrade.ts
- * CLI for L3 Graphiti-inspired upgrade: migration + FTS sync.
+ * CLI for L3 Graphiti-inspired upgrade: migration + FTS sync + entity resolution.
  *
  * Usage:
  *   npx tsx engine/l3/run-l3-upgrade.ts              # full upgrade
  *   npx tsx engine/l3/run-l3-upgrade.ts --migrate-only
  *   npx tsx engine/l3/run-l3-upgrade.ts --sync-fts-only
+ *   npx tsx engine/l3/run-l3-upgrade.ts --resolve    # migrate + sync FTS + entity resolution
  *   npm run l3:upgrade
  */
 
@@ -58,6 +59,7 @@ function getDbPath(): string {
 const args = process.argv.slice(2);
 const migrateOnly = args.includes('--migrate-only');
 const syncFtsOnly = args.includes('--sync-fts-only');
+const withResolve = args.includes('--resolve');
 
 async function main(): Promise<void> {
   const startTime = Date.now();
@@ -97,6 +99,19 @@ async function main(): Promise<void> {
     console.log(`  fts_segments: ${ftsCounts.segments} rows`);
     console.log(`  fts_edges:    ${ftsCounts.edges} rows`);
     console.log(`  Duration: ${Date.now() - t2}ms\n`);
+  }
+
+  // ── Stage 3: Entity Resolution ──────────────────────────────────────────
+  if (withResolve && !migrateOnly) {
+    console.log('── Stage 3: Entity Resolution ──────────────────');
+    const t3 = Date.now();
+    const { resolveEntities } = await import('./entity-resolution.js');
+    const erResult = await resolveEntities(db, { forceAll: false });
+    console.log(`  Nodes processed: ${erResult.nodesProcessed}`);
+    console.log(`  Edges created: ${erResult.edgesCreated}`);
+    console.log(`  Strong matches: ${erResult.strongMatches}`);
+    console.log(`  Weak matches: ${erResult.weakMatches}`);
+    console.log(`  Duration: ${Date.now() - t3}ms\n`);
   }
 
   // ── Summary ──────────────────────────────────────────────────────────────

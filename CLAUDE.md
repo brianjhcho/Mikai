@@ -191,11 +191,14 @@ Run `npm run l3:sync-fts` after bulk data changes to rebuild indices.
 npm run l3:upgrade        # Full upgrade: migrate + sync FTS
 npm run l3:upgrade -- --migrate-only   # Bitemporal migration only
 npm run l3:sync-fts       # Rebuild FTS5 indices only
+npm run l3:resolve        # Cross-source entity resolution
+npm run l3:resolve:force  # Re-resolve all nodes
+npm run l3:upgrade -- --resolve   # migrate + sync FTS + entity resolution
 ```
 
 ### Phase Roadmap
-- **Phase 1 (current):** Bitemporal columns + BM25 FTS5 + hybrid search with RRF
-- **Phase 2:** Entity resolution — deduplicate nodes across sources
+- **Phase 1 (DONE):** Bitemporal columns + BM25 FTS5 + hybrid search with RRF
+- **Phase 2 (DONE):** Entity resolution — deduplicate nodes across sources
 - **Phase 3:** Edge invalidation — mark contradicted/superseded facts as expired
 
 ### Architecture
@@ -203,7 +206,9 @@ npm run l3:sync-fts       # Rebuild FTS5 indices only
 - `engine/l3/migrate-bitemporal.ts` — Idempotent schema migration
 - `engine/l3/sync-fts.ts` — FTS5 index rebuild
 - `engine/l3/hybrid-search.ts` — Vector + BM25 + RRF + BFS
-- `engine/l3/run-l3-upgrade.ts` — CLI orchestrator
+- `engine/l3/entity-resolution.ts` — Cross-source entity deduplication
+- `engine/l3/run-l3-upgrade.ts` — CLI orchestrator (migrate + FTS + optional resolve)
+- `engine/l3/run-entity-resolution.ts` — Standalone entity resolution CLI
 
 ---
 

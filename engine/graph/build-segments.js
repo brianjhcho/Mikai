@@ -23,9 +23,9 @@
  *   npm run build-segments -- --batch-size 20
  *   npm run build-segments -- --dry-run        Print what would run, no API calls
  *   npm run build-segments -- --preview        Split + print segments, no DB writes
- *   npm run build-segments -- --sources apple-notes,perplexity,manual,claude-thread
+ *   npm run build-segments -- --sources apple-notes,perplexity,manual,claude-thread,gmail,imessage
  *
- * Default sources: apple-notes, perplexity, manual, claude-thread
+ * Default sources: apple-notes, perplexity, manual, claude-thread, gmail, imessage
  */
 
 import fs   from 'fs';
@@ -47,10 +47,10 @@ const SOURCE_ID   = option('--source-id', null);
 const BATCH_SIZE  = parseInt(option('--batch-size', '10'), 10);
 const CONCURRENCY = parseInt(option('--concurrency', '5'), 10);
 
-// --sources apple-notes,perplexity,manual
-// Comma-separated list of source origins to process. If omitted, defaults to
-// apple-notes, perplexity, manual, claude-thread (excludes gmail and imessage by default).
-const SOURCES_RAW     = option('--sources', 'apple-notes,perplexity,manual,claude-thread');
+// --sources apple-notes,perplexity,manual,claude-thread,gmail,imessage
+// Comma-separated list of source origins to process. All source types included by default.
+// Per-source minimum word thresholds applied (see SEGMENTATION_FRAMEWORK.md).
+const SOURCES_RAW     = option('--sources', 'apple-notes,perplexity,manual,claude-thread,gmail,imessage');
 const ALLOWED_SOURCES = new Set(SOURCES_RAW.split(',').map((s) => s.trim()));
 
 // ── Env loader ────────────────────────────────────────────────────────────────
@@ -173,9 +173,19 @@ async function main() {
     const rawContent = contentRow.raw_content;
 
     // Skip sources below the minimum word threshold
-    const wordCount = rawContent.split(/\s+/).filter(Boolean).length ?? 0;
-    if (wordCount < 500) {
-      console.log(`  ${label} ... skipped (${wordCount} words)`);
+    const wc = rawContent.split(/\s+/).filter(Boolean).length ?? 0;
+    // Source-type-aware minimum thresholds (from SEGMENTATION_FRAMEWORK.md)
+    const minWords = {
+      'perplexity': 30,
+      'claude-thread': 15,
+      'manual': 20,
+      'gmail': 15,
+      'apple-notes': 10,
+      'imessage': 20,
+    };
+    const threshold = minWords[source.source] ?? 50;
+    if (wc < threshold) {
+      console.log(`  ${label} ... skipped (${wc} words < ${threshold} min for ${source.source || 'unknown'})`);
       return 0;
     }
 
