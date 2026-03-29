@@ -41,15 +41,26 @@ export async function embedText(text: string): Promise<number[]> {
 /**
  * Embed multiple texts (document mode).
  * Returns an array of 768-dimensional number arrays.
+ * Processes in batches of BATCH_SIZE for speed while staying within memory.
  */
+const EMBED_BATCH_SIZE = 12;
+
 export async function embedDocuments(texts: string[]): Promise<number[][]> {
   const pipe = await getEmbedder();
   const results: number[][] = [];
-  // Process one at a time to avoid OOM on large batches
-  for (const text of texts) {
-    const output = await pipe(text, { pooling: 'mean', normalize: true });
-    results.push(Array.from(output.data as Float32Array).slice(0, 768));
+
+  for (let i = 0; i < texts.length; i += EMBED_BATCH_SIZE) {
+    const batch = texts.slice(i, i + EMBED_BATCH_SIZE);
+    // Process batch concurrently — ONNX handles internal parallelism
+    const batchResults = await Promise.all(
+      batch.map(async (text) => {
+        const output = await pipe(text, { pooling: 'mean', normalize: true });
+        return Array.from(output.data as Float32Array).slice(0, 768);
+      })
+    );
+    results.push(...batchResults);
   }
+
   return results;
 }
 

@@ -52,7 +52,9 @@
     "l3:upgrade": "tsx engine/l3/run-l3-upgrade.ts",
     "l3:sync-fts": "tsx engine/l3/run-l3-upgrade.ts --sync-fts-only",
     "l3:resolve": "tsx engine/l3/run-entity-resolution.ts",
-    "l3:resolve:force": "tsx engine/l3/run-entity-resolution.ts --force"
+    "l3:resolve:force": "tsx engine/l3/run-entity-resolution.ts --force",
+    "build-segments:local": "tsx engine/graph/build-segments-local.ts",
+    "build-segments:local:rebuild": "tsx engine/graph/build-segments-local.ts --rebuild"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
