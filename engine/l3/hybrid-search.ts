@@ -98,8 +98,8 @@ export function bfsExpand(
 
   for (let depth = 0; depth < maxDepth && frontier.length > 0; depth++) {
     const placeholders = frontier.map(() => '?').join(',');
-    let sql = `SELECT * FROM edges WHERE from_node IN (${placeholders}) OR to_node IN (${placeholders})`;
-    if (filterExpired) sql += ' AND expired_at IS NULL';
+    let sql = `SELECT * FROM edges WHERE (from_node IN (${placeholders}) OR to_node IN (${placeholders}))`;
+    if (filterExpired) sql += ' AND expired_at IS NULL AND invalid_at IS NULL';
 
     const edges = db.prepare(sql).all(...frontier, ...frontier) as EdgeRow[];
     const newFrontier: string[] = [];

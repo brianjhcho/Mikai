@@ -317,6 +317,37 @@ V1 ships with the current SQLite/Supabase stack. Graphiti (temporal KG, MIT lice
 
 ---
 
+## O-039: Thesis test findings — embedding proximity alone is insufficient for cross-app detection
+
+Three findings from the entity resolution + segmentation work (2026-03-29):
+
+1. **Cross-app detection requires entity resolution (graph edges), not just embedding proximity.** Before entity resolution, only 4 cross-app threads were detectable via kNN clustering. After creating 1,072 `resolves_to` edges via hybrid search, 16 cross-app threads surfaced. The embedding signal alone was insufficient — topically similar but app-separated nodes didn't cluster because embedding distance reflects content similarity, not identity.
+
+2. **Node↔segment embedding similarity is limited by size bias (Jina AI research).** Node embeddings (short, extracted labels) and segment embeddings (multi-sentence passages) occupy different regions of the embedding space. Cosine similarity comparisons across these two representation sizes systematically underweight cross-representation matches. Hybrid thread detection (nodes + segments via Union-Find with graph-edge merging) partially addresses this, but the underlying size bias remains.
+
+3. **Source-adaptive segmentation with metadata enrichment needed for comparable segment quality.** Gmail, Apple Notes, and iMessage have structurally different content (quoted-reply threads, HTML formatting, short conversational turns). A single `smart-split` pass without source awareness produces segments of wildly different quality. Fix: source-specific splitters (`splitGmail`, `splitAppleNote`, `splitIMessage`) with per-source length thresholds and metadata preservation (sender, timestamp, thread context). See `docs/SEGMENTATION_FRAMEWORK.md`.
+
+**Status:** Active. Findings directly inform L4 eval design (O-040/Phase 4D) — eval must measure cross-source detection quality, not just intra-source thread accuracy.
+
+---
+
+## O-040: Community detection belongs in L3 but is premature — multi-hop transitivity is the real gap
+
+Architectural analysis (2026-03-29) of Graphiti-style community detection (label propagation) in L3 vs L4:
+
+**Key findings:**
+1. **Entity resolution already solves segmentation invariance.** A 1200-idea mega-note and 120 small notes converge to the same graph structure because ER links equivalent concepts across extraction boundaries. Community detection consumes this convergence — it does not create it. The bottleneck is extraction quality, not graph structure.
+2. **The actual gap is multi-hop transitivity.** L4's graph-edge merging (`detect-threads.ts:348-399`) only processes direct cross-source edges. If A→B and B→C exist but not A→C, current code misses the A-C relationship. Fix: process all entity-resolution edges through Union-Find transitively (~20 lines in L4), not a new L3 abstraction.
+3. **Communities only cover ~8% of threadable items.** Nodes: ~2,246. Segments: ~25,749. Community detection operates on nodes only. Segments (11:1 ratio) still need kNN for thread assignment. `NODE_SOURCE_TYPES` further restricts to apple-notes + manual.
+4. **Graph is too sparse for label propagation to add value.** 1,072 cross-source edges across ~2,246 nodes. At this density, label propagation produces communities identical to connected components. Label propagation becomes valuable when the largest connected component exceeds ~40% of all nodes and needs sub-partitioning.
+5. **Community drift risk.** Label propagation is non-deterministic (tie-breaking depends on iteration order). Running twice on the same graph can produce different communities, causing thread groupings to visibly shift between syncs.
+
+**Decision:** Defer L3 community detection. Fix multi-hop transitivity in L4 now. Revisit communities when cross-source edges > 5,000 and wire them into `hybridGraphSearch` for retrieval (not just L4 seeding).
+**Status:** Active — multi-hop fix in L4 is next action.
+**Related:** O-039, Phase 2B in L3 roadmap
+
+---
+
 ## O-038: Does the V1 "cross-app memory" framing attract noonchi users or memory users?
 If beta users come for memory and stay for memory, the noonchi thesis needs re-examination. If they come for memory and say "I wish it could tell me what to do next," the thesis is validated.
 **Status:** Active. Will be answered by beta user behavior (20-user target).

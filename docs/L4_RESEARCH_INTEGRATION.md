@@ -506,6 +506,12 @@ This preserves memory-layer agnosticism (V3 strategy) while using graph structur
 3. ✅ Created `delivery_events` table + CRUD + PPP metrics in store.ts
 4. ✅ Pipeline logs delivery events after inference
 
+### Phase L3-2: Entity Resolution — DONE (2026-03-29)
+1. ✅ Entity resolution via hybrid search (vec kNN + BM25 + RRF) to find cross-source node matches
+2. ✅ `resolves_to` edges created between nodes referring to the same entity across different source apps
+3. ✅ 1,072 cross-source edges created; cross-app detectable threads increased from 4 → 16
+4. ✅ Feeds directly into L4 graph enrichment step — entity edges boost thread confidence + enable cross-source clustering
+
 ### Phase 5B: Evaluation Suite — NEXT
 1. **NEW:** Create `engine/eval/eval-l4.ts` modeled on MEMTRACK methodology
 2. Manually label 20-30 threads from Brian's data as ground truth
@@ -550,25 +556,31 @@ CREATE INDEX IF NOT EXISTS idx_delivery_response ON delivery_events(user_respons
 
 ---
 
-## Files Created (2026-03-28)
+## Files Created (2026-03-28 / 2026-03-29)
 
 | File | Purpose | Status |
 |---|---|---|
 | `engine/l4/evaluate-delivery.ts` | Sumimasen gate — decides which threads are worth surfacing (ProMemAssist) | ✅ Built |
 | `engine/l4/graph-enrichment.ts` | Post-clustering graph signal extraction (Graphiti abstraction boundary) | ✅ Built |
+| `engine/l3/entity-resolution.ts` | Graphiti entity resolution — cross-source edge creation via hybrid search | ✅ Built |
+| `engine/l3/run-entity-resolution.ts` | CLI runner for standalone entity resolution | ✅ Built |
+| `docs/SEGMENTATION_FRAMEWORK.md` | Research-backed segmentation framework (source-adaptive thresholds + metadata enrichment) | ✅ Built |
 | `engine/eval/eval-l4.ts` | L4 evaluation suite modeled on MEMTRACK | Not yet |
 
-## Files Modified (2026-03-28)
+## Files Modified (2026-03-28 / 2026-03-29)
 
 | File | Change | Status |
 |---|---|---|
 | `engine/l4/types.ts` | Added `ActionCategory`, `GraphSignals`, `DeliveryEvent`, extended `Thread` + `ClassificationSignals` | ✅ Done |
 | `engine/l4/schema.ts` | Added `delivery_events` table + 6 delivery columns on `threads` via safe migration | ✅ Done |
 | `engine/l4/store.ts` | Added `insertDeliveryEvent`, `recordDeliveryResponse`, `getDeliveryEvents`, `getPPPMetrics` | ✅ Done |
-| `engine/l4/detect-threads.ts` | Added graph enrichment post-step after clustering | ✅ Done |
+| `engine/l4/detect-threads.ts` | Hybrid detection (nodes + segments) with graph-edge merging post-clustering | ✅ Done |
 | `engine/l4/classify-state.ts` | Added graph edge signals (contradiction → evaluating, dependency → stalled) | ✅ Done |
 | `engine/l4/infer-next-step.ts` | Replaced prompt with OmniActions 7-category CoT, parses `[CATEGORY]` prefix, accepts gated thread IDs | ✅ Done |
-| `engine/l4/run-l4-pipeline.ts` | Rewired to 4-stage: detect → classify → evaluate gate → infer. Logs delivery events. Writes `l4-progress.json`. | ✅ Done |
+| `engine/l4/run-l4-pipeline.ts` | Added Stage 0 entity resolution; rewired to detect → classify → evaluate gate → infer. Logs delivery events. Writes `l4-progress.json`. | ✅ Done |
+| `engine/l4/graph-enrichment.ts` | Bug fix: `edge_type` → `relationship` column name | ✅ Done |
+| `engine/graph/smart-split.js` | Added `splitGmail`, `splitAppleNote`, `splitIMessage` source-specific splitters | ✅ Done |
+| `engine/graph/build-segments.js` | All source types supported; per-source thresholds for segment length | ✅ Done |
 
 ---
 

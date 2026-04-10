@@ -60,6 +60,7 @@ const args = process.argv.slice(2);
 const migrateOnly = args.includes('--migrate-only');
 const syncFtsOnly = args.includes('--sync-fts-only');
 const withResolve = args.includes('--resolve');
+const withInvalidate = args.includes('--invalidate');
 
 async function main(): Promise<void> {
   const startTime = Date.now();
@@ -112,6 +113,18 @@ async function main(): Promise<void> {
     console.log(`  Strong matches: ${erResult.strongMatches}`);
     console.log(`  Weak matches: ${erResult.weakMatches}`);
     console.log(`  Duration: ${Date.now() - t3}ms\n`);
+  }
+
+  // ── Stage 4: Edge Invalidation ──────────────────────────────────────────
+  if (withInvalidate && !migrateOnly) {
+    console.log('── Stage 4: Edge Invalidation ──────────────────');
+    const t4 = Date.now();
+    const { invalidateEdges } = await import('./invalidate-edges.js');
+    const invResult = await invalidateEdges(db);
+    console.log(`  Contradiction invalidations: ${invResult.contradictionInvalidations}`);
+    console.log(`  Supersession invalidations: ${invResult.supersessionInvalidations}`);
+    console.log(`  Previously invalidated: ${invResult.alreadyInvalidated}`);
+    console.log(`  Duration: ${Date.now() - t4}ms\n`);
   }
 
   // ── Summary ──────────────────────────────────────────────────────────────

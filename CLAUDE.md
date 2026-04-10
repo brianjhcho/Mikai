@@ -3,10 +3,57 @@
 ## What MIKAI is
 
 MIKAI is a task-state awareness engine (noonchi). Two layers:
-- **L3 (built, commodity):** Knowledge graph with typed edges. Memory infrastructure. Adoptable from OSS if needed.
-- **L4 (unbuilt, differentiator):** Thread detection, state classification (exploring → decided → acting → stalled), next-step inference across apps. **THE PRODUCT.**
+- **L3:** Knowledge graph with typed edges. The user's evolving understanding — must be accurate, current, and accessible from any surface.
+- **L4:** Thread detection, state classification (exploring → decided → acting → stalled), next-step inference across apps. **THE PRODUCT.**
 
-Memory is commodity. Task-state awareness is the product.
+L4 is the product. But L4 is only as good as L3. If the graph doesn't accurately understand the user, task-state awareness fails (proven: 20% state classification accuracy traced to L3 quality).
+
+---
+
+## Two architectural constraints (override all other decisions)
+
+### 1. L3 graph quality is the gating function for L4
+
+L4 (task-state awareness) is the asset. But L3 must be correct first — L4 is only as good as the graph it sits on (proven: 20% state accuracy traced to L3 quality).
+
+**The evolution of the L3 hypothesis:**
+1. Pre-LLM: Identity/360 user profiles — structured data about the user from behavioral traces
+2. LLM-assisted: Use LLMs to create nodes and synthesize graph structure from unstructured content → user profile indexed on relevant nodes
+3. Competitor review: Compared Mem0, Zep/Graphiti, Cognee, Letta, Hindsight for their treatment of graphs and memory systems as L3 layers
+4. **Landing: Graphiti** — best starting point. Happy medium of textual depth about the user AND computational speed/efficiency
+
+**Current focus:** Validate L3 works correctly with Graphiti. Measure graph quality. Document the reasoning branches so that once L3 passes at an acceptable rate, we can connect it to L4 use cases.
+
+Specific L3 quality requirements:
+- **Entity summaries must evolve** — not frozen at extraction time
+- **Entity resolution must be accurate** — LLM disambiguation for ambiguous cases
+- **Edge invalidation must reflect changed beliefs** — superseded facts marked, not served as current
+- **Community detection** — cluster related entities into themes
+
+Graph accuracy must be measured before L4 work resumes. Target: >80% precision on "is this what the user actually thinks?"
+
+### 2. Multi-surface access is unsolved — needs research, not implementation
+
+MCP was chosen as the sole product surface because it was the **fastest path to testing and usability** (D-039). It is NOT the final answer for multi-surface access.
+
+**What's unsolved:**
+- Multi-surface access has real ecosystem constraints that aren't addressed by simply adding HTTP/SSE transport
+- Apple Shortcuts is NOT the right integration path for MIKAI — it's too constrained
+- Deeper research needed: How does Apple Intelligence currently operationalize user profiles? How can MIKAI integrate at the OS level rather than through Shortcuts?
+- The question of "how does the user access their graph from mobile/web" requires platform-specific research, not premature infrastructure
+
+**What's NOT decided:**
+- Cloud vs local deployment model for mobile/web
+- Transport protocol for non-desktop surfaces
+- Authentication model
+- Whether MCP is even the right protocol for all surfaces (vs REST API, native SDK, etc.)
+
+**Research needed before building:**
+- Apple Intelligence user profile architecture — how it works, where MIKAI could integrate
+- Claude mobile/web MCP support — current capabilities and roadmap
+- Alternative integration patterns (widgets, notifications, OS-level hooks)
+
+Do not build multi-surface infrastructure until the research answers these questions.
 
 ---
 
@@ -15,6 +62,7 @@ Memory is commodity. Task-state awareness is the product.
 | Session type | Read first |
 |---|---|
 | **Writing code** | `docs/ARCHITECTURE.md`, `surfaces/mcp/server.ts`, relevant source files |
+| **L3 / Graphiti work** | `docs/GRAPHITI_INTEGRATION.md`, `infra/graphiti/AGENTS.md`, `infra/graphiti/sidecar/main.py` |
 | **L4 build work** | `docs/L4_RESEARCH_INTEGRATION.md`, `engine/l4/AGENTS.md`, relevant L4 source files |
 | **Strategy / positioning** | `private/strategy/01_CORE_ENGINE.md`, `private/strategy/02_EXECUTION_STRATEGY.md` |
 | **Competitive analysis** | `private/strategy/reference/COMPETITIVE_LANDSCAPE.md` |
@@ -131,11 +179,25 @@ Reordering silently breaks the retrieval contract even if the code runs correctl
 | 4A | Thread detection + state classification + graph enrichment | DONE (2026-03-28) — detect-threads, classify-state, graph-enrichment |
 | 4B | Evaluation gate (Sumimasen) + structured inference (OmniActions) | DONE (2026-03-28) — evaluate-delivery, infer-next-step rewrite |
 | 4C | Delivery event logging (PPP training signal) + progress file | DONE (2026-03-28) — delivery_events table, l4-progress.json |
-| 4D | L4 eval suite (MEMTRACK-inspired) | Next — manually label 20-30 threads, measure accuracy |
-| 5 | Trajectory modeling + desire classification | Planned (the noonchi moment) |
-| 6 | Intention-behavior gap + proactive delivery (multi-surface) | Planned |
-| 7 | Multi-user + memory passport + evaluate replacing memory layer with OSS | Planned |
+| L3-2 | Entity resolution | DONE (2026-03-29) — hybrid search (vec kNN + BM25 + RRF), 1,072 cross-source edges, cross-app threads 4→16 |
+| Seg | Segmentation fix | DONE (2026-03-29) — source-adaptive splitting (Gmail/Apple Note/iMessage), per-source thresholds |
+| 4D | L4 eval suite (MEMTRACK-inspired) | DONE (2026-03-29) — 27 ground truth, detection 100% F1, state 22% (pre-narrowing) |
+| L3-3 | Edge invalidation (Graphiti Phase 3) | DONE (2026-03-29) — 48 edges invalidated (34 contradiction + 14 supersession) |
+| 4E | L4 multi-view + configurable state machine | PAUSED — blocked on L3 quality gate |
+| **G1** | **Graphiti + Neo4j as L3 backend** | **DONE (2026-04-07)** — DeepSeek + Voyage, 6,990 entities, 8,056 edges |
+| **G2** | **Apple Notes import (1,102 episodes)** | **DONE (2026-04-08)** — sequential `add_episode()`, full graph maturation |
+| **G3** | **MCP server v2.0 (9 tools, Graphiti-consistent)** | **DONE (2026-04-02)** — hybrid search, edge invalidation, temporal queries |
+| **G4** | **Embedding comparison (Voyage vs Nomic)** | **DONE (2026-04-07)** — dual embeddings on all entities |
+| **→** | **Claude thread import (562 remaining, turn-by-turn with saga)** | **NEXT** — ~$4.50 on DeepSeek |
+| → | Perplexity import (583 episodes, query+answer with saga) | NEXT — ~$3.50 on DeepSeek |
+| → | Community detection (connect orphan entities) | NEXT — 1,233 orphans (17.6%) need clustering |
+| → | Orphan cleanup (prune noise entities) | NEXT |
+| → | L3Backend interface (TypeScript abstraction for MCP↔Graphiti) | Planned |
+| 5 | L4 re-eval against Graphiti graph (target >50% state accuracy) | Planned — blocked on L3 completion |
+| 6 | Trajectory modeling + desire classification | Planned (the noonchi moment) |
+| 7 | Intention-behavior gap + proactive delivery | Planned |
 
+**Graphiti integration details:** `docs/GRAPHITI_INTEGRATION.md` (scaling issues, patches, cost analysis, entity resolution pipeline)
 **Current detailed status:** `private/strategy/03_WORKING_STATE.md`
 **Strategic reference:** `private/strategy/01_CORE_ENGINE.md` (L3/L4 definition), `private/strategy/02_EXECUTION_STRATEGY.md` (V1/V2/V3 plan)
 
@@ -198,8 +260,9 @@ npm run l3:upgrade -- --resolve   # migrate + sync FTS + entity resolution
 
 ### Phase Roadmap
 - **Phase 1 (DONE):** Bitemporal columns + BM25 FTS5 + hybrid search with RRF
-- **Phase 2 (DONE):** Entity resolution — deduplicate nodes across sources
-- **Phase 3:** Edge invalidation — mark contradicted/superseded facts as expired
+- **Phase 2 (DONE 2026-03-29):** Entity resolution — hybrid search (vec kNN + BM25 + RRF), 1,072 cross-source edges created, cross-app threads 4→16
+- **Phase 2B (DEFERRED):** Community detection (Graphiti label propagation). Deferred — graph too sparse. See O-040.
+- **Phase 3 (DONE 2026-03-29):** Edge invalidation — 48 edges invalidated (34 contradiction + 14 supersession). Sets `invalid_at` on superseded facts.
 
 ### Architecture
 - `engine/l3/types.ts` — BiTemporalEdge, SearchResult, HybridSearchConfig
@@ -214,16 +277,22 @@ npm run l3:upgrade -- --resolve   # migrate + sync FTS + entity resolution
 
 ## L4 — Task-State Awareness
 
-The L4 layer sits on top of L3's knowledge graph. It is the actual product — what differentiates MIKAI.
+The L4 layer sits on top of L3's universal knowledge graph. L3 stores everything. L4 provides **domain-specific views** with pluggable state machines. See `docs/ARCHITECTURE.md` for the full multi-view design.
 
-### Pipeline (4-stage, Inner Thoughts cognitive loop)
+**Current: View A (Project Tracker)** — tracks active work with goals and endpoints. State machine: exploring → evaluating → decided → acting → stalled → completed. Thread detection anchored by `project`/`decision` nodes.
+
+**Planned: View B (Belief Tracker)**, **View C (Event Log)** — different state models for beliefs and transactions.
+
+### Pipeline (6-stage)
 ```
-npm run l4              # Full pipeline: detect → classify → evaluate → infer
+npm run l4              # Full pipeline: resolve → invalidate → detect → classify → evaluate → infer
 npm run l4:detect       # Thread detection only (zero LLM)
 npm run l4:classify     # State classification only (zero LLM)
 npm run l4:infer        # Re-run next-step inference (Haiku)
 npm run l4:no-llm       # Detect + classify without inference
 ```
+
+Stage 0: entity resolution. Stage 0.5: edge invalidation (Phase 3). Both feed temporal signals into thread detection and state classification.
 
 ### Architecture
 | File | Purpose | Paper basis |
@@ -241,10 +310,21 @@ npm run l4:no-llm       # Detect + classify without inference
 ### State Machine
 exploring → evaluating → decided → acting → stalled → completed
 
-### MCP Tools (L4)
-- `get_threads` — List active threads with states
-- `get_thread_detail` — Deep view of one thread
-- `get_next_steps` — The noonchi surface: what to do next
+### MCP Server v2.0 (9 tools, local-first, Graphiti-consistent)
+
+| Tool | What it does |
+|------|-------------|
+| `search` | Hybrid retrieval (vec + BM25 + RRF) over segments + graph. Single primary tool. |
+| `get_brief` | L4-aware context brief: thread summary, valid tensions, stalled threads |
+| `get_tensions` | Active tensions, valid edges only (invalid_at filtered), with thread context |
+| `get_threads` | Thread-level view with state filter (replaces old node-level get_stalled) |
+| `get_thread_detail` | Deep view: state history, members, related threads |
+| `get_next_steps` | Noonchi surface: prioritized next steps across threads |
+| `get_history` | Temporal query: graph state at a point in time, thought evolution |
+| `add_note` | Save insight from conversation (local embeddings, immediately searchable) |
+| `mark_resolved` | Resolve node or thread, propagates to containing threads |
+
+Removed in v2.0: `search_knowledge`, `search_graph` (merged into `search`), `get_stalled` (replaced by `get_threads` with state filter), `get_status` (folded into `get_brief`). All Supabase code removed — local SQLite only.
 
 ### Key Design Decisions
 - Thread detection is zero LLM — uses pre-computed segment embeddings

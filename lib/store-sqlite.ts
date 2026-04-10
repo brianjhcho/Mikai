@@ -88,6 +88,7 @@ export interface EdgeInsert {
   fact?: string;
   valid_at?: string;
   invalid_at?: string;
+  episodes?: string[];
 }
 
 export interface SegmentRow {
@@ -386,8 +387,8 @@ export function insertEdge(db: Database.Database, row: EdgeInsert): { id: string
   try {
     const id = randomUUID();
     db.prepare(`
-      INSERT INTO edges (id, from_node, to_node, relationship, note, fact, valid_at, invalid_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO edges (id, from_node, to_node, relationship, note, fact, valid_at, invalid_at, episodes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       row.from_node,
@@ -397,6 +398,7 @@ export function insertEdge(db: Database.Database, row: EdgeInsert): { id: string
       row.fact ?? null,
       row.valid_at ?? null,
       row.invalid_at ?? null,
+      row.episodes ? JSON.stringify(row.episodes) : '[]',
     );
     return { id };
   } catch {

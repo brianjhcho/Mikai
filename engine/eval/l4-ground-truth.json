@@ -1,0 +1,321 @@
+{
+  "version": "1.0",
+  "labeled_at": "2026-03-30T04:09:57.989Z",
+  "labeled_by": "brian",
+  "entries": [
+    {
+      "expected_label": "MIKAI philosophical foundation",
+      "expected_source_types": [
+        "claude-thread"
+      ],
+      "expected_state": "decided",
+      "expected_action_category": "search",
+      "keywords": [
+        "mikai",
+        "philosophical",
+        "foundation"
+      ],
+      "notes": "This is a thesis that I'm coming to a solid conclusion on, I need it validated with other thoughts"
+    },
+    {
+      "expected_label": "MIKAi philosophical foundation",
+      "expected_source_types": [
+        "claude-thread"
+      ],
+      "expected_state": "evaluating",
+      "expected_action_category": "search",
+      "keywords": [
+        "mikai",
+        "philosophical",
+        "foundation"
+      ]
+    },
+    {
+      "expected_label": "Claude Code capabilities",
+      "expected_source_types": [
+        "claude-thread"
+      ],
+      "expected_state": "exploring",
+      "expected_action_category": "search",
+      "keywords": [
+        "claude",
+        "code",
+        "capabilities"
+      ]
+    },
+    {
+      "expected_label": "OpenClaw vs Claude Code differences",
+      "expected_source_types": [
+        "claude-thread"
+      ],
+      "expected_state": "evaluating",
+      "expected_action_category": "search",
+      "keywords": [
+        "openclaw",
+        "claude",
+        "code",
+        "differences"
+      ]
+    },
+    {
+      "expected_label": "ca/paybill to pay right from your phone",
+      "expected_source_types": [
+        "imessage"
+      ],
+      "expected_state": "completed",
+      "expected_action_category": "search",
+      "keywords": [
+        "capaybill",
+        "right",
+        "from",
+        "your",
+        "phone"
+      ]
+    },
+    {
+      "expected_label": "[contact]: Pay with confidence",
+      "expected_source_types": [
+        "imessage"
+      ],
+      "expected_state": "completed",
+      "expected_action_category": "search",
+      "keywords": [
+        "contact",
+        "with",
+        "confidence"
+      ]
+    },
+    {
+      "expected_label": "[contact]: Send money with confidence",
+      "expected_source_types": [
+        "imessage"
+      ],
+      "expected_state": "completed",
+      "expected_action_category": "search",
+      "keywords": [
+        "contact",
+        "send",
+        "money",
+        "with",
+        "confidence"
+      ]
+    },
+    {
+      "expected_label": "Recursive Product Development Strategy",
+      "expected_source_types": [
+        "imessage",
+        "apple-notes"
+      ],
+      "expected_state": "evaluating",
+      "expected_action_category": "search",
+      "keywords": [
+        "recursive",
+        "product",
+        "development",
+        "strategy"
+      ]
+    },
+    {
+      "expected_label": "Intention vs Action Ethics",
+      "expected_source_types": [
+        "apple-notes",
+        "gmail"
+      ],
+      "expected_state": "exploring",
+      "expected_action_category": "search",
+      "keywords": [
+        "intention",
+        "action",
+        "ethics"
+      ]
+    },
+    {
+      "expected_label": "Social Media Meme Sharing",
+      "expected_source_types": [
+        "apple-notes"
+      ],
+      "expected_state": "stalled",
+      "expected_action_category": "search",
+      "keywords": [
+        "social",
+        "media",
+        "meme",
+        "sharing"
+      ],
+      "notes": "Bad merge — TubeShift + social search are separate ideas. Both stalled/unexplored."
+    },
+    {
+      "expected_label": "Investor Feedback on Listening",
+      "expected_source_types": [
+        "apple-notes"
+      ],
+      "expected_state": "evaluating",
+      "expected_action_category": "search",
+      "keywords": [
+        "investor",
+        "feedback",
+        "listening"
+      ]
+    },
+    {
+      "expected_label": "Cognitive Function Recommendation Engine",
+      "expected_source_types": [
+        "apple-notes",
+        "manual"
+      ],
+      "expected_state": "stalled",
+      "expected_action_category": "search",
+      "keywords": [
+        "cognitive",
+        "function",
+        "recommendation",
+        "engine"
+      ],
+      "notes": "there should be more distinction in action, because for knowledge work, or exploring a topic, search needs more differentiation, perhaps another layer in the future"
+    },
+    {
+      "expected_label": "beliefs about life",
+      "expected_source_types": [
+        "apple-notes"
+      ],
+      "expected_state": "exploring",
+      "expected_action_category": "search",
+      "keywords": [
+        "beliefs",
+        "about",
+        "life"
+      ],
+      "notes": "Misnamed — broader character development/self-knowledge theme. Belief thread, not task thread. Accumulated intuitions over time."
+    },
+    {
+      "expected_label": "Deep Learning Satisfaction Prediction",
+      "expected_source_types": [
+        "apple-notes"
+      ],
+      "expected_state": "stalled",
+      "expected_action_category": "search",
+      "keywords": [
+        "deep",
+        "learning",
+        "satisfaction",
+        "prediction"
+      ],
+      "notes": "Title incorrect. Bad merge — research abstract + convergence device + physio are separate. All stalled."
+    },
+    {
+      "expected_label": "Queup Team Leadership Memo",
+      "expected_source_types": [
+        "apple-notes",
+        "manual"
+      ],
+      "expected_state": "completed",
+      "expected_action_category": "search",
+      "keywords": [
+        "queup",
+        "team",
+        "leadership",
+        "memo"
+      ]
+    },
+    {
+      "expected_label": "Good vs Bad Product Managers",
+      "expected_source_types": [
+        "apple-notes"
+      ],
+      "expected_state": "exploring",
+      "expected_action_category": "search",
+      "keywords": [
+        "good",
+        "product",
+        "managers"
+      ],
+      "notes": "Noisy — what counts as important and now vs later discipline dont belong. Core PM content is coherent."
+    },
+    {
+      "expected_label": "personal tool no-auth choice",
+      "expected_source_types": [
+        "manual",
+        "apple-notes"
+      ],
+      "expected_state": "completed",
+      "expected_action_category": "search",
+      "keywords": [
+        "personal",
+        "tool",
+        "noauth",
+        "choice"
+      ]
+    },
+    {
+      "expected_label": "is deduplication reliable enough",
+      "expected_source_types": [
+        "manual",
+        "apple-notes"
+      ],
+      "expected_state": "completed",
+      "expected_action_category": "search",
+      "keywords": [
+        "deduplication",
+        "reliable",
+        "enough"
+      ],
+      "notes": "Decided and completed today; pipeline hasnt re-ingested yet"
+    },
+    {
+      "expected_label": "Queup Court Outreach",
+      "expected_source_types": [
+        "apple-notes"
+      ],
+      "expected_state": "stalled",
+      "expected_action_category": "search",
+      "keywords": [
+        "queup",
+        "court",
+        "outreach"
+      ],
+      "notes": "Coherent cluster — structured notes from narrow project. Members accurate."
+    },
+    {
+      "expected_label": "[contact]: PayByPhone: FS821A parking at 51601 started at [c",
+      "expected_source_types": [
+        "imessage"
+      ],
+      "expected_state": "completed",
+      "expected_action_category": "search",
+      "keywords": [
+        "contact",
+        "paybyphone",
+        "fs821a",
+        "parking",
+        "51601",
+        "started"
+      ]
+    },
+    {
+      "expected_label": "Three-layer intent structure",
+      "expected_source_types": [
+        "manual"
+      ],
+      "expected_state": "acting",
+      "expected_action_category": "search",
+      "keywords": [
+        "threelayer",
+        "intent",
+        "structure"
+      ]
+    },
+    {
+      "expected_label": "Recall-first build sequence",
+      "expected_source_types": [
+        "manual"
+      ],
+      "expected_state": "acting",
+      "expected_action_category": "search",
+      "keywords": [
+        "recallfirst",
+        "build",
+        "sequence"
+      ]
+    }
+  ]
+}

@@ -165,42 +165,109 @@ Source type determines extraction tool (D-027). Never apply the LLM reasoning-ma
 
 ---
 
-## MCP Server (The Product)
+## MCP Server v2.0 (The Product)
 
 **File:** `surfaces/mcp/server.ts`
 **Transport:** stdio (runs as `npx tsx surfaces/mcp/server.ts`)
-**No web server required.** Standalone process.
+**Backend:** Local SQLite only (sqlite-vec + FTS5). No cloud dependencies.
 
-### Tools
+### Tools (9)
 
 | Tool | Tier | What it does |
 |------|------|-------------|
-| `get_brief` | L1 | ~400-token context snapshot (tensions, stalled items, stats) |
-| `search_knowledge` | L2 | Vector search over segments → top-K passages |
-| `search_graph` | L3 | 5 seed nodes → 1-hop edge expansion → cap 15 nodes |
-| `get_tensions` | L3 | Tension nodes ranked by edge count |
-| `get_stalled` | L3 | Nodes with stall_probability > threshold |
-| `get_status` | — | Knowledge base health (counts, timestamps, pending) |
-| `mark_resolved` | Write | Set `resolved_at` + zero `stall_probability` |
-| `add_note` | Write | Create source + segments from conversation |
+| `get_brief` | L1 | L4-aware context brief: thread summary by state, valid tensions, stalled threads |
+| `search` | L2+L3 | Hybrid retrieval (vec + BM25 + RRF) over segments AND knowledge graph in one call |
+| `get_tensions` | L3 | Active tensions, valid edges only (invalid_at filtered), with thread context |
+| `get_threads` | L4 | Thread-level view with state filter (replaces node-level get_stalled) |
+| `get_thread_detail` | L4 | Deep view: state history, members, related threads |
+| `get_next_steps` | L4 | Noonchi surface: prioritized next steps across threads |
+| `get_history` | L3 | Temporal query: graph state at a point in time, evolution tracking |
+| `add_note` | Write | Create source + segments from conversation (local embeddings) |
+| `mark_resolved` | Write | Resolve node or thread, propagates to containing threads |
 
-### Three-Tier Memory Model (D-038)
+### Graphiti Consistency
 
-| Tier | What | Size | Cost |
-|------|------|------|------|
-| L1 | `get_brief` — always-available context | ~400 tokens | Free (Supabase query) |
-| L2 | `search_knowledge` — segment retrieval | 25K+ segments | Embedding per query |
-| L3 | `search_graph` — graph traversal | 2K+ nodes | Embedding + traversal |
+The MCP tools are fully consistent with the L3 Graphiti-inspired infrastructure:
 
-L1 prevents unnecessary L2/L3 calls. L2 handles most queries. L3 surfaces structural reasoning.
+- **Hybrid search**: All retrieval uses vec + BM25 + RRF (not pure vector)
+- **Edge invalidation**: BFS expansion filters `invalid_at IS NULL`. Only current facts shown.
+- **Fact field**: Edges display natural-language `fact` descriptions when available (59% of edges)
+- **Episode provenance**: Edges show which source documents established the relationship
+- **Temporal queries**: `get_history` supports point-in-time graph state via `valid_at`/`invalid_at` ranges
 
-### Graph Retrieval (inside MCP server)
+### Retrieval Pipeline (inside MCP server)
 
-1. Embed query → vector similarity → 5 seed nodes
-2. Fetch all edges touching seeds (1-hop)
-3. Rank connected nodes by edge priority (tensions first)
-4. Cap at 15 total nodes
-5. Serialize as structured text for Claude
+1. Embed query via Nomic nomic-embed-text-v1.5 (768-dim, local ONNX)
+2. **Segments**: hybrid search (vec + BM25 + RRF) → top-K passages with source provenance
+3. **Graph**: hybrid node search → 5 seeds → BFS 1-hop expansion (filters invalidated + expired) → cap 15 nodes
+4. Edges serialized with `fact` field and episode provenance
+5. Tensions and contradictions surfaced first (edge priority ordering)
+
+---
+
+## L3 Entity Resolution
+
+**Script:** `npm run l3:resolve` → `engine/l3/entity-resolution.ts`
+
+Entity resolution runs after the main L3 upgrade (bitemporal + BM25 + hybrid search) to create cross-source edges between nodes that refer to the same real-world entity across different apps.
+
+**How it works:**
+1. For each node, retrieve nearest neighbors via hybrid search (vec kNN + BM25 + RRF)
+2. Candidates above a similarity threshold that share no existing edge are resolution targets
+3. A `resolves_to` edge is created between the duplicate nodes, linking the cross-source occurrences
+4. Result: cross-app threads that were previously invisible become detectable — e.g., a Gmail thread and an Apple Note about the same project are now graph-connected
+
+**Cross-source edges:** Entity resolution created 1,072 cross-source edges on the current corpus, increasing detectable cross-app threads from 4 → 16.
+
+**Relationship to L4 thread detection:** The hybrid thread detection approach in `engine/l4/detect-threads.ts` uses both embedding proximity (kNN clustering via Union-Find) and graph connectivity (post-clustering enrichment from L3 edges). Entity resolution feeds directly into the graph enrichment step — `resolves_to` edges between nodes from different sources become the signals that allow L4 to group cross-app activity into coherent threads. Without entity resolution, cross-source threads can only be detected by embedding proximity, which misses structurally distinct but topically related content.
+
+---
+
+## L4 — Task-State Awareness (Multi-View Architecture)
+
+L4 sits on top of L3's universal knowledge graph. L3 stores everything (beliefs, projects, transactions, events). L4 provides **domain-specific views** over that graph, each with its own state machine, thread detection strategy, and delivery rules.
+
+### Design Principle
+
+L3 is universal. L4 is pluggable. Different use cases load different L4 configs. The output format (NextStepResult) is the same regardless of domain — thread + state + action + next step. Any output surface (email, SMS, push notification, MCP) consumes the same signal shape.
+
+### L4 Views
+
+| View | What it tracks | State machine | Thread detection |
+|------|---------------|---------------|-----------------|
+| **View A: Project Tracker** | Active work with goals and endpoints | exploring → evaluating → decided → acting → stalled → completed | Anchored by `project`/`decision` nodes + multi-turn research segments |
+| **View B: Belief Tracker** | Evolving beliefs, values, intuitions | forming → reinforced → challenged → evolved → dormant | Anchored by `concept`/`tension` nodes (FUTURE) |
+| **View C: Event Log** | Transactions, receipts, communications | No state machine — timestamped record | Entity-anchored (one log per contact/service) (FUTURE) |
+
+**View A is the current implementation.** Views B and C are planned.
+
+### Domain Configurations
+
+The state machine, classification rules, and thread detection filters are defined in `engine/l4/domain-config.ts`. Two validated use cases:
+
+**Personal (default):** Projects, research, shopping journeys, career decisions. Sources: apple-notes, manual, perplexity, claude-thread. State machine: exploring → evaluating → decided → acting → stalled → completed.
+
+**Physio Office (planned):** Patient journeys from inquiry to treatment completion. Sources: email, SMS, booking system. State machine: inquiry → booked → attended → treatment_plan → active_treatment → follow_up → completed. Delivery has SLAs (respond within 48h, remind 24h before appointment).
+
+Both produce the same `NextStepResult` output format. The output layer doesn't need to change between domains.
+
+### How Temporal Signals Feed Classification (Phase 3)
+
+Edge `valid_at` / `invalid_at` from L3 provide temporal ground truth:
+- **Edge age**: days since newest valid edge. Old edges + no activity = stalled.
+- **Invalidation**: superseded beliefs/decisions signal the thread has evolved.
+- **Temporal override**: content patterns ("I'm building X") are only trusted if the thread has recent activity (< 7 days). Older content defaults to exploring/stalled.
+
+### Pipeline
+
+```
+Stage 0:   Entity resolution (L3 cross-source edges)
+Stage 0.5: Edge invalidation (L3 Phase 3 — mark superseded facts)
+Stage 1:   Thread detection (kNN + Union-Find + graph-edge merging)
+Stage 2:   State classification (temporal-first, content-secondary)
+Stage 3:   Evaluation gate (Sumimasen — should we surface this?)
+Stage 4:   Next-step inference (Haiku CoT → OmniActions)
+```
 
 ---
 

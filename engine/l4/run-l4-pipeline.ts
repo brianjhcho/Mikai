@@ -100,6 +100,18 @@ async function main(): Promise<void> {
     console.log(`  Duration: ${((Date.now() - startMs) / 1000).toFixed(1)}s\n`);
   }
 
+  // ── Stage 0.5: Edge Invalidation (Graphiti Phase 3) ──────────────────────
+  if (!inferOnly && !classifyOnly) {
+    console.log('── Stage 0.5: Edge Invalidation ────────────────');
+    const startMs = Date.now();
+    const { invalidateEdges } = await import('../l3/invalidate-edges.js');
+    const invResult = await invalidateEdges(db);
+    console.log(`  Contradiction invalidations: ${invResult.contradictionInvalidations}`);
+    console.log(`  Supersession invalidations: ${invResult.supersessionInvalidations}`);
+    console.log(`  Previously invalidated: ${invResult.alreadyInvalidated}`);
+    console.log(`  Duration: ${Date.now() - startMs}ms\n`);
+  }
+
   // ── Stage 1: Detect Threads ──────────────────────────────────────────────
   if (!classifyOnly && !inferOnly) {
     console.log('── Stage 1: Thread Detection ──────────────────');

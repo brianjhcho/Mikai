@@ -1,127 +1,81 @@
 /**
  * surfaces/mcp/server.ts
  *
- * MCP (Model Context Protocol) server that exposes MIKAI's knowledge graph to
+ * MCP server exposing MIKAI's knowledge graph + task-state awareness to
  * Claude Desktop, Cursor, and other MCP-compatible clients.
  *
- * Runs as a standalone stdio process — NOT inside Next.js. Loads .env.local
- * the same way the engine scripts do (manual line-by-line parse).
+ * Local-first: SQLite + sqlite-vec + FTS5. No cloud dependencies.
+ * Uses hybrid search (vec + BM25 + RRF) from the L3 Graphiti upgrade.
+ * L4-aware: threads, state classification, next steps.
  *
- * Tools exposed:
- *   search_knowledge  — vector similarity search over segments (Track C)
- *   search_graph      — seed nodes + 1-hop edge expansion (Track A/B)
- *   get_tensions      — nodes of type 'tension' ordered by edge count
- *   get_stalled       — nodes with stall_probability above threshold
- *   mark_resolved     — set resolved_at + stall_probability=0 on a node
- *   add_note          — create a source+segments from a conversation note
+ * Tools (9):
+ *   search           — Hybrid retrieval over segments + knowledge graph
+ *   get_brief        — L4-aware context brief (~400 tokens)
+ *   get_tensions     — Active tensions, valid edges only, with thread context
+ *   get_threads      — Thread-level view with state filter
+ *   get_thread_detail — Deep view on one thread
+ *   get_next_steps   — Noonchi surface: what to do next
+ *   get_history       — Temporal query: graph state at a point in time
+ *   add_note         — Save insight from conversation
+ *   mark_resolved    — Resolve a node or thread
  *
  * Usage:
  *   npx tsx surfaces/mcp/server.ts
  *   npm run mcp
  */
 
-import fs   from 'fs';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import os from 'os';
 import { z } from 'zod';
-import { McpServer }          from '@modelcontextprotocol/sdk/server/mcp.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { createClient }        from '@supabase/supabase-js';
+import {
+  openDatabase, initDatabase, getStats,
+  insertSource, insertSegments, updateNode,
+} from '../../lib/store-sqlite.js';
+import type { NodeRow, EdgeRow } from '../../lib/store-sqlite.js';
+import { embedText, embedDocuments } from '../../lib/embeddings-local.js';
+import { searchSegmentsHybrid, hybridGraphSearch } from '../../engine/l3/hybrid-search.js';
 import { initL4Schema } from '../../engine/l4/schema.js';
 import {
   getActiveThreads, getThread, getStalledThreads,
   getThreadsWithNextSteps, getThreadMembers, getL4Stats,
-  getTransitionHistory, getThreadEdges,
+  getTransitionHistory, getThreadEdges, getThreadsForNode,
+  updateThread,
 } from '../../engine/l4/store.js';
 import { inferForSingleThread } from '../../engine/l4/infer-next-step.js';
+import type Database from 'better-sqlite3';
 
-// ── Env loader ────────────────────────────────────────────────────────────────
-// Mirror the pattern used in engine/graph/build-segments.js
+// ── Database ─────────────────────────────────────────────────────────────────
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-function loadEnv(): void {
-  const envPath = path.join(__dirname, '../../.env.local');
+function getDbPath(): string {
+  const configPath = path.join(os.homedir(), '.mikai', 'config.json');
   try {
-    for (const line of fs.readFileSync(envPath, 'utf8').split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) continue;
-      const eqIdx = trimmed.indexOf('=');
-      if (eqIdx < 0) continue;
-      const key = trimmed.slice(0, eqIdx).trim();
-      const val = trimmed.slice(eqIdx + 1).trim();
-      if (!process.env[key]) process.env[key] = val;
-    }
-  } catch {
-    // .env.local not found — env assumed already set by caller
-  }
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    if (config.dbPath) return config.dbPath;
+  } catch { /* fall through */ }
+  return path.join(os.homedir(), '.mikai', 'mikai.db');
 }
 
-loadEnv();
-process.stderr.write('MIKAI MCP: env loaded\n');
+const dbPath = getDbPath();
+process.stderr.write(`MIKAI MCP: opening ${dbPath}\n`);
 
-// ── Clients ───────────────────────────────────────────────────────────────────
-
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
-const VOYAGE_API_KEY = process.env.VOYAGE_API_KEY;
-
-if (!process.env.MIKAI_LOCAL && (!SUPABASE_URL || !SUPABASE_KEY)) {
-  process.stderr.write('MIKAI MCP: Missing SUPABASE_URL or SUPABASE_SERVICE_KEY\n');
+let db: Database.Database;
+try {
+  db = openDatabase(dbPath);
+  initDatabase(db);
+  initL4Schema(db);
+  process.stderr.write('MIKAI MCP: database ready\n');
+} catch (err: any) {
+  process.stderr.write(`MIKAI MCP: database init failed — ${err.message}\n`);
   process.exit(1);
 }
 
-if (!process.env.MIKAI_LOCAL && !VOYAGE_API_KEY) {
-  process.stderr.write('MIKAI MCP: Missing VOYAGE_API_KEY\n');
-  process.exit(1);
-}
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-
-// ── Embeddings ────────────────────────────────────────────────────────────────
-// Inline copy of the embedText logic from lib/embeddings.ts.
-// The MCP server is a standalone process and cannot import @/ aliases.
-
-const VOYAGE_API_URL = 'https://api.voyageai.com/v1/embeddings';
-
-async function embedText(text: string): Promise<number[]> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 30_000);
-
-  try {
-    const response = await fetch(VOYAGE_API_URL, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${VOYAGE_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'voyage-3',
-        input: [text],
-        input_type: 'query',
-      }),
-      signal: controller.signal,
-    });
-
-    clearTimeout(timer);
-
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`Voyage AI error ${response.status}: ${error}`);
-    }
-
-    const data = await response.json() as { data: Array<{ embedding: number[] }> };
-    return data.data[0].embedding;
-  } catch (err) {
-    clearTimeout(timer);
-    if (err instanceof Error && err.name === 'AbortError') {
-      throw new Error('Voyage AI request timed out after 30s');
-    }
-    throw err;
-  }
-}
-
-// ── Edge priority (mirrors lib/graph-retrieval.ts — do not reorder) ───────────
+// ── Constants ────────────────────────────────────────────────────────────────
 
 const EDGE_PRIORITY: Record<string, number> = {
   unresolved_tension: 0,
@@ -132,697 +86,253 @@ const EDGE_PRIORITY: Record<string, number> = {
   extends:            5,
 };
 
-// ── Tool implementations ───────────────────────────────────────────────────────
+// ── Helpers ──────────────────────────────────────────────────────────────────
 
-/**
- * search_knowledge: embed query → search_segments RPC → formatted segments.
- * Mirrors searchSegments() + serializeSegments() from lib/segment-retrieval.ts.
- */
-async function searchKnowledge(query: string, matchCount: number): Promise<string> {
-  const embedding = await embedText(query);
-
-  const { data, error } = await supabase.rpc('search_segments', {
-    query_embedding: embedding,
-    match_count:     matchCount,
-  });
-
-  if (error) throw new Error(`search_segments RPC failed: ${error.message}`);
-
-  const segments = (data ?? []) as Array<{
-    id: string;
-    source_id: string;
-    topic_label: string;
-    processed_content: string;
-    similarity: number;
-    source_label: string;
-    source_type: string;
-    source_origin: string;
-  }>;
-
-  if (segments.length === 0) return 'No relevant segments found.';
-
-  const lines: string[] = ['## Relevant passages from your notes and threads\n'];
-
-  for (const seg of segments) {
-    const similarity = Math.round(seg.similarity * 100);
-    lines.push(`### [${seg.topic_label}]`);
-    lines.push(`Source: "${seg.source_label}" (${seg.source_origin}) — ${similarity}% match`);
-    lines.push('');
-    lines.push(seg.processed_content);
-    lines.push('');
-  }
-
-  return lines.join('\n');
+function timeAgo(ts: string | null | undefined): string {
+  if (!ts) return 'unknown';
+  const diff = Date.now() - new Date(ts).getTime();
+  const minutes = Math.floor(diff / 60_000);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
 }
 
-/**
- * search_graph: embed query → vector seed nodes → 1-hop edge expansion → serialized subgraph.
- * Mirrors searchSeeds() + buildSubgraph() + serializeSubgraph() from lib/graph-retrieval.ts.
- */
-async function searchGraph(query: string): Promise<string> {
-  const embedding = await embedText(query);
+/** Format an edge for display, using fact field and episode provenance when available. */
+function formatEdge(
+  edge: EdgeRow,
+  nodeMap: Map<string, NodeRow>,
+  opts?: { showProvenance?: boolean },
+): string | null {
+  const from = nodeMap.get(edge.from_node);
+  const to = nodeMap.get(edge.to_node);
+  if (!from || !to) return null;
 
-  // Find seed nodes via vector similarity
-  const { data: seedData, error: seedError } = await supabase.rpc('search_nodes', {
-    query_embedding: embedding,
-    match_count:     5,
-  });
+  // Use fact field for readable description when available, fall back to note
+  const description = edge.fact
+    ? edge.fact
+    : edge.note ?? '';
 
-  if (seedError) throw new Error(`search_nodes RPC failed: ${seedError.message}`);
+  let line = `[${from.label}] →${edge.relationship}→ [${to.label}]`;
+  if (description) line += ` — ${description}`;
 
-  const seedNodes = (seedData ?? []) as Array<{
-    id: string;
-    label: string;
-    content: string;
-    node_type: string;
-    similarity: number;
-  }>;
-
-  if (seedNodes.length === 0) return 'No relevant nodes found in the knowledge graph.';
-
-  const seedIds    = seedNodes.map((n) => n.id);
-  const seedIdSet  = new Set(seedIds);
-
-  // Fetch edges touching any seed node (1-hop expansion)
-  const { data: rawEdges, error: edgeError } = await supabase
-    .from('edges')
-    .select('from_node, to_node, relationship, note')
-    .or(`from_node.in.(${seedIds.join(',')}),to_node.in.(${seedIds.join(',')})`);
-
-  if (edgeError) {
-    // Return seed nodes only if edge fetch fails
-    return serializeNodes(seedNodes.map((n) => ({ ...n, isSeed: true })), [], []);
-  }
-
-  const edges = rawEdges ?? [];
-
-  // Rank connected (non-seed) nodes by best edge priority
-  const connectedPriority = new Map<string, number>();
-
-  for (const edge of edges) {
-    const priority = EDGE_PRIORITY[edge.relationship] ?? 99;
-    for (const nodeId of [edge.from_node, edge.to_node]) {
-      if (seedIdSet.has(nodeId)) continue;
-      const current = connectedPriority.get(nodeId) ?? 99;
-      if (priority < current) connectedPriority.set(nodeId, priority);
-    }
-  }
-
-  const remainingSlots = Math.max(0, 15 - seedNodes.length);
-  const connectedIds = [...connectedPriority.entries()]
-    .sort((a, b) => a[1] - b[1])
-    .slice(0, remainingSlots)
-    .map(([id]) => id);
-
-  let connectedNodes: Array<{ id: string; label: string; content: string; node_type: string; isSeed: false }> = [];
-
-  if (connectedIds.length > 0) {
-    const { data: nodeData } = await supabase
-      .from('nodes')
-      .select('id, label, content, node_type')
-      .in('id', connectedIds);
-
-    connectedNodes = (nodeData ?? []).map((n) => ({ ...n, isSeed: false as const }));
-  }
-
-  const allIds = new Set([...seedIds, ...connectedIds]);
-  const filteredEdges = edges.filter(
-    (e) => allIds.has(e.from_node) && allIds.has(e.to_node),
-  );
-
-  return serializeNodes(
-    [
-      ...seedNodes.map((n) => ({ ...n, isSeed: true as const })),
-      ...connectedNodes,
-    ],
-    filteredEdges,
-    seedIds,
-  );
-}
-
-function serializeNodes(
-  nodes: Array<{ id: string; label: string; content: string; node_type: string; isSeed: boolean; similarity?: number }>,
-  edges: Array<{ from_node: string; to_node: string; relationship: string; note: string | null }>,
-  seedIds: string[],
-): string {
-  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
-  const seedIdSet = new Set(seedIds);
-  const lines: string[] = [];
-
-  const seedNodes      = nodes.filter((n) => n.isSeed);
-  const connectedNodes = nodes.filter((n) => !n.isSeed);
-
-  const highPriorityEdges = edges.filter(
-    (e) => e.relationship === 'unresolved_tension' || e.relationship === 'contradicts',
-  );
-  const otherEdges = edges.filter(
-    (e) => e.relationship !== 'unresolved_tension' && e.relationship !== 'contradicts',
-  );
-
-  lines.push('## Nodes retrieved by semantic similarity\n');
-  for (const node of seedNodes) {
-    lines.push(`[${node.node_type.toUpperCase()}: ${node.label}]`);
-    lines.push(node.content);
-    lines.push('');
-  }
-
-  if (highPriorityEdges.length > 0) {
-    lines.push('## Active tensions and contradictions\n');
-    for (const edge of highPriorityEdges) {
-      const from = nodeMap.get(edge.from_node);
-      const to   = nodeMap.get(edge.to_node);
-      if (!from || !to) continue;
-      lines.push(`[${from.label}] ←${edge.relationship}→ [${to.label}]`);
-      if (edge.note) lines.push(`  ${edge.note}`);
-      lines.push('');
-    }
-  }
-
-  if (connectedNodes.length > 0) {
-    lines.push('## Connected nodes (one hop from seed nodes)\n');
-    for (const node of connectedNodes) {
-      lines.push(`[${node.node_type.toUpperCase()}: ${node.label}]`);
-      lines.push(node.content);
-      const relatedEdges = edges.filter(
-        (e) => e.from_node === node.id || e.to_node === node.id,
-      );
-      for (const edge of relatedEdges) {
-        const otherId = edge.from_node === node.id ? edge.to_node : edge.from_node;
-        const other   = nodeMap.get(otherId);
-        if (other) {
-          lines.push(`  → ${edge.relationship} [${other.label}]${edge.note ? `: ${edge.note}` : ''}`);
+  // Episode provenance: show source labels that established this edge
+  if (opts?.showProvenance) {
+    try {
+      const episodes: string[] = typeof edge.episodes === 'string'
+        ? JSON.parse(edge.episodes)
+        : (edge.episodes ?? []);
+      const validEpisodes = episodes.filter(Boolean);
+      if (validEpisodes.length > 0) {
+        const placeholders = validEpisodes.map(() => '?').join(',');
+        const sources = db.prepare(
+          `SELECT label, source FROM sources WHERE id IN (${placeholders})`,
+        ).all(...validEpisodes) as { label: string; source: string }[];
+        if (sources.length > 0) {
+          const sourceStr = sources.map(s => `${s.label} (${s.source})`).join(', ');
+          line += `\n  _Evidence: ${sourceStr}_`;
         }
       }
+    } catch { /* episodes parse failed, skip */ }
+  }
+
+  // Temporal context
+  if (edge.valid_at) {
+    line += `\n  _Established: ${edge.valid_at}_`;
+  }
+
+  return line;
+}
+
+// ── Tool: search ─────────────────────────────────────────────────────────────
+// Unified hybrid search: vec + BM25 + RRF over both segments and graph.
+// Returns passages AND knowledge graph structure in one response.
+
+async function search(query: string, matchCount: number): Promise<string> {
+  const embedding = await embedText(query);
+  const lines: string[] = [];
+
+  // ── Hybrid segment search ──────────────────────────────────────────────
+  const segments = searchSegmentsHybrid(db, query, embedding, matchCount);
+
+  if (segments.length > 0) {
+    lines.push('## Relevant passages\n');
+    for (const { item: seg, score, source } of segments) {
+      lines.push(`### [${seg.topic_label}]`);
+      lines.push(`Source: "${seg.source_label ?? 'unknown'}" (${seg.source_origin ?? 'unknown'}) — match: ${source}`);
+      lines.push('');
+      lines.push(seg.processed_content);
       lines.push('');
     }
   }
 
-  if (otherEdges.length > 0) {
-    lines.push('## Other relationships\n');
-    for (const edge of otherEdges) {
-      const from = nodeMap.get(edge.from_node);
-      const to   = nodeMap.get(edge.to_node);
-      if (!from || !to) continue;
-      const noteStr = edge.note ? ` — ${edge.note}` : '';
-      lines.push(`[${from.label}] →${edge.relationship}→ [${to.label}]${noteStr}`);
+  // ── Hybrid graph search ────────────────────────────────────────────────
+  const graph = hybridGraphSearch(db, query, embedding, { limit: 15 });
+
+  if (graph.nodes.length > 0) {
+    // Filter out invalidated and expired edges — only show current facts
+    const validEdges = graph.edges.filter(e => !e.invalid_at && !e.expired_at);
+
+    const seedIdSet = new Set(graph.seeds);
+    const seedNodes = graph.nodes.filter(n => seedIdSet.has(n.id));
+    const connectedNodes = graph.nodes.filter(n => !seedIdSet.has(n.id));
+    const nodeMap = new Map(graph.nodes.map(n => [n.id, n]));
+
+    const highPriority = validEdges.filter(
+      e => e.relationship === 'unresolved_tension' || e.relationship === 'contradicts',
+    );
+    const otherEdges = validEdges.filter(
+      e => e.relationship !== 'unresolved_tension' && e.relationship !== 'contradicts',
+    );
+
+    lines.push('\n## Knowledge graph\n');
+
+    lines.push('### Seed nodes\n');
+    for (const node of seedNodes) {
+      lines.push(`[${node.node_type.toUpperCase()}: ${node.label}]`);
+      lines.push(node.content);
+      lines.push('');
+    }
+
+    if (highPriority.length > 0) {
+      lines.push('### Active tensions and contradictions\n');
+      for (const edge of highPriority) {
+        const line = formatEdge(edge, nodeMap, { showProvenance: true });
+        if (line) { lines.push(line); lines.push(''); }
+      }
+    }
+
+    if (connectedNodes.length > 0) {
+      lines.push('### Connected nodes\n');
+      for (const node of connectedNodes) {
+        lines.push(`[${node.node_type.toUpperCase()}: ${node.label}]`);
+        lines.push(node.content);
+        const related = validEdges.filter(
+          e => e.from_node === node.id || e.to_node === node.id,
+        );
+        for (const edge of related) {
+          const line = formatEdge(edge, nodeMap);
+          if (line) lines.push(`  ${line}`);
+        }
+        lines.push('');
+      }
+    }
+
+    if (otherEdges.length > 0) {
+      lines.push('### Other relationships\n');
+      for (const edge of otherEdges) {
+        const line = formatEdge(edge, nodeMap);
+        if (line) lines.push(line);
+      }
     }
   }
 
+  if (lines.length === 0) return 'No results found.';
   return lines.join('\n');
 }
 
-/**
- * get_tensions: query nodes table for type='tension', ordered by edge count DESC.
- */
-async function getTensions(limit: number): Promise<string> {
-  // Fetch tension nodes
-  const { data: tensions, error } = await supabase
-    .from('nodes')
-    .select('id, label, content, node_type, stall_probability')
-    .eq('node_type', 'tension')
-    .limit(limit * 3); // over-fetch to allow edge-count ranking
+// ── Tool: get_brief ──────────────────────────────────────────────────────────
+// L4-aware context brief: thread summary, valid tensions, stalled threads.
 
-  if (error) throw new Error(`get_tensions query failed: ${error.message}`);
-  if (!tensions || tensions.length === 0) return 'No tension nodes found in the knowledge graph.';
-
-  const tensionIds = tensions.map((n) => n.id);
-
-  // Count edges per tension node
-  const { data: edgeData } = await supabase
-    .from('edges')
-    .select('from_node, to_node')
-    .or(`from_node.in.(${tensionIds.join(',')}),to_node.in.(${tensionIds.join(',')})`);
-
-  const edgeCounts = new Map<string, number>();
-  for (const id of tensionIds) edgeCounts.set(id, 0);
-
-  for (const edge of edgeData ?? []) {
-    if (edgeCounts.has(edge.from_node)) edgeCounts.set(edge.from_node, (edgeCounts.get(edge.from_node) ?? 0) + 1);
-    if (edgeCounts.has(edge.to_node))   edgeCounts.set(edge.to_node,   (edgeCounts.get(edge.to_node)   ?? 0) + 1);
-  }
-
-  const ranked = tensions
-    .sort((a, b) => (edgeCounts.get(b.id) ?? 0) - (edgeCounts.get(a.id) ?? 0))
-    .slice(0, limit);
-
-  const lines: string[] = [`## Top ${ranked.length} tension nodes (by edge count)\n`];
-
-  for (const node of ranked) {
-    const count = edgeCounts.get(node.id) ?? 0;
-    const stall = node.stall_probability != null
-      ? ` | stall_probability: ${Number(node.stall_probability).toFixed(2)}`
-      : '';
-    lines.push(`### ${node.label} (${count} edges${stall})`);
-    lines.push(node.content);
-    lines.push('');
-  }
-
-  return lines.join('\n');
-}
-
-/**
- * get_status: aggregate counts and timestamps for a knowledge base health snapshot.
- */
-async function getStatus(): Promise<string> {
-  // Run all independent queries in parallel
-  const [
-    sourcesAll,
-    sourcesByType,
-    segmentsCount,
-    nodesCount,
-    lastIngestion,
-    lastSegmentation,
-    sourcesInNodes,
-    sourcesInSegments,
-  ] = await Promise.all([
-    // Total source count
-    supabase.from('sources').select('id', { count: 'exact', head: true }),
-    // Source count by type
-    supabase.from('sources').select('source'),
-    // Total segment count
-    supabase.from('segments').select('id', { count: 'exact', head: true }),
-    // Total node count
-    supabase.from('nodes').select('id', { count: 'exact', head: true }),
-    // Most recent source ingestion
-    supabase.from('sources').select('created_at').order('created_at', { ascending: false }).limit(1),
-    // Most recent segment creation
-    supabase.from('segments').select('created_at').order('created_at', { ascending: false }).limit(1),
-    // Source IDs already in nodes (for pending graph extraction)
-    supabase.from('nodes').select('source_id'),
-    // Source IDs already in segments (for pending segmentation)
-    supabase.from('segments').select('source_id'),
-  ]);
-
-  if (sourcesAll.error) throw new Error(`get_status sources query failed: ${sourcesAll.error.message}`);
-  if (segmentsCount.error) throw new Error(`get_status segments query failed: ${segmentsCount.error.message}`);
-  if (nodesCount.error) throw new Error(`get_status nodes query failed: ${nodesCount.error.message}`);
-
-  const totalSources   = sourcesAll.count ?? 0;
-  const totalSegments  = segmentsCount.count ?? 0;
-  const totalNodes     = nodesCount.count ?? 0;
-
-  // Count by source type
-  const typeCounts: Record<string, number> = {};
-  for (const row of sourcesByType.data ?? []) {
-    const t = (row.source as string) ?? 'unknown';
-    typeCounts[t] = (typeCounts[t] ?? 0) + 1;
-  }
-
-  const knownTypes = ['apple-notes', 'perplexity', 'claude-thread', 'gmail', 'imessage', 'manual'];
-  const otherCount = Object.entries(typeCounts)
-    .filter(([k]) => !knownTypes.includes(k))
-    .reduce((sum, [, v]) => sum + v, 0);
-
-  // Format timestamps
-  function fmtTs(ts: string | null | undefined): string {
-    if (!ts) return 'N/A';
-    const d = new Date(ts);
-    const yyyy = d.getUTCFullYear();
-    const mm   = String(d.getUTCMonth() + 1).padStart(2, '0');
-    const dd   = String(d.getUTCDate()).padStart(2, '0');
-    const hh   = String(d.getUTCHours()).padStart(2, '0');
-    const min  = String(d.getUTCMinutes()).padStart(2, '0');
-    return `${yyyy}-${mm}-${dd} ${hh}:${min} UTC`;
-  }
-
-  const lastIngestTs  = fmtTs(lastIngestion.data?.[0]?.created_at);
-  const lastSegmentTs = fmtTs(lastSegmentation.data?.[0]?.created_at);
-
-  // Pending graph extraction: sources with chunk_count > 0 not in nodes
-  const nodeSourceIds = new Set((nodesCount.error ? [] : (sourcesInNodes.data ?? [])).map((r: { source_id: string }) => r.source_id));
-  const segSourceIds  = new Set((segmentsCount.error ? [] : (sourcesInSegments.data ?? [])).map((r: { source_id: string }) => r.source_id));
-
-  const { data: pendingGraphSources } = await supabase
-    .from('sources')
-    .select('id')
-    .gt('chunk_count', 0);
-
-  const pendingGraph = (pendingGraphSources ?? []).filter((r) => !nodeSourceIds.has(r.id)).length;
-  const pendingSegmentation = (pendingGraphSources ?? []).filter((r) => !segSourceIds.has(r.id)).length;
-
-  // Format numbers with commas
-  function fmt(n: number): string {
-    return n.toLocaleString('en-US');
-  }
-
-  const typeLines = knownTypes
-    .filter((t) => (typeCounts[t] ?? 0) > 0)
-    .map((t) => `  ${t}: ${fmt(typeCounts[t] ?? 0)}`);
-  if (otherCount > 0) typeLines.push(`  other: ${fmt(otherCount)}`);
-
-  const lines = [
-    'MIKAI Knowledge Base Status',
-    '────────────────────────────',
-    `Sources: ${fmt(totalSources)} total`,
-    ...typeLines,
-    '',
-    `Segments: ${fmt(totalSegments)}`,
-    `Nodes: ${fmt(totalNodes)}`,
-    '',
-    `Last ingestion: ${lastIngestTs}`,
-    `Last segmentation: ${lastSegmentTs}`,
-    '',
-    `Pending graph extraction: ${fmt(pendingGraph)} sources`,
-    `Pending segmentation: ${fmt(pendingSegmentation)} sources`,
-  ];
-
-  return lines.join('\n');
-}
-
-/**
- * get_brief: compact ~400 token knowledge base context block for L1 injection.
- */
 async function getBrief(): Promise<string> {
-  // Run all queries in parallel
-  const [
-    sourcesCount,
-    sourcesByType,
-    segmentsCount,
-    tensionNodes,
-    stalledNodes,
-    lastSync,
-    lastSegmentation,
-  ] = await Promise.all([
-    // a) Total source count
-    supabase.from('sources').select('id', { count: 'exact', head: true }),
-    // b) Source count by type
-    supabase.from('sources').select('source'),
-    // a) Total segment count
-    supabase.from('segments').select('id', { count: 'exact', head: true }),
-    // c) Top tension nodes (over-fetch to allow edge-count ranking)
-    supabase.from('nodes').select('id, label').eq('node_type', 'tension').limit(30),
-    // d) Top stalled items
-    supabase.from('nodes').select('id, label').gt('stall_probability', 0.7).order('stall_probability', { ascending: false }).limit(3),
-    // e) Last sync timestamp
-    supabase.from('sources').select('created_at').order('created_at', { ascending: false }).limit(1),
-    // f) Last segmentation timestamp
-    supabase.from('segments').select('created_at').order('created_at', { ascending: false }).limit(1),
-  ]);
+  const stats = getStats(db);
 
-  const totalSources  = sourcesCount.count ?? 0;
-  const totalSegments = segmentsCount.count ?? 0;
+  // L4 thread summary
+  let threadSummary = '';
+  try {
+    const l4Stats = getL4Stats(db);
+    const stateStr = Object.entries(l4Stats.byState)
+      .filter(([, v]) => v > 0)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join(', ');
+    threadSummary = `\nThreads: ${l4Stats.totalThreads} total (${stateStr})`;
+  } catch { /* L4 tables may not exist yet */ }
 
-  // b) Group source types manually
-  const typeCounts: Record<string, number> = {};
-  for (const row of sourcesByType.data ?? []) {
-    const t = (row.source as string) ?? 'unknown';
-    typeCounts[t] = (typeCounts[t] ?? 0) + 1;
-  }
-  const sourceTypesStr = Object.entries(typeCounts)
-    .sort((a, b) => b[1] - a[1])
-    .map(([t, n]) => `${t} (${n})`)
-    .join(', ');
+  // Top 5 tensions — valid edges only, resolved filtered out
+  const tensions = db.prepare(`
+    SELECT n.id, n.label FROM nodes n
+    WHERE n.node_type = 'tension' AND n.resolved_at IS NULL
+    ORDER BY n.created_at DESC
+    LIMIT 30
+  `).all() as { id: string; label: string }[];
 
-  // c) Rank tension nodes by edge count
-  const tensionIds = (tensionNodes.data ?? []).map((n) => n.id);
-  let rankedTensions: Array<{ id: string; label: string }> = tensionNodes.data ?? [];
-
-  if (tensionIds.length > 0) {
-    const { data: edgeData } = await supabase
-      .from('edges')
-      .select('from_node, to_node')
-      .or(`from_node.in.(${tensionIds.join(',')}),to_node.in.(${tensionIds.join(',')})`);
+  let rankedTensions: { id: string; label: string }[] = [];
+  if (tensions.length > 0) {
+    const tensionIds = tensions.map(t => t.id);
+    const placeholders = tensionIds.map(() => '?').join(',');
+    const edgeData = db.prepare(`
+      SELECT from_node, to_node FROM edges
+      WHERE (from_node IN (${placeholders}) OR to_node IN (${placeholders}))
+        AND invalid_at IS NULL AND expired_at IS NULL
+    `).all(...tensionIds, ...tensionIds) as { from_node: string; to_node: string }[];
 
     const edgeCounts = new Map<string, number>();
     for (const id of tensionIds) edgeCounts.set(id, 0);
-    for (const edge of edgeData ?? []) {
+    for (const edge of edgeData) {
       if (edgeCounts.has(edge.from_node)) edgeCounts.set(edge.from_node, (edgeCounts.get(edge.from_node) ?? 0) + 1);
-      if (edgeCounts.has(edge.to_node))   edgeCounts.set(edge.to_node,   (edgeCounts.get(edge.to_node)   ?? 0) + 1);
+      if (edgeCounts.has(edge.to_node)) edgeCounts.set(edge.to_node, (edgeCounts.get(edge.to_node) ?? 0) + 1);
     }
-    rankedTensions = (tensionNodes.data ?? [])
+    rankedTensions = tensions
       .sort((a, b) => (edgeCounts.get(b.id) ?? 0) - (edgeCounts.get(a.id) ?? 0))
       .slice(0, 5);
   }
 
-  // e) Format last sync as relative time
-  function timeAgo(ts: string | null | undefined): string {
-    if (!ts) return 'unknown';
-    const diff = Date.now() - new Date(ts).getTime();
-    const minutes = Math.floor(diff / 60_000);
-    if (minutes < 60) return `${minutes}m ago`;
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours}h ago`;
-    return `${Math.floor(hours / 24)}d ago`;
-  }
-
-  const syncedAgo = timeAgo(lastSync.data?.[0]?.created_at);
-
-  const tensionLines = rankedTensions.map((n) => `• ${n.label}`).join('\n');
-  const stalledLines = (stalledNodes.data ?? []).map((n) => `• ${n.label}`).join('\n');
-
-  const lines = [
-    `MIKAI Knowledge Base | ${totalSources} sources | ${totalSegments} segments | synced ${syncedAgo}`,
-    '',
-    'Tensions (top 5):',
-    tensionLines || '• (none)',
-    '',
-    'Stalled (top 3):',
-    stalledLines || '• (none)',
-    '',
-    `Active source types: ${sourceTypesStr || 'none'}`,
-    '',
-    '→ For depth on any topic: search_knowledge, search_graph, get_tensions, get_stalled tools available',
-  ];
-
-  return lines.join('\n');
-}
-
-/**
- * get_stalled: query nodes with stall_probability > threshold, ordered DESC.
- */
-async function getStalled(threshold: number): Promise<string> {
-  const { data, error } = await supabase
-    .from('nodes')
-    .select('id, label, content, node_type, stall_probability')
-    .gt('stall_probability', threshold)
-    .order('stall_probability', { ascending: false })
-    .limit(20);
-
-  if (error) throw new Error(`get_stalled query failed: ${error.message}`);
-  if (!data || data.length === 0) {
-    return `No stalled nodes found with stall_probability > ${threshold}.`;
-  }
-
-  const lines: string[] = [`## Stalled nodes (stall_probability > ${threshold})\n`];
-
-  for (const node of data) {
-    const prob = Number(node.stall_probability).toFixed(2);
-    lines.push(`### [${node.node_type.toUpperCase()}] ${node.label} — stall: ${prob}`);
-    lines.push(node.content);
-    lines.push('');
-  }
-
-  return lines.join('\n');
-}
-
-// ── embedDocuments: batch embed multiple texts as documents ───────────────────
-
-async function embedDocuments(texts: string[]): Promise<number[][]> {
-  const response = await fetch(VOYAGE_API_URL, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${VOYAGE_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'voyage-3',
-      input: texts,
-      input_type: 'document',
-    }),
-  });
-
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Voyage AI error ${response.status}: ${error}`);
-  }
-
-  const data = await response.json() as { data: Array<{ embedding: number[] }> };
-  return data.data.map((d) => d.embedding);
-}
-
-/**
- * mark_resolved: set resolved_at = now() and stall_probability = 0 on a node.
- */
-async function markResolved(node_id: string): Promise<string> {
-  // First fetch the node label for the confirmation message
-  const { data: node, error: fetchError } = await supabase
-    .from('nodes')
-    .select('id, label')
-    .eq('id', node_id)
-    .single();
-
-  if (fetchError || !node) {
-    return `Node not found: no node with id "${node_id}".`;
-  }
-
-  const { error: updateError } = await supabase
-    .from('nodes')
-    .update({
-      resolved_at:      new Date().toISOString(),
-      stall_probability: 0,
-    })
-    .eq('id', node_id);
-
-  if (updateError) throw new Error(`mark_resolved update failed: ${updateError.message}`);
-
-  return `Node "${node.label}" marked as resolved.`;
-}
-
-/**
- * add_note: create a source + segments from a note added via conversation.
- * The note is immediately embedded and searchable via search_knowledge.
- */
-async function addNote(content: string, label?: string): Promise<string> {
-  const noteLabel = label ?? content.slice(0, 60).trimEnd();
-
-  // Insert source row
-  const { data: source, error: sourceError } = await supabase
-    .from('sources')
-    .insert({
-      raw_content: content,
-      label:       noteLabel,
-      source:      'mcp-note',
-      type:        'note',
-      chunk_count: 1,
-    })
-    .select('id')
-    .single();
-
-  if (sourceError || !source) {
-    throw new Error(`add_note source insert failed: ${sourceError?.message ?? 'no data returned'}`);
-  }
-
-  const sourceId = source.id as string;
-
-  // Split content into segments
-  const { smartSplit } = await import('../../engine/graph/smart-split.js') as {
-    smartSplit: (content: string, sourceOrigin: string) => Array<{ topic_label: string; condensed_content: string }>;
-  };
-
-  const splits = smartSplit(content, 'mcp-note');
-
-  // Fall back to a single segment if splitter returns nothing (short notes)
-  const segments = splits.length > 0
-    ? splits
-    : [{ topic_label: noteLabel, condensed_content: content }];
-
-  // Embed all segments in one batch call
-  const embeddings = await embedDocuments(segments.map((s) => s.condensed_content));
-
-  // Insert segments
-  const segmentRows = segments.map((s, i) => ({
-    source_id:         sourceId,
-    topic_label:       s.topic_label,
-    processed_content: s.condensed_content,
-    embedding:         embeddings[i],
-  }));
-
-  const { error: segError } = await supabase
-    .from('segments')
-    .insert(segmentRows);
-
-  if (segError) throw new Error(`add_note segment insert failed: ${segError.message}`);
-
-  return `Note saved: '${noteLabel}' — ${segments.length} segment(s) created.`;
-}
-
-// ── Local SQLite backend (when MIKAI_LOCAL=true) ──────────────────────────────
-
-const USE_LOCAL = process.env.MIKAI_LOCAL === 'true';
-let localDb: any = null;
-let localStore: any = null;
-let localEmbed: ((text: string) => Promise<number[]>) | null = null;
-let localEmbedDocs: ((texts: string[]) => Promise<number[][]>) | null = null;
-
-if (USE_LOCAL) {
-  process.stderr.write('MIKAI MCP: using local SQLite backend\n');
-  const homedir = (await import('os')).homedir();
-  const configPath = (await import('path')).join(homedir, '.mikai', 'config.json');
+  // Top 3 stalled threads (thread-level, not node-level)
+  let stalledLines = '• (none)';
   try {
-    const config = JSON.parse((await import('fs')).readFileSync(configPath, 'utf8'));
-    localStore = await import('../../lib/store-sqlite.js');
-    localDb = localStore.openDatabase(config.dbPath);
-    initL4Schema(localDb);
-    const embedMod = await import('../../lib/embeddings-local.js');
-    localEmbed = embedMod.embedText;
-    localEmbedDocs = embedMod.embedDocuments;
-    process.stderr.write(`MIKAI MCP: SQLite loaded (${config.dbPath})\n`);
-  } catch (err: any) {
-    process.stderr.write(`MIKAI MCP: local backend failed — ${err.message}\n`);
-    process.stderr.write('MIKAI MCP: falling back to Supabase\n');
-  }
-}
-
-// ── Local tool implementations ────────────────────────────────────────────────
-
-async function localSearchKnowledge(query: string, matchCount: number): Promise<string> {
-  if (!localDb || !localEmbed || !localStore) throw new Error('Local backend not initialized');
-  const embedding = await localEmbed(query);
-  const segments = localStore.searchSegments(localDb, embedding, matchCount);
-  if (segments.length === 0) return 'No relevant segments found.';
-
-  const lines: string[] = ['## Relevant passages from your notes and threads\n'];
-  for (const seg of segments) {
-    const similarity = Math.round((seg.similarity ?? 0) * 100);
-    lines.push(`### [${seg.topic_label}]`);
-    lines.push(`Source: "${seg.source_label ?? 'unknown'}" (${seg.source_origin ?? 'unknown'}) — ${similarity}% match`);
-    lines.push('');
-    lines.push(seg.processed_content);
-    lines.push('');
-  }
-  return lines.join('\n');
-}
-
-async function localSearchGraph(query: string): Promise<string> {
-  if (!localDb || !localEmbed || !localStore) throw new Error('Local backend not initialized');
-  const embedding = await localEmbed(query);
-  const seedNodes = localStore.searchNodes(localDb, embedding, 5);
-  if (seedNodes.length === 0) return 'No relevant nodes found in the knowledge graph.';
-
-  const seedIds = seedNodes.map((n: any) => n.id);
-  const seedIdSet = new Set(seedIds);
-  const edges = localStore.getEdgesTouchingNodes(localDb, seedIds);
-
-  const connectedPriority = new Map<string, number>();
-  for (const edge of edges) {
-    const priority = EDGE_PRIORITY[edge.relationship] ?? 99;
-    for (const nodeId of [edge.from_node, edge.to_node]) {
-      if (seedIdSet.has(nodeId)) continue;
-      const current = connectedPriority.get(nodeId) ?? 99;
-      if (priority < current) connectedPriority.set(nodeId, priority);
+    const stalled = getStalledThreads(db, 0.3, 3);
+    if (stalled.length > 0) {
+      stalledLines = stalled.map(t => `• ${t.label} (${timeAgo(t.last_activity_at)})`).join('\n');
     }
-  }
+  } catch { /* L4 may not exist */ }
 
-  const remainingSlots = Math.max(0, 15 - seedNodes.length);
-  const connectedIds = [...connectedPriority.entries()]
-    .sort((a, b) => a[1] - b[1])
-    .slice(0, remainingSlots)
-    .map(([id]) => id);
+  const tensionLines = rankedTensions.length > 0
+    ? rankedTensions.map(n => `• ${n.label}`).join('\n')
+    : '• (none)';
 
-  let connectedNodes: any[] = [];
-  if (connectedIds.length > 0) {
-    const placeholders = connectedIds.map(() => '?').join(',');
-    connectedNodes = localDb.prepare(`SELECT * FROM nodes WHERE id IN (${placeholders})`).all(...connectedIds)
-      .map((n: any) => ({ ...n, isSeed: false }));
-  }
+  const sourceTypesStr = Object.entries(stats.sourcesByType)
+    .sort((a, b) => (b[1] as number) - (a[1] as number))
+    .map(([t, n]) => `${t} (${n})`)
+    .join(', ');
 
-  const allIds = new Set([...seedIds, ...connectedIds]);
-  const filteredEdges = edges.filter((e: any) => allIds.has(e.from_node) && allIds.has(e.to_node));
-
-  return serializeNodes(
-    [...seedNodes.map((n: any) => ({ ...n, isSeed: true })), ...connectedNodes],
-    filteredEdges,
-    seedIds,
-  );
+  return [
+    `MIKAI | ${stats.totalSources} sources | ${stats.totalSegments} segments | ${stats.totalNodes} nodes | synced ${timeAgo(stats.lastIngestion)}`,
+    threadSummary,
+    '',
+    'Active tensions (valid edges only):',
+    tensionLines,
+    '',
+    'Stalled threads:',
+    stalledLines,
+    '',
+    `Sources: ${sourceTypesStr || 'none'}`,
+    '',
+    '→ Tools: search, get_tensions, get_threads, get_thread_detail, get_next_steps, get_history',
+  ].join('\n');
 }
 
-async function localGetTensions(limit: number): Promise<string> {
-  if (!localDb || !localStore) throw new Error('Local backend not initialized');
-  const tensions = localStore.getNodesByType(localDb, 'tension', limit);
-  if (tensions.length === 0) return 'No tension nodes found in the knowledge graph.';
+// ── Tool: get_tensions ───────────────────────────────────────────────────────
+// Active tensions filtered by validity + recency, with thread context.
 
-  const tensionIds = tensions.map((n: any) => n.id);
-  const edgeData = localStore.getEdgesTouchingNodes(localDb, tensionIds);
+async function getTensions(limit: number): Promise<string> {
+  const tensions = db.prepare(`
+    SELECT n.id, n.label, n.content, n.node_type, n.stall_probability, n.created_at
+    FROM nodes n
+    WHERE n.node_type = 'tension' AND n.resolved_at IS NULL
+    LIMIT ?
+  `).all(limit * 3) as (NodeRow & { created_at: string })[];
+
+  if (tensions.length === 0) return 'No active tension nodes found.';
+
+  const tensionIds = tensions.map(t => t.id);
+  const placeholders = tensionIds.map(() => '?').join(',');
+
+  // Count only VALID edges (not invalidated or expired)
+  const edgeData = db.prepare(`
+    SELECT from_node, to_node FROM edges
+    WHERE (from_node IN (${placeholders}) OR to_node IN (${placeholders}))
+      AND invalid_at IS NULL AND expired_at IS NULL
+  `).all(...tensionIds, ...tensionIds) as { from_node: string; to_node: string }[];
 
   const edgeCounts = new Map<string, number>();
   for (const id of tensionIds) edgeCounts.set(id, 0);
@@ -831,173 +341,385 @@ async function localGetTensions(limit: number): Promise<string> {
     if (edgeCounts.has(edge.to_node)) edgeCounts.set(edge.to_node, (edgeCounts.get(edge.to_node) ?? 0) + 1);
   }
 
-  const ranked = tensions.sort((a: any, b: any) => (edgeCounts.get(b.id) ?? 0) - (edgeCounts.get(a.id) ?? 0)).slice(0, limit);
+  // Rank by valid edge count, recency as tiebreaker
+  const ranked = tensions
+    .sort((a, b) => {
+      const countDiff = (edgeCounts.get(b.id) ?? 0) - (edgeCounts.get(a.id) ?? 0);
+      if (countDiff !== 0) return countDiff;
+      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+    })
+    .slice(0, limit);
 
-  const lines: string[] = [`## Top ${ranked.length} tension nodes (by edge count)\n`];
+  const lines: string[] = [`## Active tensions (${ranked.length}, valid edges only)\n`];
+
   for (const node of ranked) {
     const count = edgeCounts.get(node.id) ?? 0;
-    const stall = node.stall_probability != null ? ` | stall_probability: ${Number(node.stall_probability).toFixed(2)}` : '';
-    lines.push(`### ${node.label} (${count} edges${stall})`);
+
+    // Show which threads this tension belongs to
+    let threadInfo = '';
+    try {
+      const threads = getThreadsForNode(db, node.id);
+      if (threads.length > 0) {
+        threadInfo = ` | in: ${threads.map(t => `"${t.label}" [${t.state}]`).join(', ')}`;
+      }
+    } catch { /* L4 may not exist */ }
+
+    lines.push(`### ${node.label} (${count} valid edges${threadInfo})`);
     lines.push(node.content);
     lines.push('');
   }
+
   return lines.join('\n');
 }
 
-async function localGetStalled(threshold: number): Promise<string> {
-  if (!localDb || !localStore) throw new Error('Local backend not initialized');
-  const nodes = localStore.getNodesAboveStall(localDb, threshold, 20);
-  if (nodes.length === 0) return `No stalled nodes found with stall_probability > ${threshold}.`;
+// ── Tool: get_threads ────────────────────────────────────────────────────────
+// Thread-level view with state filter. Replaces node-level get_stalled.
 
-  const lines: string[] = [`## Stalled nodes (stall_probability > ${threshold})\n`];
-  for (const node of nodes) {
-    const prob = Number(node.stall_probability).toFixed(2);
-    lines.push(`### [${node.node_type.toUpperCase()}] ${node.label} — stall: ${prob}`);
-    lines.push(node.content);
-    lines.push('');
+async function getThreadsList(state?: string, limit?: number): Promise<string> {
+  const maxThreads = limit ?? 10;
+  let threads: any[];
+
+  if (state) {
+    threads = db.prepare(
+      'SELECT * FROM threads WHERE state = ? AND resolved_at IS NULL ORDER BY last_activity_at DESC LIMIT ?',
+    ).all(state, maxThreads);
+  } else {
+    threads = getActiveThreads(db, maxThreads);
   }
-  return lines.join('\n');
-}
 
-async function localGetStatus(): Promise<string> {
-  if (!localDb || !localStore) throw new Error('Local backend not initialized');
-  const stats = localStore.getStats(localDb);
-
-  const lines = [
-    'MIKAI Knowledge Base Status (Local)',
-    '────────────────────────────',
-    `Sources: ${stats.totalSources} total`,
-  ];
-  for (const [type, count] of Object.entries(stats.sourcesByType)) {
-    lines.push(`  ${type}: ${count}`);
+  if (!threads || threads.length === 0) {
+    return state
+      ? `No threads in state "${state}". Run the L4 pipeline: npm run l4`
+      : 'No active threads found. Run the L4 pipeline: npm run l4';
   }
-  lines.push('', `Segments: ${stats.totalSegments}`, `Nodes: ${stats.totalNodes}`, '',
-    `Last ingestion: ${stats.lastIngestion ?? 'N/A'}`,
-    `Last segmentation: ${stats.lastSegmentation ?? 'N/A'}`);
+
+  let stats;
+  try { stats = getL4Stats(db); } catch { stats = null; }
+
+  let output = stats
+    ? `## Threads (${stats.totalThreads} total)\n\nStates: ${Object.entries(stats.byState).map(([k, v]) => `${k}: ${v}`).join(', ')}\n\n`
+    : '## Threads\n\n';
+
+  for (const thread of threads) {
+    const sourceTypes: string[] = JSON.parse(thread.source_types || '[]');
+    output += `### ${thread.label}\n`;
+    output += `- **State**: ${thread.state}`;
+    if (thread.stall_probability > 0.5) output += ` ⚠️ stall risk: ${(thread.stall_probability * 100).toFixed(0)}%`;
+    output += `\n`;
+    output += `- **Sources**: ${sourceTypes.join(', ') || 'unknown'} (${thread.source_count} total)\n`;
+    output += `- **Active**: ${thread.first_seen_at} → ${thread.last_activity_at}\n`;
+    if (thread.next_step) output += `- **Next step**: ${thread.next_step}\n`;
+    output += `\n`;
+  }
+
+  return output;
+}
+
+// ── Tool: get_thread_detail ──────────────────────────────────────────────────
+// Deep view on one thread: state history, members, related threads.
+
+async function getThreadDetail(threadId: string, includeContent: boolean): Promise<string> {
+  const thread = getThread(db, threadId);
+  if (!thread) return `Thread not found: ${threadId}`;
+
+  const members = getThreadMembers(db, threadId);
+  const transitions = getTransitionHistory(db, threadId);
+  const edges = getThreadEdges(db, threadId);
+
+  let output = `## Thread: ${thread.label}\n\n`;
+  output += `| Field | Value |\n|-------|-------|\n`;
+  output += `| State | ${thread.state} |\n`;
+  output += `| Confidence | ${(thread.confidence * 100).toFixed(0)}% |\n`;
+  output += `| Stall risk | ${((thread.stall_probability ?? 0) * 100).toFixed(0)}% |\n`;
+  output += `| Sources | ${thread.source_count} (${JSON.parse(thread.source_types || '[]').join(', ')}) |\n`;
+  output += `| First seen | ${thread.first_seen_at} |\n`;
+  output += `| Last activity | ${thread.last_activity_at} |\n`;
+  if (thread.next_step) output += `| Next step | ${thread.next_step} |\n`;
+  output += `\n`;
+
+  if (transitions.length > 0) {
+    output += `### State History\n`;
+    for (const t of transitions) {
+      output += `- ${t.from_state ?? '(new)'} → **${t.to_state}**: ${t.reason ?? 'no reason'} (${t.created_at})\n`;
+    }
+    output += `\n`;
+  }
+
+  const segmentIds = members.filter((m: any) => m.segment_id).map((m: any) => m.segment_id!);
+  const nodeIds = members.filter((m: any) => m.node_id).map((m: any) => m.node_id!);
+  output += `### Members: ${members.length} total (${segmentIds.length} segments, ${nodeIds.length} nodes)\n\n`;
+
+  if (includeContent && segmentIds.length > 0) {
+    const ph = segmentIds.map(() => '?').join(',');
+    const segs = db.prepare(
+      `SELECT topic_label, processed_content FROM segments WHERE id IN (${ph}) LIMIT 10`,
+    ).all(...segmentIds) as any[];
+    for (const seg of segs) {
+      output += `> **${seg.topic_label}**: ${seg.processed_content.slice(0, 200)}...\n\n`;
+    }
+  }
+
+  if (includeContent && nodeIds.length > 0) {
+    const ph = nodeIds.map(() => '?').join(',');
+    const nodes = db.prepare(
+      `SELECT label, content, node_type FROM nodes WHERE id IN (${ph}) LIMIT 10`,
+    ).all(...nodeIds) as any[];
+    for (const node of nodes) {
+      output += `> [${node.node_type}] **${node.label}**: ${node.content.slice(0, 200)}\n\n`;
+    }
+  }
+
+  if (edges.length > 0) {
+    output += `### Related Threads\n`;
+    for (const e of edges as any[]) {
+      const otherId = e.from_thread === threadId ? e.to_thread : e.from_thread;
+      const other = getThread(db, otherId);
+      const direction = e.from_thread === threadId ? '→' : '←';
+      output += `- ${direction} ${e.relationship}: ${other?.label ?? otherId}${e.note ? ` (${e.note})` : ''}\n`;
+    }
+  }
+
+  return output;
+}
+
+// ── Tool: get_next_steps ─────────────────────────────────────────────────────
+// Noonchi surface: what should the user do next?
+
+async function getNextSteps(limit: number, refresh: boolean): Promise<string> {
+  if (refresh) {
+    const active = getActiveThreads(db, limit);
+    for (const thread of active) {
+      await inferForSingleThread(db, thread.id);
+    }
+  }
+
+  const threads = getThreadsWithNextSteps(db, limit);
+  const stalled = getStalledThreads(db, 0.5, 3);
+
+  if (threads.length === 0 && stalled.length === 0) {
+    return 'No next steps available. Run the L4 pipeline: npm run l4';
+  }
+
+  let output = `## What to Do Next\n\n`;
+
+  if (stalled.length > 0) {
+    output += `### Stalled\n`;
+    for (const t of stalled) {
+      output += `- **${t.label}** (${t.state}, stall: ${((t.stall_probability ?? 0) * 100).toFixed(0)}%)`;
+      if (t.next_step) output += `\n  → ${t.next_step}`;
+      output += `\n`;
+    }
+    output += `\n`;
+  }
+
+  output += `### Active\n`;
+  const seen = new Set(stalled.map(s => s.id));
+  for (const t of threads) {
+    if (seen.has(t.id)) continue;
+    output += `- **${t.label}** (${t.state})`;
+    output += `\n  → ${t.next_step}`;
+    const sourceTypes = JSON.parse(t.source_types || '[]');
+    if (sourceTypes.length > 1) output += `\n  _Tracked in: ${sourceTypes.join(', ')}_`;
+    output += `\n`;
+  }
+
+  return output;
+}
+
+// ── Tool: get_history ────────────────────────────────────────────────────────
+// Temporal query: graph state at a point in time. Graphiti-style temporal retrieval.
+
+async function getHistory(query: string, asOf?: string, includeInvalidated?: boolean): Promise<string> {
+  const embedding = await embedText(query);
+
+  // Find seed nodes via hybrid search (same as regular search)
+  const { searchNodesHybrid } = await import('../../engine/l3/hybrid-search.js');
+  const hybridResults = searchNodesHybrid(db, query, embedding, 10);
+
+  if (hybridResults.length === 0) return 'No relevant nodes found for temporal query.';
+
+  const seeds = hybridResults.slice(0, 5).map(r => r.item);
+  const seedIds = seeds.map(n => n.id);
+  const nodeMap = new Map(seeds.map(n => [n.id, n]));
+
+  // Fetch ALL edges (including invalidated) touching seed nodes
+  const placeholders = seedIds.map(() => '?').join(',');
+  const allEdges = db.prepare(`
+    SELECT * FROM edges
+    WHERE (from_node IN (${placeholders}) OR to_node IN (${placeholders}))
+      AND expired_at IS NULL
+    ORDER BY valid_at ASC
+  `).all(...seedIds, ...seedIds) as EdgeRow[];
+
+  // Filter by temporal window if asOf is specified
+  let filteredEdges = allEdges;
+  if (asOf) {
+    const asOfDate = new Date(asOf).toISOString();
+    filteredEdges = allEdges.filter(e => {
+      const validAfterStart = !e.valid_at || e.valid_at <= asOfDate;
+      const validBeforeEnd = !e.invalid_at || e.invalid_at > asOfDate;
+      return validAfterStart && validBeforeEnd;
+    });
+  } else if (!includeInvalidated) {
+    // Default: show current state only
+    filteredEdges = allEdges.filter(e => !e.invalid_at);
+  }
+
+  // Fetch connected nodes
+  const connectedIds = new Set<string>();
+  for (const edge of filteredEdges) {
+    connectedIds.add(edge.from_node);
+    connectedIds.add(edge.to_node);
+  }
+  for (const id of seedIds) connectedIds.delete(id);
+
+  if (connectedIds.size > 0) {
+    const connPh = [...connectedIds].map(() => '?').join(',');
+    const connNodes = db.prepare(
+      `SELECT * FROM nodes WHERE id IN (${connPh})`,
+    ).all(...connectedIds) as NodeRow[];
+    for (const n of connNodes) nodeMap.set(n.id, n);
+  }
+
+  // Build output
+  const lines: string[] = [];
+
+  if (asOf) {
+    lines.push(`## Knowledge graph as of ${asOf}\n`);
+  } else if (includeInvalidated) {
+    lines.push('## Full knowledge graph history (including superseded facts)\n');
+  } else {
+    lines.push('## Current knowledge graph\n');
+  }
+
+  // Separate current vs invalidated edges
+  const currentEdges = filteredEdges.filter(e => !e.invalid_at);
+  const invalidatedEdges = filteredEdges.filter(e => e.invalid_at);
+
+  if (currentEdges.length > 0) {
+    lines.push('### Current facts\n');
+    for (const edge of currentEdges) {
+      const line = formatEdge(edge, nodeMap, { showProvenance: true });
+      if (line) { lines.push(line); lines.push(''); }
+    }
+  }
+
+  if (invalidatedEdges.length > 0) {
+    lines.push('### Superseded facts (no longer true)\n');
+    for (const edge of invalidatedEdges) {
+      const from = nodeMap.get(edge.from_node);
+      const to = nodeMap.get(edge.to_node);
+      if (!from || !to) continue;
+
+      const description = edge.fact ?? edge.note ?? '';
+      let line = `~~[${from.label}] →${edge.relationship}→ [${to.label}]~~`;
+      if (description) line += ` — ${description}`;
+      line += `\n  _Valid: ${edge.valid_at ?? 'unknown'} → invalidated: ${edge.invalid_at}_`;
+      lines.push(line);
+      lines.push('');
+    }
+  }
+
+  // Show how thinking evolved
+  if (invalidatedEdges.length > 0 && currentEdges.length > 0) {
+    lines.push('### Evolution summary\n');
+    lines.push(`${currentEdges.length} current facts, ${invalidatedEdges.length} superseded.`);
+    lines.push('The user\'s thinking on this topic has evolved — superseded facts show earlier beliefs that were revised.');
+  }
+
+  if (filteredEdges.length === 0) {
+    lines.push('No edges found for this query');
+    if (asOf) lines.push(` as of ${asOf}`);
+    lines.push('.');
+  }
+
   return lines.join('\n');
 }
 
-async function localGetBrief(): Promise<string> {
-  if (!localDb || !localStore) throw new Error('Local backend not initialized');
-  const stats = localStore.getStats(localDb);
-  const tensions = localStore.getNodesByType(localDb, 'tension', 5);
-  const stalled = localStore.getNodesAboveStall(localDb, 0.7, 3);
+// ── Tool: add_note ───────────────────────────────────────────────────────────
+// Save insight from conversation. Immediately embedded and searchable.
 
-  const tensionLines = tensions.map((n: any) => `• ${n.label}`).join('\n');
-  const stalledLines = stalled.map((n: any) => `• ${n.label}`).join('\n');
-
-  return [
-    `MIKAI Knowledge Base | ${stats.totalSources} sources | ${stats.totalSegments} segments`,
-    '', 'Tensions (top 5):', tensionLines || '• (none)',
-    '', 'Stalled (top 3):', stalledLines || '• (none)',
-    '', '→ For depth: search_knowledge, search_graph, get_tensions, get_stalled tools available',
-  ].join('\n');
-}
-
-async function localMarkResolved(nodeId: string): Promise<string> {
-  if (!localDb || !localStore) throw new Error('Local backend not initialized');
-  const node = localDb.prepare('SELECT id, label FROM nodes WHERE id = ?').get(nodeId) as any;
-  if (!node) return `Node not found: no node with id "${nodeId}".`;
-  localStore.updateNode(localDb, nodeId, { resolved_at: new Date().toISOString(), stall_probability: 0 });
-  return `Node "${node.label}" marked as resolved.`;
-}
-
-async function localAddNote(content: string, label?: string): Promise<string> {
-  if (!localDb || !localStore || !localEmbedDocs) throw new Error('Local backend not initialized');
+async function addNote(content: string, label?: string): Promise<string> {
   const noteLabel = label ?? content.slice(0, 60).trimEnd();
 
-  const { id: sourceId } = localStore.insertSource(localDb, {
-    type: 'note', label: noteLabel, raw_content: content, source: 'mcp-note', chunk_count: 1,
+  const { id: sourceId } = insertSource(db, {
+    type: 'note',
+    label: noteLabel,
+    raw_content: content,
+    source: 'mcp-note',
+    chunk_count: 1,
   });
 
   const { smartSplit } = await import('../../engine/graph/smart-split.js') as any;
   const splits = smartSplit(content, 'mcp-note');
-  const segments = splits.length > 0 ? splits : [{ topic_label: noteLabel, condensed_content: content }];
-  const embeddings = await localEmbedDocs(segments.map((s: any) => s.condensed_content));
+  const segments = splits.length > 0
+    ? splits
+    : [{ topic_label: noteLabel, condensed_content: content }];
 
-  localStore.insertSegments(localDb, segments.map((s: any, i: number) => ({
+  const embeddings = await embedDocuments(segments.map((s: any) => s.condensed_content));
+
+  insertSegments(db, segments.map((s: any, i: number) => ({
     source_id: sourceId,
     topic_label: s.topic_label,
     processed_content: s.condensed_content,
     embedding: embeddings[i],
   })));
 
-  return `Note saved: '${noteLabel}' — ${segments.length} segment(s) created.`;
+  return `Note saved: "${noteLabel}" — ${segments.length} segment(s) created and searchable.`;
 }
 
-// ── MCP server setup ──────────────────────────────────────────────────────────
+// ── Tool: mark_resolved ──────────────────────────────────────────────────────
+// Resolve a node or thread. Propagates to containing threads for nodes.
+
+async function markResolved(id: string): Promise<string> {
+  // Try as node first
+  const node = db.prepare('SELECT id, label FROM nodes WHERE id = ?').get(id) as
+    { id: string; label: string } | undefined;
+
+  if (node) {
+    updateNode(db, id, { resolved_at: new Date().toISOString(), stall_probability: 0 } as any);
+
+    // Propagate to threads containing this node
+    let threadInfo = '';
+    try {
+      const threads = getThreadsForNode(db, id);
+      for (const thread of threads) {
+        threadInfo += ` Thread "${thread.label}" notified.`;
+      }
+    } catch { /* L4 may not exist */ }
+
+    return `Node "${node.label}" marked as resolved.${threadInfo}`;
+  }
+
+  // Try as thread
+  const thread = getThread(db, id);
+  if (thread) {
+    updateThread(db, id, { state: 'completed', resolved_at: new Date().toISOString() } as any);
+    return `Thread "${thread.label}" marked as completed.`;
+  }
+
+  return `Not found: no node or thread with id "${id}".`;
+}
+
+// ── MCP Server ───────────────────────────────────────────────────────────────
 
 const server = new McpServer({
-  name:    'mikai',
-  version: '1.0.0',
+  name: 'mikai',
+  version: '2.0.0',
 });
 
 server.registerTool(
-  'search_knowledge',
+  'search',
   {
-    description: 'Search MIKAI\'s knowledge base using semantic similarity. Returns relevant condensed passages with source provenance.',
+    description: 'Search MIKAI using hybrid retrieval (semantic + keyword). Returns relevant passages AND knowledge graph structure (nodes, edges, tensions, contradictions). This is the primary retrieval tool — use it when the user asks about any topic.',
     inputSchema: {
-      query:       z.string().describe('Natural language query to search for'),
-      match_count: z.number().int().min(1).max(20).optional().describe('Number of segments to return (default 8)'),
+      query: z.string().describe('Natural language query'),
+      match_count: z.number().int().min(1).max(20).optional()
+        .describe('Max segments to return (default 8)'),
     },
   },
   async ({ query, match_count }) => {
-    const count = match_count ?? 8;
-    const result = USE_LOCAL && localDb ? await localSearchKnowledge(query, count) : await searchKnowledge(query, count);
-    return { content: [{ type: 'text', text: result }] };
-  },
-);
-
-server.registerTool(
-  'search_graph',
-  {
-    description: 'Search MIKAI\'s knowledge graph by semantic similarity, then expand via one-hop edge traversal. Returns seed nodes plus connected nodes, with tensions and contradictions surfaced first.',
-    inputSchema: {
-      query: z.string().describe('Natural language query to search the knowledge graph'),
-    },
-  },
-  async ({ query }) => {
-    const result = USE_LOCAL && localDb ? await localSearchGraph(query) : await searchGraph(query);
-    return { content: [{ type: 'text', text: result }] };
-  },
-);
-
-server.registerTool(
-  'get_tensions',
-  {
-    description: 'Retrieve the top tension nodes from the knowledge graph, ordered by how many edges they have (most connected = most active tensions).',
-    inputSchema: {
-      limit: z.number().int().min(1).max(50).optional().describe('Number of tension nodes to return (default 10)'),
-    },
-  },
-  async ({ limit }) => {
-    const result = USE_LOCAL && localDb ? await localGetTensions(limit ?? 10) : await getTensions(limit ?? 10);
-    return { content: [{ type: 'text', text: result }] };
-  },
-);
-
-server.registerTool(
-  'get_stalled',
-  {
-    description: 'Retrieve nodes with high stall probability — desires or projects that have gone quiet. Ordered by stall probability descending.',
-    inputSchema: {
-      threshold: z.number().min(0).max(1).optional().describe('Minimum stall_probability to include (default 0.7)'),
-    },
-  },
-  async ({ threshold }) => {
-    const result = USE_LOCAL && localDb ? await localGetStalled(threshold ?? 0.7) : await getStalled(threshold ?? 0.7);
-    return { content: [{ type: 'text', text: result }] };
-  },
-);
-
-server.registerTool(
-  'get_status',
-  {
-    description: 'Returns a snapshot of the MIKAI knowledge base: source counts by type, segment and node totals, last ingestion and segmentation timestamps, and counts of sources pending processing.',
-    inputSchema: {},
-  },
-  async () => {
-    const result = USE_LOCAL && localDb ? await localGetStatus() : await getStatus();
+    const result = await search(query, match_count ?? 8);
     return { content: [{ type: 'text', text: result }] };
   },
 );
@@ -1005,25 +727,94 @@ server.registerTool(
 server.registerTool(
   'get_brief',
   {
-    description: 'Returns a compact knowledge base context brief (~400 tokens). Call this at conversation start to understand what\'s in the knowledge base before answering questions about the user\'s work, thinking, or projects.',
+    description: 'Compact context brief (~400 tokens): knowledge base stats, active threads by state, top tensions (valid edges only), stalled threads. Call at conversation start to understand what the user is working on.',
     inputSchema: {},
   },
   async () => {
-    const result = USE_LOCAL && localDb ? await localGetBrief() : await getBrief();
+    const result = await getBrief();
     return { content: [{ type: 'text', text: result }] };
   },
 );
 
 server.registerTool(
-  'mark_resolved',
+  'get_tensions',
   {
-    description: 'Mark a node (tension, stalled item, or desire) as resolved. Use this when the user confirms they\'ve acted on something or a tension has been resolved.',
+    description: 'Active unresolved tensions from the knowledge graph. Only counts valid (non-superseded) edges. Shows which threads each tension belongs to. Use when the user asks about conflicts, tradeoffs, or unresolved questions.',
     inputSchema: {
-      node_id: z.string().describe('ID of the node to mark as resolved'),
+      limit: z.number().int().min(1).max(50).optional()
+        .describe('Number of tensions to return (default 10)'),
     },
   },
-  async ({ node_id }) => {
-    const result = USE_LOCAL && localDb ? await localMarkResolved(node_id) : await markResolved(node_id);
+  async ({ limit }) => {
+    const result = await getTensions(limit ?? 10);
+    return { content: [{ type: 'text', text: result }] };
+  },
+);
+
+server.registerTool(
+  'get_threads',
+  {
+    description: 'List threads — topics tracked across apps with state (exploring/evaluating/decided/acting/stalled/completed), source types, and next steps. Filter by state to find stalled threads, active work, or completed items.',
+    inputSchema: {
+      state: z.enum(['exploring', 'evaluating', 'decided', 'acting', 'stalled', 'completed']).optional()
+        .describe('Filter by thread state'),
+      limit: z.number().optional().default(10)
+        .describe('Max threads to return'),
+    },
+  },
+  async (args) => {
+    const result = await getThreadsList(args.state, args.limit);
+    return { content: [{ type: 'text', text: result }] };
+  },
+);
+
+server.registerTool(
+  'get_thread_detail',
+  {
+    description: 'Deep view of a single thread: state history, member segments/nodes, and relationships to other threads. Use when the user asks about a specific project or topic in depth.',
+    inputSchema: {
+      thread_id: z.string().describe('The thread ID to inspect'),
+      include_content: z.boolean().optional().default(false)
+        .describe('Include full segment/node content'),
+    },
+  },
+  async (args) => {
+    const result = await getThreadDetail(args.thread_id, args.include_content ?? false);
+    return { content: [{ type: 'text', text: result }] };
+  },
+);
+
+server.registerTool(
+  'get_next_steps',
+  {
+    description: 'The noonchi surface — what should the user do next? Returns prioritized next steps across active threads, with stalled threads highlighted. Use at conversation START for proactive guidance.',
+    inputSchema: {
+      limit: z.number().optional().default(5)
+        .describe('Max threads to show'),
+      refresh: z.boolean().optional().default(false)
+        .describe('Re-run inference for fresh next steps (slower, uses LLM)'),
+    },
+  },
+  async (args) => {
+    const result = await getNextSteps(args.limit ?? 5, args.refresh ?? false);
+    return { content: [{ type: 'text', text: result }] };
+  },
+);
+
+server.registerTool(
+  'get_history',
+  {
+    description: 'Temporal knowledge graph query. Shows how your thinking on a topic has evolved over time — current facts, superseded beliefs, and the evolution between them. Optionally view graph state at a specific date. Use when the user asks "what did I used to think about X?" or "how has my thinking on X changed?"',
+    inputSchema: {
+      query: z.string().describe('Topic to trace through time'),
+      as_of: z.string().optional()
+        .describe('ISO date to view graph state at (e.g., "2026-01-15"). Omit for full history.'),
+      include_invalidated: z.boolean().optional().default(true)
+        .describe('Include superseded facts in the output (default true)'),
+    },
+  },
+  async (args) => {
+    const result = await getHistory(args.query, args.as_of, args.include_invalidated ?? true);
     return { content: [{ type: 'text', text: result }] };
   },
 );
@@ -1031,190 +822,39 @@ server.registerTool(
 server.registerTool(
   'add_note',
   {
-    description: 'Save a new note to the knowledge base from this conversation. The note is immediately segmented and searchable. Use this when the user shares an insight, decision, or reflection worth preserving.',
+    description: 'Save a note to the knowledge base from this conversation. Immediately segmented, embedded, and searchable via the search tool. Use when the user shares an insight, decision, or reflection worth preserving.',
     inputSchema: {
-      content: z.string().describe('The text content of the note to save'),
-      label:   z.string().optional().describe('Optional label for the note (defaults to first 60 chars of content)'),
+      content: z.string().describe('The text content to save'),
+      label: z.string().optional()
+        .describe('Optional label (defaults to first 60 chars)'),
     },
   },
   async ({ content, label }) => {
-    const result = USE_LOCAL && localDb ? await localAddNote(content, label) : await addNote(content, label);
+    const result = await addNote(content, label);
     return { content: [{ type: 'text', text: result }] };
   },
 );
 
-// ── L4 Tools: Task-State Awareness ───────────────────────────────────────────
-
 server.registerTool(
-  'get_threads',
+  'mark_resolved',
   {
-    description: 'List active threads — topics tracked across your apps. Shows state (exploring/evaluating/decided/acting/stalled), source types involved, and next steps if available. Use this to understand what the user is currently working on and thinking about.',
+    description: 'Mark a node or thread as resolved/completed. Accepts either a node ID or thread ID. For nodes, propagates resolution to containing threads. Use when the user confirms something is done.',
     inputSchema: {
-      state: z.enum(['exploring', 'evaluating', 'decided', 'acting', 'stalled', 'completed']).optional().describe('Filter by thread state'),
-      limit: z.number().optional().default(10).describe('Max threads to return'),
-      include_stalled: z.boolean().optional().default(true).describe('Include stalled threads'),
+      id: z.string().describe('ID of the node or thread to resolve'),
     },
   },
-  async (args) => {
-    if (!localDb) return { content: [{ type: 'text' as const, text: 'L4 requires local mode (MIKAI_LOCAL=1)' }] };
-
-    let threads;
-    if (args.state) {
-      threads = localDb.prepare(
-        'SELECT * FROM threads WHERE state = ? AND resolved_at IS NULL ORDER BY last_activity_at DESC LIMIT ?'
-      ).all(args.state, args.limit ?? 10);
-    } else {
-      threads = getActiveThreads(localDb, args.limit ?? 10);
-    }
-
-    if (!threads || threads.length === 0) {
-      return { content: [{ type: 'text' as const, text: 'No active threads found. Run the L4 pipeline first: npm run l4' }] };
-    }
-
-    const stats = getL4Stats(localDb);
-    let output = `## Active Threads (${stats.totalThreads} total)\n\n`;
-    output += `States: ${Object.entries(stats.byState).map(([k, v]) => `${k}: ${v}`).join(', ')}\n\n`;
-
-    for (const thread of threads as any[]) {
-      const sourceTypes = JSON.parse(thread.source_types || '[]');
-      output += `### ${thread.label}\n`;
-      output += `- **State**: ${thread.state}`;
-      if (thread.stall_probability > 0.5) output += ` ⚠️ stall risk: ${(thread.stall_probability * 100).toFixed(0)}%`;
-      output += `\n`;
-      output += `- **Sources**: ${sourceTypes.join(', ') || 'unknown'} (${thread.source_count} total)\n`;
-      output += `- **Active**: ${thread.first_seen_at} → ${thread.last_activity_at}\n`;
-      if (thread.next_step) output += `- **Next step**: ${thread.next_step}\n`;
-      output += `\n`;
-    }
-
-    return { content: [{ type: 'text' as const, text: output }] };
+  async ({ id }) => {
+    const result = await markResolved(id);
+    return { content: [{ type: 'text', text: result }] };
   },
 );
 
-server.registerTool(
-  'get_thread_detail',
-  {
-    description: 'Get detailed view of a single thread — its full state history, member segments/nodes, and relationships to other threads. Use when the user asks about a specific topic or when you need deep context on one thread.',
-    inputSchema: {
-      thread_id: z.string().describe('The thread ID to inspect'),
-      include_content: z.boolean().optional().default(false).describe('Include full segment/node content'),
-    },
-  },
-  async (args) => {
-    if (!localDb) return { content: [{ type: 'text' as const, text: 'L4 requires local mode (MIKAI_LOCAL=1)' }] };
-
-    const thread = getThread(localDb, args.thread_id);
-    if (!thread) return { content: [{ type: 'text' as const, text: `Thread not found: ${args.thread_id}` }] };
-
-    const members = getThreadMembers(localDb, args.thread_id);
-    const transitions = getTransitionHistory(localDb, args.thread_id);
-    const edges = getThreadEdges(localDb, args.thread_id);
-
-    let output = `## Thread: ${thread.label}\n\n`;
-    output += `| Field | Value |\n|-------|-------|\n`;
-    output += `| State | ${thread.state} |\n`;
-    output += `| Confidence | ${(thread.confidence * 100).toFixed(0)}% |\n`;
-    output += `| Stall risk | ${((thread.stall_probability ?? 0) * 100).toFixed(0)}% |\n`;
-    output += `| Sources | ${thread.source_count} (${JSON.parse(thread.source_types || '[]').join(', ')}) |\n`;
-    output += `| First seen | ${thread.first_seen_at} |\n`;
-    output += `| Last activity | ${thread.last_activity_at} |\n`;
-    if (thread.next_step) output += `| Next step | ${thread.next_step} |\n`;
-    output += `\n`;
-
-    if (transitions.length > 0) {
-      output += `### State History\n`;
-      for (const t of transitions) {
-        output += `- ${t.from_state ?? '(new)'} → **${t.to_state}**: ${t.reason ?? 'no reason'} (${t.created_at})\n`;
-      }
-      output += `\n`;
-    }
-
-    const segmentIds = members.filter((m: any) => m.segment_id).map((m: any) => m.segment_id!);
-    const nodeIds = members.filter((m: any) => m.node_id).map((m: any) => m.node_id!);
-    output += `### Members: ${members.length} total (${segmentIds.length} segments, ${nodeIds.length} nodes)\n\n`;
-
-    if (args.include_content && segmentIds.length > 0) {
-      const placeholders = segmentIds.map(() => '?').join(',');
-      const segments = localDb.prepare(
-        `SELECT topic_label, processed_content FROM segments WHERE id IN (${placeholders}) LIMIT 10`
-      ).all(...segmentIds) as any[];
-      for (const seg of segments) {
-        output += `> **${seg.topic_label}**: ${seg.processed_content.slice(0, 200)}...\n\n`;
-      }
-    }
-
-    if (edges.length > 0) {
-      output += `### Related Threads\n`;
-      for (const e of edges as any[]) {
-        const otherId = e.from_thread === args.thread_id ? e.to_thread : e.from_thread;
-        const direction = e.from_thread === args.thread_id ? '→' : '←';
-        output += `- ${direction} ${e.relationship}: ${otherId}${e.note ? ` (${e.note})` : ''}\n`;
-      }
-    }
-
-    return { content: [{ type: 'text' as const, text: output }] };
-  },
-);
-
-server.registerTool(
-  'get_next_steps',
-  {
-    description: 'The noonchi surface — what should the user do next? Returns prioritized next steps across all active threads, with stalled threads highlighted. This is the primary L4 tool — use it at the START of conversations to give proactive, actionable guidance.',
-    inputSchema: {
-      limit: z.number().optional().default(5).describe('Max threads to show next steps for'),
-      refresh: z.boolean().optional().default(false).describe('Re-run inference to generate fresh next steps (slower, uses LLM)'),
-    },
-  },
-  async (args) => {
-    if (!localDb) return { content: [{ type: 'text' as const, text: 'L4 requires local mode (MIKAI_LOCAL=1)' }] };
-
-    if (args.refresh) {
-      const active = getActiveThreads(localDb, args.limit ?? 5);
-      for (const thread of active) {
-        await inferForSingleThread(localDb, thread.id);
-      }
-    }
-
-    const threads = getThreadsWithNextSteps(localDb, args.limit ?? 5);
-    const stalled = getStalledThreads(localDb, 0.5, 3);
-
-    if (threads.length === 0 && stalled.length === 0) {
-      return { content: [{ type: 'text' as const, text: 'No next steps available. Run the L4 pipeline first: npm run l4' }] };
-    }
-
-    let output = `## What to Do Next\n\n`;
-
-    if (stalled.length > 0) {
-      output += `### ⚠️ Stalled\n`;
-      for (const t of stalled) {
-        output += `- **${t.label}** (${t.state}, stall: ${((t.stall_probability ?? 0) * 100).toFixed(0)}%)`;
-        if (t.next_step) output += `\n  → ${t.next_step}`;
-        output += `\n`;
-      }
-      output += `\n`;
-    }
-
-    output += `### Active\n`;
-    const seen = new Set(stalled.map((s) => s.id));
-    for (const t of threads) {
-      if (seen.has(t.id)) continue;
-      output += `- **${t.label}** (${t.state})`;
-      output += `\n  → ${t.next_step}`;
-      const sourceTypes = JSON.parse(t.source_types || '[]');
-      if (sourceTypes.length > 1) output += `\n  _Tracked in: ${sourceTypes.join(', ')}_`;
-      output += `\n`;
-    }
-
-    return { content: [{ type: 'text' as const, text: output }] };
-  },
-);
-
-// ── Start ─────────────────────────────────────────────────────────────────────
+// ── Start ────────────────────────────────────────────────────────────────────
 
 process.stderr.write('MIKAI MCP: starting transport\n');
 const transport = new StdioServerTransport();
 server.connect(transport).then(() => {
-  process.stderr.write('MIKAI MCP: connected and running\n');
+  process.stderr.write('MIKAI MCP: connected (v2.0 — local-first, hybrid search, L4-aware)\n');
 }).catch((err: Error) => {
   process.stderr.write(`MIKAI MCP: failed — ${err.message}\n`);
   process.exit(1);

@@ -37,3 +37,8 @@ export const DEFAULT_HYBRID_CONFIG: HybridSearchConfig = {
   limit: 15,
   filterExpired: true,
 };
+
+// ── Community Detection (Graphiti Phase 2B — DEFERRED) ──────────────────────
+// Label propagation communities deferred until cross-source edges > 5,000.
+// Current gap (multi-hop transitivity) is solved in L4 detect-threads.ts.
+// See O-040 in docs/OPEN_QUESTIONS.md for full analysis.
