@@ -11,6 +11,7 @@ client_secret*.json
 __pycache__/
 *.pyc
 *.pyo
+infra/graphiti/.venv/
 
 # Node
 /node_modules
