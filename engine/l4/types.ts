@@ -13,6 +13,9 @@
 
 // ── Thread States ────────────────────────────────────────────────────────────
 
+// Default states for personal-projects domain.
+// The actual state machine is defined in domain-config.ts and is pluggable per domain.
+// These constants remain for backwards compatibility with existing code.
 export const THREAD_STATES = [
   'exploring',   // gathering info, no direction yet
   'evaluating',  // comparing options, weighing tradeoffs
@@ -22,16 +25,16 @@ export const THREAD_STATES = [
   'completed',   // done — confirmed resolution
 ] as const;
 
-export type ThreadState = typeof THREAD_STATES[number];
+export type ThreadState = string; // pluggable — domain config defines valid states
 
-// Valid state transitions (forward + stall/unstall)
-export const VALID_TRANSITIONS: Record<ThreadState, ThreadState[]> = {
+// Default transitions for personal-projects. Domain config overrides these.
+export const VALID_TRANSITIONS: Record<string, string[]> = {
   exploring:  ['evaluating', 'decided', 'acting', 'stalled', 'completed'],
   evaluating: ['decided', 'acting', 'stalled', 'completed'],
   decided:    ['acting', 'stalled', 'completed'],
   acting:     ['stalled', 'completed'],
   stalled:    ['exploring', 'evaluating', 'decided', 'acting', 'completed'],
-  completed:  [], // terminal
+  completed:  [],
 };
 
 // ── Thread ───────────────────────────────────────────────────────────────────
@@ -139,6 +142,7 @@ export interface SegmentCluster {
 
 export interface ClassificationSignals {
   source_type_count: number;
+  is_research_only: boolean;        // true if all sources are perplexity/claude-thread
   has_comparison_language: boolean;
   has_decision_language: boolean;
   has_action_evidence: boolean;
@@ -152,6 +156,11 @@ export interface ClassificationSignals {
   has_contradiction_edges: boolean;
   has_dependency_chain: boolean;
   has_support_chain: boolean;
+  // Temporal signals (Phase 3: edge invalidation)
+  edge_age_days: number;             // days since newest valid edge in thread
+  invalidated_edge_count: number;    // how many edges have been superseded
+  valid_edge_count: number;          // how many edges are still current
+  has_evolved: boolean;              // true if thread has invalidated edges (thinking changed)
 }
 
 // ── Graph enrichment signals ─────────────────────────────────────────────────
@@ -161,6 +170,12 @@ export interface GraphSignals {
   edgeTypes: string[];
   edgeCount: number;
   graphConfidenceBoost: number;       // 0 or 0.15 if graph edges found
+  // Temporal signals (Phase 3: edge invalidation)
+  newestEdgeAt: string | null;        // most recent valid_at among thread edges
+  oldestEdgeAt: string | null;        // earliest valid_at among thread edges
+  invalidatedEdgeCount: number;       // edges within thread that have invalid_at set
+  validEdgeCount: number;             // edges without invalid_at (still-current beliefs)
+  edgeAgeDays: number;                // days since newest valid edge was created
 }
 
 // ── Action categories (OmniActions taxonomy) ─────────────────────────────────

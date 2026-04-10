@@ -17,6 +17,8 @@ import {
 import type { Thread, ThreadState, ClassificationSignals } from './types.js';
 import { VALID_TRANSITIONS } from './types.js';
 import { extractGraphClassificationSignals } from './graph-enrichment.js';
+import { getDomainConfig, getValidTransitions, isTerminalState } from './domain-config.js';
+import type { DomainConfig } from './domain-config.js';
 
 // ── Signal extraction ────────────────────────────────────────────────────────
 
@@ -100,15 +102,51 @@ function extractSignals(db: Database.Database, thread: Thread): ClassificationSi
   // Source type count
   const sourceTypes: string[] = JSON.parse(thread.source_types || '[]');
 
+  // Research-only threads: content comes from AI responses, not user actions.
+  // Action keywords in Perplexity/Claude responses ("building", "working on")
+  // describe topics being discussed, not actions the user is taking.
+  const RESEARCH_ONLY_SOURCES = new Set(['perplexity', 'claude-thread']);
+  const isResearchOnly = sourceTypes.length > 0 && sourceTypes.every(s => RESEARCH_ONLY_SOURCES.has(s));
+
   // Graph enrichment signals from L3 edges within this thread
   const edgeTypesWithin: string[] = JSON.parse(thread.edge_types_within || '[]');
   const graphClassSignals = extractGraphClassificationSignals(edgeTypesWithin);
 
+  // ── Temporal signals from edge valid_at / invalid_at (Phase 3) ──────────
+  let edgeAgeDays = Infinity;
+  let invalidatedEdgeCount = 0;
+  let validEdgeCount = 0;
+
+  if (nodeIds.length >= 2) {
+    try {
+      const placeholders = nodeIds.map(() => '?').join(',');
+      const temporal = db.prepare(`
+        SELECT
+          MAX(valid_at) as newest,
+          SUM(CASE WHEN invalid_at IS NOT NULL THEN 1 ELSE 0 END) as invalidated,
+          SUM(CASE WHEN invalid_at IS NULL THEN 1 ELSE 0 END) as valid
+        FROM edges
+        WHERE from_node IN (${placeholders}) AND to_node IN (${placeholders})
+      `).get(...nodeIds, ...nodeIds) as any;
+
+      if (temporal?.newest) {
+        edgeAgeDays = (now - new Date(temporal.newest).getTime()) / (1000 * 60 * 60 * 24);
+      }
+      invalidatedEdgeCount = temporal?.invalidated ?? 0;
+      validEdgeCount = temporal?.valid ?? 0;
+    } catch { /* temporal columns may not exist */ }
+  }
+
+  const hasEvolved = invalidatedEdgeCount > 0;
+
   return {
     source_type_count: sourceTypes.length,
+    is_research_only: isResearchOnly,
     has_comparison_language: matchesAny(allContent, COMPARISON_PATTERNS),
     has_decision_language: matchesAny(allContent, DECISION_PATTERNS),
-    has_action_evidence: matchesAny(allContent, ACTION_PATTERNS),
+    // Discount action evidence for research-only threads: AI responses contain
+    // action words ("building", "working on") that describe topics, not user behavior.
+    has_action_evidence: isResearchOnly ? false : matchesAny(allContent, ACTION_PATTERNS),
     days_since_last_activity: daysSinceLastActivity,
     activity_frequency: activityFrequency,
     has_resolution_signal: matchesAny(allContent, RESOLUTION_PATTERNS),
@@ -116,19 +154,47 @@ function extractSignals(db: Database.Database, thread: Thread): ClassificationSi
     node_types_involved: [...new Set(nodeTypes)],
     graph_edge_types: edgeTypesWithin,
     ...graphClassSignals,
+    // Temporal signals
+    edge_age_days: edgeAgeDays,
+    invalidated_edge_count: invalidatedEdgeCount,
+    valid_edge_count: validEdgeCount,
+    has_evolved: hasEvolved,
   };
 }
 
 // ── State classification rules ───────────────────────────────────────────────
 
-function classifyFromSignals(signals: ClassificationSignals, currentState: ThreadState): ThreadState {
-  // Terminal: resolution signals → completed
+function classifyFromSignals(signals: ClassificationSignals, currentState: ThreadState, config?: DomainConfig): ThreadState {
+  const cfg = config ?? getDomainConfig();
+  // ── Layer 1: Terminal signals (strongest) ─────────────────────────────────
+  // Resolution language = completed regardless of other signals
   if (signals.has_resolution_signal) {
     return 'completed';
   }
 
-  // Stall detection: no activity for 7+ days, was previously active
-  // Graph signal: unresolved dependency chain strengthens stall signal
+  // ── Layer 2: Temporal signals (Graphiti Phase 3) ──────────────────────────
+  // Temporal signals override content patterns. What you wrote doesn't reflect
+  // where you are now — WHEN new content last appeared does.
+
+  // Old thread with no recent edges: cap at exploring or stalled.
+  // Content may say "I'm building X" but if the newest edge is 30+ days old,
+  // you're not actively building it.
+  const isTemporallyDormant = signals.edge_age_days > cfg.temporal.dormantDays && signals.days_since_last_activity > cfg.temporal.staleDays * 2;
+  const isTemporallyStale = signals.days_since_last_activity > cfg.temporal.staleDays;
+
+  // Thread has evolved (invalidated edges = thinking changed over time)
+  // Evolved threads with recent activity → evaluating (reconsidering)
+  if (signals.has_evolved && signals.days_since_last_activity < cfg.temporal.actionRecencyDays) {
+    return 'evaluating';
+  }
+
+  // Dormant threads: no new thinking in 30+ days → stalled (resurfacing candidate)
+  // These aren't dead — they're candidates for "does this still matter to you?"
+  if (isTemporallyDormant && currentState !== 'completed') {
+    return 'stalled';
+  }
+
+  // ── Layer 3: Stall detection ──────────────────────────────────────────────
   if (signals.stall_probability >= 0.5 && currentState !== 'exploring') {
     return 'stalled';
   }
@@ -136,39 +202,48 @@ function classifyFromSignals(signals: ClassificationSignals, currentState: Threa
     return 'stalled';
   }
 
-  // Action evidence → acting (content signal is primary; recency is secondary)
-  if (signals.has_action_evidence && signals.days_since_last_activity < 14) {
+  // ── Layer 4: Content signals (weakest — only trusted for RECENT threads) ─
+  // Content patterns are only reliable when the thread has recent activity.
+  // "I'm building X" written yesterday = probably acting.
+  // "I'm building X" written 3 months ago = probably stalled or completed.
+
+  // Action evidence only counts if thread is recent (< 7 days)
+  if (signals.has_action_evidence && !isTemporallyStale) {
     return 'acting';
   }
 
-  // Decision language + no strong action evidence → decided
+  // Decision language — require recency
   if (signals.has_decision_language && !signals.has_action_evidence) {
-    return 'decided';
+    if (signals.is_research_only) return 'evaluating';
+    return isTemporallyStale ? 'exploring' : 'decided';
   }
 
-  // Decision language + action evidence → acting (decided and moved on)
-  if (signals.has_decision_language && signals.has_action_evidence) {
+  if (signals.has_decision_language && signals.has_action_evidence && !isTemporallyStale) {
     return 'acting';
   }
 
-  // Graph signal: contradiction/tension edges → evaluating (even without comparison language)
+  // ── Layer 5: Graph structure signals ──────────────────────────────────────
   if (signals.has_contradiction_edges) {
     return 'evaluating';
   }
 
-  // Comparison language + multiple source types → evaluating
   if (signals.has_comparison_language && signals.source_type_count >= 2) {
     return 'evaluating';
   }
 
-  // Comparison language alone → evaluating
   if (signals.has_comparison_language) {
     return 'evaluating';
   }
 
-  // Default: if young thread with few signals → exploring
-  if (signals.days_since_last_activity < 7) {
+  // ── Layer 6: Default ──────────────────────────────────────────────────────
+  // Young threads with few signals → exploring
+  if (signals.days_since_last_activity < cfg.temporal.staleDays) {
     return currentState === 'stalled' ? 'exploring' : currentState;
+  }
+
+  // Stale threads with no strong signals → exploring (not acting)
+  if (isTemporallyStale) {
+    return 'exploring';
   }
 
   return currentState;
@@ -182,14 +257,15 @@ export interface ClassifyResult {
   byState: Record<string, number>;
 }
 
-export async function classifyThreadStates(db: Database.Database): Promise<ClassifyResult> {
+export async function classifyThreadStates(db: Database.Database, domainId?: string): Promise<ClassifyResult> {
+  const config = getDomainConfig(domainId);
   const threads = getActiveThreads(db, 10000); // All active threads
   let stateChanges = 0;
   const byState: Record<string, number> = {};
 
   for (const thread of threads) {
     const signals = extractSignals(db, thread);
-    const newState = classifyFromSignals(signals, thread.state as ThreadState);
+    const newState = classifyFromSignals(signals, thread.state as ThreadState, config);
 
     // Count by state
     byState[newState] = (byState[newState] ?? 0) + 1;
@@ -201,8 +277,8 @@ export async function classifyThreadStates(db: Database.Database): Promise<Class
 
     // Only record transition if state actually changed
     if (newState !== thread.state) {
-      // Validate transition
-      const validTargets = VALID_TRANSITIONS[thread.state as ThreadState] ?? [];
+      // Validate transition against domain config
+      const validTargets = getValidTransitions(config, thread.state);
       if (!validTargets.includes(newState)) continue;
 
       const reason = buildTransitionReason(signals, thread.state as ThreadState, newState);

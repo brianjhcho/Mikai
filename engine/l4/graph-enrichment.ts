@@ -35,6 +35,11 @@ export function enrichWithGraphSignals(
     edgeTypes: [],
     edgeCount: 0,
     graphConfidenceBoost: 0,
+    newestEdgeAt: null,
+    oldestEdgeAt: null,
+    invalidatedEdgeCount: 0,
+    validEdgeCount: 0,
+    edgeAgeDays: Infinity,
   };
 
   if (memberNodeIds.length < 2) return empty;
@@ -61,11 +66,47 @@ export function enrichWithGraphSignals(
   // More edges = higher confidence, capped at 0.15
   const graphConfidenceBoost = Math.min(0.15, totalEdges * 0.03);
 
+  // Temporal signals from edge valid_at / invalid_at
+  let temporalStats: {
+    newest: string | null; oldest: string | null;
+    invalidated: number; valid: number;
+  } = { newest: null, oldest: null, invalidated: 0, valid: 0 };
+
+  try {
+    const temporal = db.prepare(`
+      SELECT
+        MAX(valid_at) as newest,
+        MIN(valid_at) as oldest,
+        SUM(CASE WHEN invalid_at IS NOT NULL THEN 1 ELSE 0 END) as invalidated,
+        SUM(CASE WHEN invalid_at IS NULL THEN 1 ELSE 0 END) as valid
+      FROM edges
+      WHERE from_node IN (${placeholders}) AND to_node IN (${placeholders})
+    `).get(...memberNodeIds, ...memberNodeIds) as any;
+
+    if (temporal) {
+      temporalStats = {
+        newest: temporal.newest,
+        oldest: temporal.oldest,
+        invalidated: temporal.invalidated ?? 0,
+        valid: temporal.valid ?? 0,
+      };
+    }
+  } catch { /* temporal columns may not exist in older DBs */ }
+
+  const now = Date.now();
+  const newestTime = temporalStats.newest ? new Date(temporalStats.newest).getTime() : 0;
+  const edgeAgeDays = newestTime > 0 ? (now - newestTime) / (1000 * 60 * 60 * 24) : Infinity;
+
   return {
     hasEdges: true,
     edgeTypes,
     edgeCount: totalEdges,
     graphConfidenceBoost,
+    newestEdgeAt: temporalStats.newest,
+    oldestEdgeAt: temporalStats.oldest,
+    invalidatedEdgeCount: temporalStats.invalidated,
+    validEdgeCount: temporalStats.valid,
+    edgeAgeDays,
   };
 }
 

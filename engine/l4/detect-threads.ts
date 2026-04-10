@@ -18,6 +18,8 @@ import type Database from 'better-sqlite3';
 import { insertThread, insertThreadMembers, updateThread } from './store.js';
 import type { ThreadInsert, ThreadMemberInsert } from './types.js';
 import { enrichWithGraphSignals } from './graph-enrichment.js';
+import { getDomainConfig } from './domain-config.js';
+import type { DomainConfig } from './domain-config.js';
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
@@ -29,9 +31,10 @@ const MIN_CLUSTER_SIZE = 2;          // minimum items to form a thread
 const BATCH_SIZE = 100;              // process items in batches
 
 // Source types to include for node-based detection.
-// Gmail nodes are too noisy (marketing emails, UTM params).
-// iMessage nodes are sparse. Focus on sources with high-quality extracted entities.
-const NODE_SOURCE_TYPES = new Set(['apple-notes', 'manual']);
+// Gmail excluded: nodes are mostly marketing email subjects that create spam threads.
+// Gmail cross-source signal still flows through entity resolution edges.
+// iMessage nodes are sparse but contribute cross-source signal.
+const NODE_SOURCE_TYPES = new Set(['apple-notes', 'manual', 'imessage']);
 
 // ── Union-Find ───────────────────────────────────────────────────────────────
 
@@ -420,6 +423,22 @@ export async function detectThreads(db: Database.Database): Promise<DetectResult
     // Separate segments and nodes
     const segmentMembers = members.filter(m => m.type === 'segment');
     const nodeMembers = members.filter(m => m.type === 'node');
+
+    // ── View A filter: require at least one anchor node type ──────────────
+    // Only create threads anchored by project/decision nodes (or segments
+    // from multi-turn research). Clusters of only concept/tension nodes
+    // are belief threads — View B (future), not View A.
+    const config = getDomainConfig();
+    const anchorTypes = new Set(config.anchorNodeTypes);
+    const hasAnchorNode = nodeMembers.some(m => {
+      // Look up node_type from DB for this node
+      const node = db.prepare('SELECT node_type FROM nodes WHERE id = ?').get(m.id) as { node_type: string } | undefined;
+      return node && anchorTypes.has(node.node_type);
+    });
+    // Segments count as anchors if there are enough of them (multi-turn research)
+    const hasSegmentAnchor = segmentMembers.length >= 2;
+
+    if (!hasAnchorNode && !hasSegmentAnchor) continue;
 
     // Compute thread metadata from all members
     const sourceTypes = [...new Set(members.map(m => m.source_type).filter(Boolean))];
