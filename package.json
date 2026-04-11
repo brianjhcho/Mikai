@@ -1,81 +1,8 @@
 {
   "name": "@chobus/mikai",
-  "version": "0.3.0",
-  "private": false,
-  "type": "module",
-  "bin": {
-    "mikai": "bin/mikai.ts"
-  },
-  "files": [
-    "bin/",
-    "lib/",
-    "engine/graph/",
-    "engine/ingestion/",
-    "engine/inference/",
-    "engine/scheduler/",
-    "surfaces/mcp/",
-    "engine/l4/",
-    "engine/l3/"
-  ],
-  "scripts": {
-    "mcp": "tsx surfaces/mcp/server.ts",
-    "sync": "tsx sources/apple-notes/sync.js",
-    "sync:notes": "tsx sources/apple-notes/sync-direct.js",
-    "sync:local": "tsx sources/local-files/sync.js",
-    "sync:imessage": "tsx sources/imessage/sync.js",
-    "sync:gmail": "tsx sources/gmail/sync.js",
-    "sync:all": "npm run sync && npm run sync:local && npm run sync:imessage && npm run sync:gmail",
-    "build-graph": "tsx engine/graph/build-graph.js",
-    "build-segments": "tsx engine/graph/build-segments.js",
-    "run-rule-engine": "tsx engine/inference/run-rule-engine.js",
-    "ingest": "tsx engine/ingestion/ingest-cli.ts",
-    "scheduler:install": "launchctl load engine/scheduler/com.mikai.daily-sync.plist",
-    "scheduler:run": "bash engine/scheduler/daily-sync.sh",
-    "cleanup": "node scripts/cleanup-sources.js",
-    "watch-claude": "node scripts/watch-claude-exports.js",
-    "watch:claude-code": "tsx scripts/watch-claude-code.js",
-    "eval": "tsx engine/eval/eval-nodes.ts",
-    "eval:stall": "tsx engine/eval/eval-stall.ts",
-    "eval:segments": "tsx engine/eval/eval-segments.ts",
-    "test": "tsx engine/eval/test-suite.ts --all",
-    "test:quick": "tsx engine/eval/test-suite.ts --quick",
-    "test:segments": "tsx engine/eval/test-suite.ts --segments",
-    "test:retrieval": "tsx engine/eval/test-suite.ts --retrieval",
-    "test:cost": "tsx engine/eval/test-suite.ts --cost",
-    "test:brief": "tsx engine/eval/eval-brief-routing.ts",
-    "lint": "eslint",
-    "l4": "tsx engine/l4/run-l4-pipeline.ts",
-    "l4:detect": "tsx engine/l4/run-l4-pipeline.ts --detect-only",
-    "l4:classify": "tsx engine/l4/run-l4-pipeline.ts --classify-only",
-    "l4:infer": "tsx engine/l4/run-l4-pipeline.ts --infer-only",
-    "l4:no-llm": "tsx engine/l4/run-l4-pipeline.ts --skip-infer",
-    "l3:upgrade": "tsx engine/l3/run-l3-upgrade.ts",
-    "l3:sync-fts": "tsx engine/l3/run-l3-upgrade.ts --sync-fts-only",
-    "l3:resolve": "tsx engine/l3/run-entity-resolution.ts",
-    "l3:resolve:force": "tsx engine/l3/run-entity-resolution.ts --force",
-    "build-segments:local": "tsx engine/graph/build-segments-local.ts",
-    "build-segments:local:rebuild": "tsx engine/graph/build-segments-local.ts --rebuild"
-  },
-  "dependencies": {
-    "@anthropic-ai/sdk": "^0.78.0",
-    "@huggingface/transformers": "^3.8.1",
-    "@modelcontextprotocol/sdk": "^1.27.1",
-    "better-sqlite3": "^12.8.0",
-    "sqlite-vec": "^0.1.7",
-    "tsx": "^4.21.0",
-    "zod": "^3.24.0"
-  },
-  "optionalDependencies": {
-    "@supabase/supabase-js": "^2.99.0",
-    "googleapis": "^171.4.0",
-    "playwright": "^1.58.2",
-    "voyageai": "^0.2.1"
-  },
-  "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
-    "@types/node": "^20",
-    "eslint": "^9",
-    "pg": "^8.20.0",
-    "typescript": "^5"
-  }
+  "version": "0.4.0",
+  "private": true,
+  "description": "MIKAI — task-state awareness engine (noonchi). L3 knowledge graph backed by Graphiti + Neo4j.",
+  "repository": "github.com:brianjhcho/Mikai.git",
+  "license": "UNLICENSED"
 }

@@ -1,59 +1,44 @@
-<!-- Generated: 2026-03-27 | Updated: 2026-03-27 -->
+<!-- Generated: 2026-04-11 -->
 
 # MIKAI
 
 ## Purpose
-Task-state awareness engine ("noonchi") that knows where you are in your thinking across apps and tells you what to do next. Extracts a knowledge graph from Apple Notes, Gmail, iMessage, and local files, then detects threads, classifies their reasoning state, and infers next steps.
+MIKAI is a task-state awareness engine ("noonchi") — the AI that knows where you are in your thinking across apps and tells you what to do next.
 
-## Architecture Layers
-| Layer | Purpose | LLM Usage |
-|-------|---------|-----------|
-| L3 — Knowledge Graph | Extraction, segmentation, stall scoring | Claude Haiku (extraction only) |
-| L4 — Task-State Awareness | Thread detection, state classification, next-step inference | Claude Haiku (inference only) |
+## Current architectural state
 
-## Key Files
-| File | Description |
-|------|-------------|
-| `package.json` | @chobus/mikai v0.3.0 — npm package manifest |
-| `CLAUDE.md` | Development context and build instructions |
-| `.env.local` | API keys (Anthropic, Voyage, Supabase) — DO NOT COMMIT |
-| `tsconfig.json` | TypeScript configuration |
+MIKAI is mid-migration from a dual SQLite/Supabase backend to Graphiti + Neo4j as the sole L3 knowledge graph. Main has been cleaned to reflect this direction:
 
-## Subdirectories
-| Directory | Purpose |
-|-----------|---------|
-| `engine/` | Core processing pipeline (see `engine/AGENTS.md`) |
-| `lib/` | Storage backends and embeddings (see `lib/AGENTS.md`) |
-| `surfaces/` | Product surfaces — MCP server (see `surfaces/AGENTS.md`) |
-| `sources/` | Data connectors — zero-LLM ingest (see `sources/AGENTS.md`) |
-| `scripts/` | Utility scripts for watching/cleanup |
-| `docs/` | Architecture docs, decisions, open questions |
-| `private/` | Strategy docs — identity, roadmap, competitive analysis |
-| `bin/` | CLI entrypoint (`mikai.ts`) |
+- **L3 (knowledge graph) → Graphiti + Neo4j** — `infra/graphiti/`
+- **L4 (task-state awareness)** — to be rebuilt against Graphiti. Prior SQLite-backed L4 preserved on `feat/l4-testing`.
+- **Ingestion** — via Python scripts in `infra/graphiti/scripts/`. The TypeScript source connectors have been retired; any new ingestion path is built directly against the Graphiti sidecar.
+- **Product surface (MCP server)** — to be rebuilt. The prior SQLite-coupled MCP server is preserved on `legacy/sqlite-local` and `wip/2026-04-10-presplit`.
 
-## For AI Agents
+For the full architectural snapshot that motivated this cleanup, see `docs/CURRENT_STACK.md`. For the cleanup inventory, see `docs/CLEANUP_CANDIDATES.md`.
 
-### Working In This Directory
-- Use `.env.local` for API keys — never hardcode secrets
-- The project has TWO storage paths: Supabase (cloud) and SQLite (local, `~/.mikai/mikai.db`)
-- Set `MIKAI_LOCAL=1` to use the local SQLite path
-- All engine scripts use the same env-loading pattern: read `.env.local` line-by-line
+## Repository layout (post-cleanup)
 
-### Testing Requirements
-- `npm test` runs the full eval suite
-- `npm run test:quick` for fast validation
-- `npm run eval:stall` for stall detection accuracy
+| Path | Purpose |
+|------|---------|
+| `infra/graphiti/` | Graphiti L3 infrastructure (Neo4j docker-compose, FastAPI sidecar, Python import and community-detection scripts) |
+| `docs/` | Architecture reference, decision log, cleanup inventory, current stack snapshot |
+| `private/` | Strategy docs (gitignored, local only) |
+| `package.json` | Minimal shell — repo metadata only, no Node dependencies |
+| `.env.example` | Graphiti + Neo4j environment variables |
 
-### Pipeline
-```
-sync (zero LLM) → build-graph (Haiku) → build-segments (zero LLM) → run-rule-engine (zero LLM) → run-l4-pipeline (detect → classify → infer)
-```
+## Branches
 
-## Dependencies
+| Branch | Purpose |
+|--------|---------|
+| `main` | Graphiti-only. Clean slate for Graphiti-native rebuild. |
+| `feat/l4-testing` | L4 pipeline work-in-progress (reads SQLite, needs porting to Graphiti) |
+| `legacy/sqlite-local` | Frozen pointer at the last state where SQLite L3 was live (commit `b8f07ee`) |
+| `legacy/supabase` | Frozen pointer at v0.2.0, the pure Supabase era (commit `2a0bf8c`) |
+| `wip/2026-04-10-presplit` | Safety snapshot from before the cleanup, including the 861-line MCP server rewrite |
+| `chore/cleanup-2026-04-11` | This cleanup branch |
 
-### External
-- `@anthropic-ai/sdk` — Claude API for extraction and inference
-- `@modelcontextprotocol/sdk` — MCP server framework
-- `better-sqlite3` + `sqlite-vec` — Local storage with vector search
-- `@supabase/supabase-js` — Cloud storage (optional)
-- `voyageai` — Voyage AI embeddings (optional, cloud path)
+## For AI agents working on this repo
+
+Read `docs/CURRENT_STACK.md` first for the honest state of the architecture as of 2026-04-10/11. Then read `docs/GRAPHITI_INTEGRATION.md` for the scaling patch applied to graphiti-core and for operational notes on the 6,990-entity graph.
+
+All future product code targets the Graphiti sidecar at `http://localhost:8100`. Do not reintroduce SQLite or Supabase paths. If a local-data option is needed in the future, revive it from `legacy/sqlite-local`.
