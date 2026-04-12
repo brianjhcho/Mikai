@@ -620,3 +620,71 @@ Each tier serves a different query depth. L1 prevents unnecessary L2/L3 calls. L
 **Tradeoff:** Loses the web chat demo and graph visualization UI. These were developer tools, not user-facing product. If a web surface is needed later, it can be rebuilt as a standalone app that queries via MCP or direct Supabase calls.
 
 **Revisit if:** A web-based demo becomes necessary for beta onboarding or investor demos.
+
+---
+
+## ARCH-019: Graphiti + Neo4j as Sole L3 Backend
+**Date:** 2026-04-10
+**Source:** Architectural pivot after Graphiti import of 6,990 entities from 1,102 Apple Notes
+**Decision:** Graphiti (graphiti-core) + Neo4j 5.26 is the sole L3 knowledge graph backend. Supabase Postgres + pgvector and local SQLite + sqlite-vec are retired from main. All L3 reads and writes go through the Graphiti FastAPI sidecar or graphiti-core in-process.
+**Why:** Graphiti provides entity resolution (4-tier: exact → fuzzy → BM25 → LLM), bitemporal edges (valid_at/invalid_at), community detection, and episode-based ingestion — capabilities that took months to partially implement in the SQLite/Supabase eras and still produced only 18.5% state classification accuracy. Graphiti gives these as primitives. The 6,990-entity graph imported via Graphiti is richer and more structurally connected than the SQLite graph ever was.
+**Supersedes:** D-005 (Supabase pgvector for storage), ARCH-001 (Supabase only), ARCH-018 (stay on Supabase).
+**Rejected:** Keeping SQLite as a parallel local-data option on main (creates dual-backend maintenance burden; the local option is preserved on legacy/sqlite-local branch for future revival if needed). Keeping Supabase as a fallback (no code on main should reference SUPABASE_URL).
+**Revisit if:** Graphiti is abandoned by Zep, or a local-first requirement makes Neo4j Docker untenable for distribution. In that case, revive from legacy/sqlite-local.
+
+---
+
+## ARCH-020: Ingestion Targets Graphiti Directly
+**Date:** 2026-04-11
+**Source:** Cleanup analysis (docs/CURRENT_STACK.md) revealed the ingestion pipeline was Supabase-only
+**Decision:** All new data enters the knowledge graph via Graphiti's `add_episode()` API, either through the sidecar's `/episode` HTTP endpoint or graphiti-core in-process. No intermediate storage layer (no SQLite sources table, no Supabase sources table). The TypeScript source connectors (sources/apple-notes/sync.js, sources/gmail/sync.js, etc.) are retired. Ingestion into Graphiti currently happens via manual Python scripts in infra/graphiti/scripts/; automated ingestion will be built on the feat/ingestion-automation branch.
+**Why:** The old ingestion path wrote to Supabase exclusively (ingest-direct.ts threw if SUPABASE_URL was unset), then a separate extraction pass wrote nodes/edges, then a separate segmentation pass wrote segments. Three stages, two backends, no atomicity. Graphiti's add_episode() does extraction, entity resolution, and edge creation in one atomic call. One write replaces three.
+**Supersedes:** D-020 (MCP as integration layer for source connectors), D-029 (direct SQLite for iMessage).
+**Rejected:** Porting the TypeScript source connectors to call Graphiti's sidecar (the connectors are JavaScript/TypeScript, the sidecar is Python — cross-language complexity for no benefit when Python scripts do the same job).
+**Revisit if:** An automated ingestion daemon is needed that watches for new Apple Notes/Gmail/iMessage in real-time. That's the feat/ingestion-automation branch, not a relitigation of the backend choice.
+
+---
+
+## ARCH-021: No Dual-Backend Abstraction Layer
+**Date:** 2026-04-11
+**Source:** L3Backend interface discussion during the refactor planning
+**Decision:** There is no TypeScript "L3Backend" interface or abstraction layer. Product code calls the Graphiti sidecar's HTTP API directly (or graphiti-core in-process for the Python MCP server). If a local-data option is ever needed, it lives on a separate branch — not behind an abstraction on main.
+**Why:** The L3Backend abstraction was proposed as a way to support both SQLite and Graphiti from the same MCP server. But dual-backend abstractions are maintenance liabilities: they force the lowest common denominator, they double the test surface, and they prevent using backend-specific features (like Graphiti's community detection or Neo4j's Cypher traversals). MIKAI's competitive advantage comes from deep integration with Graphiti, not from backend portability.
+**Rejected:** Writing lib/l3-backend.ts + lib/l3-backend-graphiti.ts as an interface/implementation pair (proposed and then abandoned during the refactor planning session). Keeping SQLite as a fallback behind the interface (same maintenance burden as dual-backend).
+**Revisit if:** A second backend becomes genuinely necessary (e.g., a mobile-local deployment where Neo4j can't run). Even then, prefer a separate branch or separate product over an abstraction layer.
+
+---
+
+## D-040: Python MCP Server Replaces TypeScript
+**Date:** 2026-04-11
+**Source:** Socratic analysis of the old MCP tool set vs Graphiti capabilities
+**Decision:** The MCP server for Claude Desktop is rebuilt in Python, co-located with the Graphiti sidecar at infra/graphiti/sidecar/mcp_server.py. TypeScript is no longer used anywhere in the MIKAI codebase on main. The MCP server initializes graphiti-core in-process (no HTTP hop to the sidecar for L3 calls).
+**Why:** With all L3 logic in Python (graphiti-core, the sidecar endpoints, the import scripts), a TypeScript MCP server would be a thin HTTP forwarder adding latency and a second language runtime for no benefit. Python MCP (via the mcp>=1.0 SDK) supports stdio transport for Claude Desktop. One language, one process, direct graph access.
+**Supersedes:** D-039 partially (MCP is still the sole product surface, but the implementation language changed from TypeScript to Python).
+**Rejected:** Keeping TypeScript for the MCP server (adds cross-language boundary, HTTP hop, npm dependency chain — all for a thin forwarding layer).
+**Revisit if:** The Python MCP SDK proves too limited for a feature Claude Desktop needs, or if a TypeScript-based MCP surface is required for a different client (e.g., Cursor, VS Code extension).
+
+---
+
+## D-041: L4 Is Product Layer, L3 Sidecar Is Pure Graph Primitives
+**Date:** 2026-04-11
+**Source:** Socratic analysis of old MCP tools — which are L3 (graph queries) vs L4 (derived state)
+**Decision:** The Graphiti sidecar exposes only generic graph primitives: search, node fetch, BFS expand, edges-between, history, stats, episode write, communities. It does NOT implement tension detection, thread detection, state classification, stalled-project surfacing, next-step inference, or context briefs. Those are L4 concerns that belong in a separate L4 engine, to be designed and built on a dedicated branch (feat/l4-engine) after the product semantics are settled.
+**Why:** The old MCP server blurred L3 and L4 because both lived in the same file reading the same SQLite tables. Graphiti forces the separation visible: the five "noonchi" tools (get_tensions, get_threads, get_thread_detail, get_next_steps, get_brief) asked questions the graph can't answer natively — they require a state model, a temporal decay concept, and LLM reasoning layered ON TOP of graph data. Mixing these into the sidecar would couple the L4 design to the L3 API, making both harder to evolve independently.
+**Rejected:** Building tension/thread detection as sidecar endpoints (leaks L4 semantics into L3). Building all tools before shipping any (delays the V1 wedge — "Graphiti-backed memory for Claude" ships with 4 L3 tools while L4 is designed separately).
+**Revisit if:** A specific L4 operation turns out to be a pure graph query after all (e.g., "tensions" can be defined as "communities with high internal contradiction-edge density" without any state machine). In that case, promote it to a sidecar endpoint.
+
+---
+
+## D-042: Graphiti Dependency Management — Patch Script, Not Fork
+**Date:** 2026-04-11
+**Source:** Best practices review of graphiti-core (docs/GRAPHITI_BEST_PRACTICES_REVIEW.md)
+**Decision:** Maintain graphiti-core as a pip dependency with a reproducible patch script (scripts/apply_graphiti_patch.py) rather than forking. The patch fixes the context-window overflow in node_operations.py (candidate cap at 50, attribute stripping). Submit an upstream PR for a configurable max_resolution_candidates parameter. Fork only if the trigger conditions are met.
+**Why:** Forking creates an ongoing merge burden — every graphiti-core release must be manually merged into the fork. With one patched file and a reproducible script, the maintenance cost is near zero. The patch is well-documented (docs/GRAPHITI_INTEGRATION.md) and the upstream PR is drafted (docs/UPSTREAM_PR_DRAFT.md).
+**Fork trigger conditions:**
+- Need to change Graphiti's Neo4j schema (node labels, edge properties)
+- Need to modify the entity resolution algorithm beyond the candidate cap
+- Have patched 3+ files in graphiti-core
+- Upstream PR rejected or unresponsive for 30+ days
+- A graphiti-core upgrade breaks the patch AND contains needed features
+**Revisit if:** Any fork trigger condition is met.
