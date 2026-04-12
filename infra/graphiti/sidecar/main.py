@@ -413,6 +413,23 @@ class HistoryResult(BaseModel):
     superseded: list[SearchResult]
 
 
+class ConnectedEntity(BaseModel):
+    uuid: str
+    name: str
+
+
+class EpisodeResult(BaseModel):
+    uuid: str
+    name: str | None = None
+    content: str | None = None
+    source_description: str | None = None
+    source: str | None = None
+    reference_time: str | None = None
+    created_at: str | None = None
+    group_id: str | None = None
+    connected_entities: list[ConnectedEntity] = []
+
+
 # ── Raw Cypher helper ────────────────────────────────────────────────────────
 
 
@@ -752,4 +769,52 @@ async def history(req: HistoryRequest):
     return HistoryResult(
         current=current[: req.num_results],
         superseded=superseded[: req.num_results],
+    )
+
+
+@app.get("/episodes/{uuid}", response_model=EpisodeResult)
+async def get_episode(uuid: str):
+    """Fetch a single Episodic node by UUID, including connected entities.
+
+    Returns the episode's content, source metadata, and reference time alongside
+    a list of Entity nodes connected to this episode via any relationship type.
+    Used by the L4 engine to reconstruct the raw evidence behind a given belief
+    or to audit what entities a specific ingestion event extracted.
+    """
+    rows = await run_cypher("""
+        MATCH (ep:Episodic {uuid: $uuid})
+        OPTIONAL MATCH (ep)--(e:Entity)
+        RETURN
+            ep.uuid            AS uuid,
+            ep.name            AS name,
+            ep.content         AS content,
+            ep.source_description AS source_description,
+            ep.source          AS source,
+            ep.reference_time  AS reference_time,
+            ep.created_at      AS created_at,
+            ep.group_id        AS group_id,
+            collect(DISTINCT {uuid: e.uuid, name: e.name}) AS connected_entities
+    """, uuid=uuid)
+
+    if not rows:
+        raise HTTPException(404, f"Episode {uuid} not found")
+
+    r = rows[0]
+    raw_entities = r.get("connected_entities") or []
+    entities = [
+        ConnectedEntity(uuid=ent["uuid"], name=ent["name"])
+        for ent in raw_entities
+        if ent.get("uuid") and ent.get("name")
+    ]
+
+    return EpisodeResult(
+        uuid=r.get("uuid") or uuid,
+        name=r.get("name"),
+        content=r.get("content"),
+        source_description=r.get("source_description"),
+        source=str(r["source"]) if r.get("source") is not None else None,
+        reference_time=_iso_or_none(r.get("reference_time")),
+        created_at=_iso_or_none(r.get("created_at")),
+        group_id=r.get("group_id"),
+        connected_entities=entities,
     )
