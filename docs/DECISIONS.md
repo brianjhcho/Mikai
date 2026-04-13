@@ -688,3 +688,32 @@ Each tier serves a different query depth. L1 prevents unnecessary L2/L3 calls. L
 - Upstream PR rejected or unresponsive for 30+ days
 - A graphiti-core upgrade breaks the patch AND contains needed features
 **Revisit if:** Any fork trigger condition is met.
+
+---
+
+## ARCH-023: Hybrid Ingestion Architecture (Pattern 2 + Pattern 3)
+**Date:** 2026-04-13
+**Source:** Analysis of 12 commercial products with automated personal data ingestion (Glean, Dust.tt, Limitless, Granola, Readwise, Microsoft Copilot, Apple Intelligence, Google Gemini, Recall.ai, Reflect, Capacities, Khoj)
+**Decision:** MIKAI's ingestion daemon uses a hybrid of two patterns, converging on a single write path (`graphiti.add_episode()`):
+
+**Mode 1 — Filesystem watchers (Pattern 3: OS-level capture).** For local sources that have no API and never will. The Python `watchdog` library wraps macOS FSEvents to detect filesystem changes in real time. Sources: Apple Notes (`~/Library/Group Containers/group.com.apple.notes/`), Claude Code sessions (`~/.claude/projects/`), local files. This is where the highest-signal personal data lives — private notes, AI conversations, research threads.
+
+**Mode 2 — MCP client polling (Pattern 2: API/event-driven, standardized).** For cloud sources that expose MCP servers. MIKAI connects as an MCP client, calls the source's list/search tools on a schedule (e.g., every 30 minutes), and feeds results into Graphiti. Sources: Gmail (MCP server exists), Google Calendar (MCP server exists), Google Drive (MCP server exists). Zero custom API code per source — one MCP client works with any MCP server. MIKAI becomes both an MCP server (exposing tools to Claude Desktop) and an MCP client (consuming tools from cloud sources).
+
+**Mode 3 — Drop folder (manual fallback).** For sources with no MCP server and no accessible filesystem location. User drops JSON or markdown exports into `~/.mikai/imports/`. The file watcher picks them up and ingests them. Sources: Perplexity threads, Claude.ai web conversation exports, any ad-hoc content.
+
+**Why hybrid:** The most personal sources (Apple Notes, iMessage, Claude Code) will never have MCP servers — Apple has no incentive to expose user data to third-party AI systems, and Claude Code writes JSONL to disk directly. Pattern 3 is the only way to access them. Cloud sources (Gmail, Calendar, Drive) already have MCP servers, so Pattern 2 avoids building custom API connectors. The drop folder catches everything else.
+
+**Build phases:**
+- Phase 1 (`feat/ingestion-automation`): Mode 1 (Apple Notes + Claude Code filesystem watchers) + Mode 3 (drop folder). Ships a working daemon.
+- Phase 2 (`feat/ingestion-mcp-client`): Mode 2 (MCP client for Gmail, Calendar, Drive). The daemon becomes an MCP client alongside filesystem watchers.
+
+**Supersedes:** The old TypeScript source connectors (`sources/apple-notes/sync.js`, `sources/gmail/sync.js`, etc.) and the old `engine/scheduler/daily-sync.sh` pipeline, both of which wrote to Supabase. All retired in the 2026-04-11 cleanup.
+
+**Rejected:**
+- Pure Pattern 2 / API-only (cannot access Apple Notes, iMessage, Claude Code — the highest-signal sources have no APIs)
+- Pure Pattern 3 / OS-level only (cannot access cloud-only services like Gmail, Google Drive without local sync clients)
+- Message queue architecture like Temporal (overkill for single-user scale — checkpoint files per source provide the same resume-on-failure guarantee)
+- Building custom API connectors per cloud source (MCP standardizes this; custom connectors are maintenance burden that MCP eliminates)
+
+**Revisit if:** MCP adds a push/subscription mechanism (webhooks, event streams) that replaces polling for Mode 2. Or if Apple opens an App Intents API for Notes content that makes Mode 1 unnecessary for that source.
