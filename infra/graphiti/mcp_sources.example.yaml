@@ -1,0 +1,66 @@
+# MIKAI MCP source configuration — example
+#
+# Copy this file to ~/.mikai/mcp_sources.yaml, uncomment the sources you want,
+# and set up the required auth credentials before running mcp_ingest.py.
+#
+# Each source entry spawns an MCP server subprocess via stdio transport.
+# The ${LAST_SYNC} placeholder in tool_args is replaced at poll time with the
+# last successful sync timestamp for that source (ISO 8601 UTC string).
+#
+# Auth setup:
+#   Gmail        — https://github.com/anthropics/gmail-mcp#authentication
+#   Calendar     — https://github.com/anthropics/google-calendar-mcp#authentication
+#   Drive        — https://github.com/anthropics/google-drive-mcp#authentication
+
+sources:
+
+  gmail:
+    # Spawns the Gmail MCP server via npx.
+    command: "npx"
+    args: ["-y", "@anthropic-ai/gmail-mcp"]
+    # Optional: pass extra environment variables to the MCP server process.
+    # You can also set these in your shell before running mcp_ingest.py.
+    env: {}
+    #   GMAIL_CREDENTIALS_FILE: "/path/to/credentials.json"
+    #   GMAIL_TOKEN_FILE: "/path/to/token.json"
+
+    # The MCP tool to call and its arguments.
+    tool: "search_emails"
+    tool_args:
+      query: "newer_than:1d"
+
+    # How often to poll this source (in minutes).
+    schedule_minutes: 30
+
+    # Graphiti grouping — all episodes from this source share a group_id.
+    group_id: "gmail"
+    source_description: "gmail"
+
+  google_calendar:
+    command: "npx"
+    args: ["-y", "@anthropic-ai/google-calendar-mcp"]
+    env: {}
+    #   GOOGLE_CREDENTIALS_FILE: "/path/to/credentials.json"
+
+    tool: "list_events"
+    tool_args:
+      # ${LAST_SYNC} is replaced with the last successful sync timestamp.
+      time_min: "${LAST_SYNC}"
+
+    schedule_minutes: 60
+    group_id: "calendar"
+    source_description: "google-calendar"
+
+  google_drive:
+    command: "npx"
+    args: ["-y", "@anthropic-ai/google-drive-mcp"]
+    env: {}
+    #   GOOGLE_CREDENTIALS_FILE: "/path/to/credentials.json"
+
+    tool: "search_files"
+    tool_args:
+      query: "modifiedTime > '${LAST_SYNC}'"
+
+    schedule_minutes: 60
+    group_id: "drive"
+    source_description: "google-drive"

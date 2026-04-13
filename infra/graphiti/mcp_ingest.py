@@ -1,0 +1,509 @@
+"""
+MIKAI MCP Ingestion Daemon — Phase 2 cloud-source ingestion.
+
+Makes MIKAI an MCP CLIENT that connects to external MCP servers (Gmail,
+Calendar, Drive) and feeds their data into the Graphiti knowledge graph.
+
+Usage:
+    python mcp_ingest.py          # continuous polling on each source's schedule
+    python mcp_ingest.py --once   # single pass across all sources, then exit
+
+Config: ~/.mikai/mcp_sources.yaml
+State:  ~/.mikai/mcp_sync_state.json
+
+NOTE: The MCP client API used here (mcp.client.stdio / mcp.client.session)
+matches the mcp>=1.0 SDK. If the installed SDK version differs, the import
+paths or context-manager signatures may need adjustment. The code documents
+these touch-points with inline comments.
+"""
+
+import argparse
+import asyncio
+import json
+import logging
+import os
+import sys
+import typing
+from datetime import datetime, timezone
+from pathlib import Path
+
+import yaml  # pyyaml>=6.0
+
+from graphiti_core import Graphiti
+from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
+from graphiti_core.llm_client.config import LLMConfig, ModelSize, DEFAULT_MAX_TOKENS
+from graphiti_core.llm_client.client import Message
+from graphiti_core.embedder.voyage import VoyageAIEmbedder, VoyageAIEmbedderConfig
+from graphiti_core.cross_encoder.client import CrossEncoderClient
+from graphiti_core.nodes import EpisodeType
+
+# MCP client imports — exact paths depend on installed mcp SDK version.
+# mcp>=1.0 ships these under mcp.client.*
+try:
+    from mcp.client.stdio import stdio_client, StdioServerParameters
+    from mcp.client.session import ClientSession
+except ImportError as _e:  # pragma: no cover
+    raise ImportError(
+        "MCP client libraries not found. Ensure mcp>=1.0 is installed.\n"
+        f"Original error: {_e}"
+    )
+
+logger = logging.getLogger("mikai-mcp-ingest")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+)
+
+# ── Paths ────────────────────────────────────────────────────────────────────
+
+MIKAI_DIR = Path.home() / ".mikai"
+CONFIG_PATH = MIKAI_DIR / "mcp_sources.yaml"
+STATE_PATH = MIKAI_DIR / "mcp_sync_state.json"
+
+# ── Graphiti client classes (mirrored from sidecar/mcp_server.py) ─────────────
+
+
+class DeepSeekClient(OpenAIGenericClient):
+    """DeepSeek-compatible client using json_object mode instead of json_schema."""
+
+    async def _generate_response(
+        self,
+        messages: list[Message],
+        response_model: type | None = None,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
+        model_size: ModelSize = ModelSize.medium,
+    ) -> dict[str, typing.Any]:
+        from openai.types.chat import ChatCompletionMessageParam
+
+        openai_messages: list[ChatCompletionMessageParam] = []
+        for m in messages:
+            m.content = self._clean_input(m.content)
+            if m.role == "user":
+                openai_messages.append({"role": "user", "content": m.content})
+            elif m.role == "system":
+                openai_messages.append({"role": "system", "content": m.content})
+
+        if response_model is not None:
+            schema = response_model.model_json_schema()
+            schema_instruction = (
+                f"\n\nYou MUST respond with valid JSON matching this exact schema:\n"
+                f"```json\n{json.dumps(schema, indent=2)}\n```\n"
+                f"Respond ONLY with the JSON object, no other text."
+            )
+            injected = False
+            for i, msg in enumerate(openai_messages):
+                if msg["role"] == "system":
+                    openai_messages[i] = {
+                        "role": "system",
+                        "content": str(msg["content"]) + schema_instruction,
+                    }
+                    injected = True
+                    break
+            if not injected:
+                openai_messages.insert(
+                    0, {"role": "system", "content": schema_instruction}
+                )
+
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=openai_messages,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+                response_format={"type": "json_object"},
+            )
+            result = response.choices[0].message.content or "{}"
+            return json.loads(result)
+        except Exception as e:
+            logger.error(f"DeepSeek error: {e}")
+            raise
+
+
+class PassthroughReranker(CrossEncoderClient):
+    """No-op reranker — avoids OpenAI cross-encoder dependency."""
+
+    async def rank(
+        self, query: str, passages: list[str]
+    ) -> list[tuple[str, float]]:
+        return [(p, 1.0 - i * 0.01) for i, p in enumerate(passages)]
+
+
+# ── Graphiti initialization ──────────────────────────────────────────────────
+
+
+async def init_graphiti() -> Graphiti:
+    """Initialize the Graphiti client with Neo4j + DeepSeek + Voyage AI."""
+    neo4j_uri = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
+    neo4j_user = os.environ.get("NEO4J_USER", "neo4j")
+    neo4j_password = os.environ.get("NEO4J_PASSWORD", "mikai-local-dev")
+
+    deepseek_key = os.environ.get("DEEPSEEK_API_KEY")
+    voyage_key = os.environ.get("VOYAGE_API_KEY")
+
+    if not deepseek_key:
+        raise RuntimeError("DEEPSEEK_API_KEY required")
+    if not voyage_key:
+        raise RuntimeError("VOYAGE_API_KEY required")
+
+    logger.info(f"Connecting to Neo4j at {neo4j_uri}")
+
+    llm_client = DeepSeekClient(
+        config=LLMConfig(
+            api_key=deepseek_key,
+            model="deepseek-chat",
+            small_model="deepseek-chat",
+            base_url="https://api.deepseek.com",
+        ),
+        max_tokens=8192,
+    )
+
+    embedder = VoyageAIEmbedder(
+        config=VoyageAIEmbedderConfig(
+            api_key=voyage_key,
+            model="voyage-3",
+        )
+    )
+
+    g = Graphiti(
+        neo4j_uri,
+        neo4j_user,
+        neo4j_password,
+        llm_client=llm_client,
+        embedder=embedder,
+        cross_encoder=PassthroughReranker(),
+    )
+
+    await g.build_indices_and_constraints()
+    logger.info("Graphiti initialized")
+    return g
+
+
+# ── Checkpoint state ─────────────────────────────────────────────────────────
+
+
+def load_state() -> dict[str, str]:
+    """Load last-sync timestamps keyed by source name."""
+    if not STATE_PATH.exists():
+        return {}
+    try:
+        with STATE_PATH.open() as fh:
+            return json.load(fh)
+    except Exception as e:
+        logger.warning(f"Could not read sync state from {STATE_PATH}: {e}")
+        return {}
+
+
+def save_state(state: dict[str, str]) -> None:
+    """Persist last-sync timestamps to disk."""
+    MIKAI_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        with STATE_PATH.open("w") as fh:
+            json.dump(state, fh, indent=2)
+    except Exception as e:
+        logger.warning(f"Could not write sync state to {STATE_PATH}: {e}")
+
+
+# ── Config loading ────────────────────────────────────────────────────────────
+
+
+TEMPLATE_CONFIG = """\
+# MIKAI MCP source configuration
+# Copy this file to ~/.mikai/mcp_sources.yaml and enable the sources you want.
+# Each source spawns an MCP server subprocess via stdio.
+#
+# IMPORTANT: You must set up auth credentials for each source before enabling.
+# Refer to each MCP server's README for environment variable requirements.
+
+sources:
+
+  # gmail:
+  #   command: "npx"
+  #   args: ["-y", "@anthropic-ai/gmail-mcp"]
+  #   # Environment variables passed to the MCP server process.
+  #   # Add your OAuth credentials here or set them in your shell environment.
+  #   env: {}
+  #   tool: "search_emails"
+  #   tool_args:
+  #     query: "newer_than:1d"
+  #   schedule_minutes: 30
+  #   group_id: "gmail"
+  #   source_description: "gmail"
+
+  # google_calendar:
+  #   command: "npx"
+  #   args: ["-y", "@anthropic-ai/google-calendar-mcp"]
+  #   env: {}
+  #   tool: "list_events"
+  #   tool_args:
+  #     time_min: "${LAST_SYNC}"
+  #   schedule_minutes: 60
+  #   group_id: "calendar"
+  #   source_description: "google-calendar"
+
+  # google_drive:
+  #   command: "npx"
+  #   args: ["-y", "@anthropic-ai/google-drive-mcp"]
+  #   env: {}
+  #   tool: "search_files"
+  #   tool_args:
+  #     query: "modifiedTime > '${LAST_SYNC}'"
+  #   schedule_minutes: 60
+  #   group_id: "drive"
+  #   source_description: "google-drive"
+"""
+
+
+def load_config() -> dict:
+    """Load mcp_sources.yaml. Create a template and exit if it doesn't exist."""
+    if not CONFIG_PATH.exists():
+        MIKAI_DIR.mkdir(parents=True, exist_ok=True)
+        CONFIG_PATH.write_text(TEMPLATE_CONFIG)
+        print(
+            f"\nNo config found. A template has been created at:\n  {CONFIG_PATH}\n\n"
+            "Edit that file to enable MCP sources (Gmail, Calendar, Drive),\n"
+            "then re-run mcp_ingest.py.\n"
+        )
+        sys.exit(0)
+
+    with CONFIG_PATH.open() as fh:
+        cfg = yaml.safe_load(fh)
+
+    if not cfg or not cfg.get("sources"):
+        logger.warning(f"No sources defined in {CONFIG_PATH}. Nothing to do.")
+        return {"sources": {}}
+
+    return cfg
+
+
+# ── Tool-arg interpolation ────────────────────────────────────────────────────
+
+
+def interpolate_tool_args(
+    tool_args: dict, last_sync: str | None
+) -> dict:
+    """Replace ${LAST_SYNC} placeholders with the actual timestamp string."""
+    last_sync_val = last_sync or datetime.now(tz=timezone.utc).isoformat()
+    result = {}
+    for k, v in tool_args.items():
+        if isinstance(v, str):
+            result[k] = v.replace("${LAST_SYNC}", last_sync_val)
+        else:
+            result[k] = v
+    return result
+
+
+# ── MCP client poll ───────────────────────────────────────────────────────────
+
+
+def _extract_text(content_item) -> str | None:
+    """
+    Extract plain text from a single MCP content item.
+
+    The mcp SDK returns content items with a .type attribute. We handle the
+    common 'text' type. Other types (image, resource) are skipped.
+    """
+    item_type = getattr(content_item, "type", None)
+    if item_type == "text":
+        return getattr(content_item, "text", None)
+    # For structured content that may have a dict-like representation
+    if isinstance(content_item, dict):
+        if content_item.get("type") == "text":
+            return content_item.get("text")
+    return None
+
+
+async def poll_source(
+    source_name: str,
+    source_cfg: dict,
+    graphiti: Graphiti,
+    state: dict[str, str],
+) -> None:
+    """
+    Connect to one MCP server, call its configured tool, and ingest results.
+
+    The MCP client API used here follows mcp>=1.0 conventions:
+      - StdioServerParameters(command, args, env) describes the subprocess
+      - stdio_client(...) is an async context manager yielding (read, write)
+      - ClientSession(read, write) is an async context manager
+      - session.initialize() completes the MCP handshake
+      - session.call_tool(name, arguments) returns a CallToolResult with a
+        .content list of content items
+    """
+    command = source_cfg.get("command", "npx")
+    args = source_cfg.get("args", [])
+    env_overrides: dict[str, str] = source_cfg.get("env") or {}
+    tool_name = source_cfg.get("tool", "")
+    tool_args_template: dict = source_cfg.get("tool_args") or {}
+    group_id = source_cfg.get("group_id", source_name)
+    source_description = source_cfg.get("source_description", source_name)
+
+    if not tool_name:
+        logger.warning(f"[{source_name}] No tool configured, skipping.")
+        return
+
+    last_sync = state.get(source_name)
+    tool_args = interpolate_tool_args(tool_args_template, last_sync)
+
+    # Merge caller's env overrides on top of the current process environment.
+    merged_env = {**os.environ, **env_overrides}
+
+    logger.info(
+        f"[{source_name}] Polling via {command} {args} "
+        f"| tool={tool_name} | last_sync={last_sync or 'never'}"
+    )
+
+    try:
+        # NOTE: StdioServerParameters accepts command, args, env.
+        # If the mcp SDK version uses different field names, adjust here.
+        server_params = StdioServerParameters(
+            command=command,
+            args=args,
+            env=merged_env,
+        )
+
+        # stdio_client is an async context manager. If the SDK uses a
+        # different entry point (e.g. mcp.client.stdio.connect), update here.
+        async with stdio_client(server_params) as (read_stream, write_stream):
+            # ClientSession is also an async context manager.
+            async with ClientSession(read_stream, write_stream) as session:
+                # initialize() completes the MCP protocol handshake.
+                await session.initialize()
+
+                # Call the configured tool.
+                result = await session.call_tool(tool_name, tool_args)
+
+    except Exception as e:
+        logger.error(
+            f"[{source_name}] MCP server failed to start or tool call failed: {e}"
+        )
+        return
+
+    # result.content is a list of content items (TextContent, ImageContent, etc.)
+    content_items = getattr(result, "content", []) or []
+    items_found = len(content_items)
+    items_ingested = 0
+    poll_time = datetime.now(tz=timezone.utc).isoformat()
+
+    logger.info(f"[{source_name}] Items found: {items_found}")
+
+    for item in content_items:
+        text = _extract_text(item)
+        if not text or not text.strip():
+            continue
+
+        try:
+            await graphiti.add_episode(
+                name=f"{source_name}-{poll_time}",
+                episode_body=text,
+                source=EpisodeType.text,
+                source_description=source_description,
+                reference_time=datetime.now(tz=timezone.utc),
+                group_id=group_id,
+            )
+            items_ingested += 1
+            logger.info(
+                f"[{source_name}] Ingested item {items_ingested}/{items_found}"
+            )
+        except Exception as e:
+            logger.error(f"[{source_name}] add_episode failed: {e}")
+
+        # 2-second delay between add_episode calls to avoid overwhelming Neo4j.
+        await asyncio.sleep(2)
+
+    # Update checkpoint to the poll time (even if 0 items — avoids re-fetching
+    # the same empty window on next poll).
+    state[source_name] = poll_time
+    save_state(state)
+
+    logger.info(
+        f"[{source_name}] Done. found={items_found} ingested={items_ingested} "
+        f"checkpoint={poll_time}"
+    )
+
+
+# ── Scheduler ─────────────────────────────────────────────────────────────────
+
+
+async def run_once(graphiti: Graphiti, sources: dict) -> None:
+    """Poll every configured source once and exit."""
+    state = load_state()
+    for source_name, source_cfg in sources.items():
+        await poll_source(source_name, source_cfg, graphiti, state)
+    logger.info("--once pass complete.")
+
+
+async def run_continuous(graphiti: Graphiti, sources: dict) -> None:
+    """
+    Run each source on its configured schedule_minutes interval, forever.
+
+    Each source runs in its own asyncio task with its own sleep cycle so a
+    slow source doesn't block the others.
+    """
+    state = load_state()
+
+    async def source_loop(source_name: str, source_cfg: dict) -> None:
+        interval_minutes = int(source_cfg.get("schedule_minutes", 30))
+        interval_seconds = interval_minutes * 60
+        while True:
+            await poll_source(source_name, source_cfg, graphiti, state)
+            logger.info(
+                f"[{source_name}] Next poll in {interval_minutes} minutes."
+            )
+            await asyncio.sleep(interval_seconds)
+
+    tasks = [
+        asyncio.create_task(source_loop(name, cfg))
+        for name, cfg in sources.items()
+    ]
+
+    logger.info(
+        f"Continuous polling started for {len(tasks)} source(s). "
+        "Press Ctrl-C to stop."
+    )
+    try:
+        await asyncio.gather(*tasks)
+    except asyncio.CancelledError:
+        for t in tasks:
+            t.cancel()
+        logger.info("Polling cancelled.")
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+
+async def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="MIKAI MCP ingestion daemon — feeds cloud sources into Graphiti."
+    )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Run a single poll pass across all sources, then exit.",
+    )
+    args = parser.parse_args()
+
+    cfg = load_config()
+    sources: dict = cfg.get("sources") or {}
+
+    if not sources:
+        logger.info("No enabled sources in config. Exiting.")
+        return
+
+    logger.info(
+        f"Initializing Graphiti... (sources: {', '.join(sources.keys())})"
+    )
+    graphiti = await init_graphiti()
+
+    try:
+        if args.once:
+            await run_once(graphiti, sources)
+        else:
+            await run_continuous(graphiti, sources)
+    finally:
+        await graphiti.close()
+        logger.info("Graphiti connection closed.")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
