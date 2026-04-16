@@ -35,94 +35,31 @@ Claude Desktop config (~/.claude/claude_desktop_config.json):
 """
 
 import asyncio
-import json
 import logging
-import os
-import typing
+import sys
 from datetime import datetime
+from pathlib import Path
+
+# When Claude Desktop launches this script directly, `sidecar` isn't on the
+# path. Add the parent dir so `from sidecar.client import ...` works both when
+# run as a module and as a script.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from graphiti_core import Graphiti
-from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
-from graphiti_core.llm_client.config import LLMConfig, ModelSize, DEFAULT_MAX_TOKENS
-from graphiti_core.llm_client.client import Message
-from graphiti_core.embedder.voyage import VoyageAIEmbedder, VoyageAIEmbedderConfig
-from graphiti_core.cross_encoder.client import CrossEncoderClient
 from graphiti_core.nodes import EpisodeType
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 import mcp.types as types
 
+from sidecar.client import (
+    init_graphiti as _init_graphiti_client,
+    iso_or_empty as _iso,
+    run_cypher as _run_cypher_on,
+)
+
 logger = logging.getLogger("mikai-mcp")
 logging.basicConfig(level=logging.INFO)
-
-
-# ── Graphiti client classes (shared with sidecar/main.py) ────────────────────
-
-
-class DeepSeekClient(OpenAIGenericClient):
-    """DeepSeek-compatible client using json_object mode instead of json_schema."""
-
-    async def _generate_response(
-        self,
-        messages: list[Message],
-        response_model: type | None = None,
-        max_tokens: int = DEFAULT_MAX_TOKENS,
-        model_size: ModelSize = ModelSize.medium,
-    ) -> dict[str, typing.Any]:
-        from openai.types.chat import ChatCompletionMessageParam
-
-        openai_messages: list[ChatCompletionMessageParam] = []
-        for m in messages:
-            m.content = self._clean_input(m.content)
-            if m.role == "user":
-                openai_messages.append({"role": "user", "content": m.content})
-            elif m.role == "system":
-                openai_messages.append({"role": "system", "content": m.content})
-
-        if response_model is not None:
-            schema = response_model.model_json_schema()
-            schema_instruction = (
-                f"\n\nYou MUST respond with valid JSON matching this exact schema:\n"
-                f"```json\n{json.dumps(schema, indent=2)}\n```\n"
-                f"Respond ONLY with the JSON object, no other text."
-            )
-            injected = False
-            for i, msg in enumerate(openai_messages):
-                if msg["role"] == "system":
-                    openai_messages[i] = {
-                        "role": "system",
-                        "content": str(msg["content"]) + schema_instruction,
-                    }
-                    injected = True
-                    break
-            if not injected:
-                openai_messages.insert(
-                    0, {"role": "system", "content": schema_instruction}
-                )
-
-        try:
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=openai_messages,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-                response_format={"type": "json_object"},
-            )
-            result = response.choices[0].message.content or "{}"
-            return json.loads(result)
-        except Exception as e:
-            logger.error(f"DeepSeek error: {e}")
-            raise
-
-
-class PassthroughReranker(CrossEncoderClient):
-    """No-op reranker — avoids OpenAI dependency."""
-
-    async def rank(
-        self, query: str, passages: list[str]
-    ) -> list[tuple[str, float]]:
-        return [(p, 1.0 - i * 0.01) for i, p in enumerate(passages)]
 
 
 # ── Graphiti initialization ──────────────────────────────────────────────────
@@ -131,72 +68,15 @@ graphiti: Graphiti | None = None
 
 
 async def init_graphiti() -> Graphiti:
-    """Initialize the Graphiti client with Neo4j + DeepSeek + Voyage AI."""
-    neo4j_uri = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
-    neo4j_user = os.environ.get("NEO4J_USER", "neo4j")
-    neo4j_password = os.environ.get("NEO4J_PASSWORD", "mikai-local-dev")
-
-    deepseek_key = os.environ.get("DEEPSEEK_API_KEY")
-    voyage_key = os.environ.get("VOYAGE_API_KEY")
-
-    if not deepseek_key:
-        raise RuntimeError("DEEPSEEK_API_KEY required")
-    if not voyage_key:
-        raise RuntimeError("VOYAGE_API_KEY required")
-
-    logger.info(f"Connecting to Neo4j at {neo4j_uri}")
-
-    llm_client = DeepSeekClient(
-        config=LLMConfig(
-            api_key=deepseek_key,
-            model="deepseek-chat",
-            small_model="deepseek-chat",
-            base_url="https://api.deepseek.com",
-        ),
-        max_tokens=8192,
-    )
-
-    embedder = VoyageAIEmbedder(
-        config=VoyageAIEmbedderConfig(
-            api_key=voyage_key,
-            model="voyage-3",
-        )
-    )
-
-    g = Graphiti(
-        neo4j_uri,
-        neo4j_user,
-        neo4j_password,
-        llm_client=llm_client,
-        embedder=embedder,
-        cross_encoder=PassthroughReranker(),
-    )
-
-    await g.build_indices_and_constraints()
-    logger.info("Graphiti initialized")
-    return g
+    """Thin wrapper — delegates to the shared factory."""
+    return await _init_graphiti_client()
 
 
 async def run_cypher(query: str, **params) -> list[dict]:
-    """Execute a raw Cypher query via the Graphiti Neo4j driver."""
+    """Execute a raw Cypher query, returning [] if graphiti isn't ready."""
     if not graphiti:
         return []
-    driver = getattr(graphiti.driver, "driver", graphiti.driver)
-    async with driver.session() as session:
-        result = await session.run(query, **params)
-        return [record.data() async for record in result]
-
-
-def _iso(v) -> str:
-    """Convert a value to ISO string, or empty string if None."""
-    if v is None:
-        return ""
-    if isinstance(v, str):
-        return v
-    try:
-        return v.isoformat()
-    except AttributeError:
-        return str(v)
+    return await _run_cypher_on(graphiti, query, **params)
 
 
 # ── MCP Server ───────────────────────────────────────────────────────────────

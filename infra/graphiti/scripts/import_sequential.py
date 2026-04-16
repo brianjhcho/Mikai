@@ -22,77 +22,34 @@ Usage:
 
 import argparse
 import asyncio
-import json
 import os
 import sqlite3
 import sys
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
 
-from graphiti_core import Graphiti
-from graphiti_core.llm_client.config import LLMConfig, ModelSize
-from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
-from graphiti_core.embedder.voyage import VoyageAIEmbedder, VoyageAIEmbedderConfig
-from graphiti_core.cross_encoder.client import CrossEncoderClient
+# Make sibling `sidecar` package importable.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from graphiti_core.nodes import EpisodeType
 
-SKIP_PATTERNS = ["api key", "password", "secret", "credential", "token"]
+from sidecar.client import build_graphiti
+from sidecar.ingest import (
+    SKIP_PATTERNS,
+    is_sensitive_name,
+    parse_claude_turns,
+    parse_notes_dump as _parse_notes_dump,
+    parse_perplexity_query_and_answer,
+)
 
 
-# ── Clients ──────────────────────────────────────────────────────────────────
+# ── Parsers (thin wrappers over sidecar.ingest) ──────────────────────────────
 
-class DeepSeekClient(OpenAIGenericClient):
-    async def _generate_response(self, messages, response_model=None, max_tokens=8192, model_size=ModelSize.medium):
-        from openai.types.chat import ChatCompletionMessageParam
-        openai_messages = []
-        for m in messages:
-            m.content = self._clean_input(m.content)
-            if m.role == 'user': openai_messages.append({'role': 'user', 'content': m.content})
-            elif m.role == 'system': openai_messages.append({'role': 'system', 'content': m.content})
-        if response_model is not None:
-            schema = response_model.model_json_schema()
-            for i, msg in enumerate(openai_messages):
-                if msg['role'] == 'system':
-                    openai_messages[i] = {'role': 'system', 'content': str(msg['content']) + f"\n\nRespond with valid JSON matching this schema:\n```json\n{json.dumps(schema, indent=2)}\n```\nRespond ONLY with the JSON object."}
-                    break
-            else:
-                openai_messages.insert(0, {'role': 'system', 'content': f"Respond with valid JSON:\n```json\n{json.dumps(schema, indent=2)}\n```"})
-        response = await self.client.chat.completions.create(model=self.model, messages=openai_messages, temperature=self.temperature, max_tokens=self.max_tokens, response_format={'type': 'json_object'})
-        return json.loads(response.choices[0].message.content or '{}')
-
-
-class PassthroughReranker(CrossEncoderClient):
-    async def rank(self, query, passages):
-        return [(p, 1.0 - i * 0.01) for i, p in enumerate(passages)]
-
-
-# ── Parsers ──────────────────────────────────────────────────────────────────
 
 def parse_notes_dump(path):
-    """Parse Apple Notes dump into episodes."""
-    notes = []
-    current = None
-    with open(path, "r", errors="replace") as f:
-        for line in f:
-            line = line.rstrip("\n")
-            if line == "===NOTE_START===":
-                current = {"name": "", "date": "", "body_lines": []}
-            elif line == "===NOTE_END===" and current:
-                body = "\n".join(current["body_lines"]).strip()
-                name = current["name"]
-                is_sensitive = any(p in name.lower() for p in SKIP_PATTERNS)
-                if len(body) > 50 and not is_sensitive:
-                    notes.append({"name": name, "date": current["date"], "body": body[:5000]})
-                current = None
-            elif current is not None:
-                if line.startswith("NAME:") and not current["name"]:
-                    current["name"] = line[5:]
-                elif line.startswith("DATE:") and not current["date"]:
-                    current["date"] = line[5:]
-                else:
-                    current["body_lines"].append(line)
-    return notes
+    """Parse Apple Notes dump into episode dicts capped at 5K chars per body."""
+    return _parse_notes_dump(path, max_body_chars=5000)
 
 
 def parse_claude_threads(db_path):
@@ -109,32 +66,14 @@ def parse_claude_threads(db_path):
     all_episodes = []
     for row in rows:
         label = row["label"]
-        if any(p in label.lower() for p in SKIP_PATTERNS):
+        if is_sensitive_name(label):
             continue
 
         raw = row["raw_content"]
         created = row["created_at"] or "2026-01-01T00:00:00Z"
         saga_name = f"claude: {label[:80]}"
 
-        # Parse turns
-        turns = []
-        current_role = None
-        current_lines = []
-        for line in raw.split('\n'):
-            if line.startswith('[User]:'):
-                if current_role:
-                    turns.append({'role': current_role, 'content': '\n'.join(current_lines).strip()})
-                current_role = 'user'
-                current_lines = [line[7:].strip()]
-            elif line.startswith('[Assistant]:'):
-                if current_role:
-                    turns.append({'role': current_role, 'content': '\n'.join(current_lines).strip()})
-                current_role = 'assistant'
-                current_lines = [line[12:].strip()]
-            else:
-                current_lines.append(line)
-        if current_role:
-            turns.append({'role': current_role, 'content': '\n'.join(current_lines).strip()})
+        turns = parse_claude_turns(raw)
 
         # Only keep first 20 turns per thread (most substance is early)
         for i, turn in enumerate(turns[:20]):
@@ -168,68 +107,17 @@ def parse_perplexity_threads(db_path, limit=None):
     all_episodes = []
     for row in rows:
         label = row["label"]
-        if any(p in label.lower() for p in SKIP_PATTERNS):
+        if is_sensitive_name(label):
             continue
 
         raw = row["raw_content"]
         created = row["created_at"] or "2026-01-01T00:00:00Z"
         saga_name = f"perplexity: {label[:80]}"
 
-        # Extract user query and final answer from JSON structure
-        try:
-            if raw.startswith('[Assistant]:'):
-                raw = raw[len('[Assistant]:'):].strip()
+        user_query, answer = parse_perplexity_query_and_answer(raw)
 
-            # Handle concatenated JSON arrays by parsing only the first array
-            bracket_depth = 0
-            end_pos = 0
-            for ci, c in enumerate(raw):
-                if c == '[': bracket_depth += 1
-                elif c == ']': bracket_depth -= 1
-                if bracket_depth == 0 and ci > 0:
-                    end_pos = ci + 1
-                    break
-            if end_pos > 0:
-                raw = raw[:end_pos]
-
-            steps = json.loads(raw) if raw.startswith('[') else [json.loads(raw)]
-
-            user_query = None
-            answer = None
-            for step in steps:
-                if isinstance(step, dict):
-                    step_type = step.get('step_type', '')
-                    content = step.get('content', {})
-                    if step_type == 'INITIAL_QUERY' and isinstance(content, dict):
-                        user_query = content.get('query', '')
-                    elif step_type == 'FINAL' and isinstance(content, dict):
-                        answer_raw = content.get('answer', '')
-                        try:
-                            answer_obj = json.loads(answer_raw)
-                            answer = answer_obj.get('answer', answer_raw) if isinstance(answer_obj, dict) else answer_raw
-                        except (json.JSONDecodeError, TypeError):
-                            answer = answer_raw
-
-            if user_query and len(user_query) > 10:
-                all_episodes.append({
-                    'saga': saga_name,
-                    'name': f"Query",
-                    'body': f"user: {user_query[:2000]}",
-                    'date': created,
-                    'turn_index': 0,
-                    'source_type': 'perplexity',
-                })
-            if answer and len(answer) > 50:
-                all_episodes.append({
-                    'saga': saga_name,
-                    'name': f"Answer",
-                    'body': f"assistant: {answer[:3000]}",
-                    'date': created,
-                    'turn_index': 1,
-                    'source_type': 'perplexity',
-                })
-        except (json.JSONDecodeError, TypeError):
-            # Fallback: treat as plain text
+        if user_query is None and answer is None:
+            # Parser gave up — fall back to raw text if it's substantial.
             if len(raw) > 100:
                 all_episodes.append({
                     'saga': saga_name,
@@ -239,6 +127,26 @@ def parse_perplexity_threads(db_path, limit=None):
                     'turn_index': 0,
                     'source_type': 'perplexity',
                 })
+            continue
+
+        if user_query and len(user_query) > 10:
+            all_episodes.append({
+                'saga': saga_name,
+                'name': "Query",
+                'body': f"user: {user_query[:2000]}",
+                'date': created,
+                'turn_index': 0,
+                'source_type': 'perplexity',
+            })
+        if answer and len(answer) > 50:
+            all_episodes.append({
+                'saga': saga_name,
+                'name': "Answer",
+                'body': f"assistant: {answer[:3000]}",
+                'date': created,
+                'turn_index': 1,
+                'source_type': 'perplexity',
+            })
 
     return all_episodes
 
@@ -311,19 +219,11 @@ async def main():
         return
 
     # Connect to Graphiti
-    deepseek_key = os.environ.get("DEEPSEEK_API_KEY")
-    voyage_key = os.environ.get("VOYAGE_API_KEY")
-    if not deepseek_key or not voyage_key:
+    if not os.environ.get("DEEPSEEK_API_KEY") or not os.environ.get("VOYAGE_API_KEY"):
         print("Need DEEPSEEK_API_KEY and VOYAGE_API_KEY", file=sys.stderr)
         sys.exit(1)
 
-    llm = DeepSeekClient(
-        config=LLMConfig(api_key=deepseek_key, model="deepseek-chat", small_model="deepseek-chat", base_url="https://api.deepseek.com"),
-        max_tokens=8192,
-    )
-    embedder = VoyageAIEmbedder(config=VoyageAIEmbedderConfig(api_key=voyage_key, model="voyage-3"))
-    graphiti = Graphiti("bolt://localhost:7687", "neo4j", "mikai-local-dev",
-                        llm_client=llm, embedder=embedder, cross_encoder=PassthroughReranker())
+    graphiti = build_graphiti()
     await graphiti.build_indices_and_constraints()
 
     # Import sequentially

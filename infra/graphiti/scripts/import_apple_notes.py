@@ -9,19 +9,23 @@ Usage:
 """
 
 import argparse
-import json
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import requests
+
+# Make sibling `sidecar` package importable.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from sidecar.ingest import parse_osascript_notes_output
 
 DEFAULT_GRAPHITI_URL = "http://localhost:8100"
 
 
 def read_apple_notes(limit: int | None = None) -> list[dict]:
     """Read notes from Apple Notes via osascript."""
-    # Get note count first
     count_script = 'tell application "Notes" to count of notes'
     total = int(subprocess.check_output(["osascript", "-e", count_script]).decode().strip())
     print(f"Apple Notes: {total} notes found")
@@ -29,7 +33,7 @@ def read_apple_notes(limit: int | None = None) -> list[dict]:
     actual_limit = min(limit, total) if limit else total
 
     # Read notes in batches (osascript can timeout on large batches)
-    notes = []
+    notes: list[dict] = []
     batch_size = 50
 
     for start in range(1, actual_limit + 1, batch_size):
@@ -56,25 +60,7 @@ def read_apple_notes(limit: int | None = None) -> list[dict]:
                 ["osascript", "-e", script],
                 timeout=120,
             ).decode("utf-8", errors="replace")
-
-            for entry in result.split("---NOTE_SEPARATOR---"):
-                entry = entry.strip()
-                if not entry:
-                    continue
-                parts = entry.split("---FIELD_SEP---")
-                if len(parts) >= 3:
-                    name = parts[0].strip()
-                    body = parts[1].strip()
-                    date = parts[2].strip()
-                    # Skip very short notes and notes with secrets
-                    skip_patterns = ["api key", "password", "secret", "credential", "token"]
-                    is_sensitive = any(p in name.lower() for p in skip_patterns)
-                    if len(body) > 50 and not is_sensitive:
-                        notes.append({
-                            "name": name,
-                            "body": body,
-                            "date": date,
-                        })
+            notes.extend(parse_osascript_notes_output(result))
         except subprocess.TimeoutExpired:
             print(f"  Timeout reading notes {start}-{end}, skipping batch")
         except Exception as e:

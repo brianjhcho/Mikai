@@ -11,44 +11,17 @@ Usage:
 import argparse
 import sys
 import time
+from pathlib import Path
 
 import requests
 
+# Make sibling `sidecar` package importable.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from sidecar.ingest import parse_notes_dump as parse_dump
+
 DEFAULT_GRAPHITI_URL = "http://localhost:8100"
 DUMP_FILE = "/tmp/mikai_notes_raw.txt"
-SKIP_PATTERNS = ["api key", "password", "secret", "credential", "token"]
-
-
-def parse_dump(path: str) -> list[dict]:
-    """Parse the AppleScript log dump into note dicts."""
-    notes = []
-    current = None
-
-    with open(path, "r", errors="replace") as f:
-        for line in f:
-            line = line.rstrip("\n")
-            if line == "===NOTE_START===":
-                current = {"name": "", "date": "", "body_lines": []}
-            elif line == "===NOTE_END===" and current:
-                body = "\n".join(current["body_lines"]).strip()
-                name = current["name"]
-                is_sensitive = any(p in name.lower() for p in SKIP_PATTERNS)
-                if len(body) > 50 and not is_sensitive:
-                    notes.append({
-                        "name": name,
-                        "date": current["date"],
-                        "body": body,
-                    })
-                current = None
-            elif current is not None:
-                if line.startswith("NAME:") and not current["name"]:
-                    current["name"] = line[5:]
-                elif line.startswith("DATE:") and not current["date"]:
-                    current["date"] = line[5:]
-                else:
-                    current["body_lines"].append(line)
-
-    return notes
 
 
 def import_note(url: str, note: dict) -> dict | None:

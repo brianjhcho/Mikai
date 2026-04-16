@@ -4,59 +4,23 @@ Queries both graph groups and prints side-by-side results.
 """
 
 import asyncio
-import json
 import os
 import sys
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Make sibling `sidecar` package importable.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from graphiti_core import Graphiti
-from graphiti_core.llm_client.config import LLMConfig, ModelSize
-from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
+from graphiti_core.llm_client.config import LLMConfig
 from graphiti_core.embedder.voyage import VoyageAIEmbedder, VoyageAIEmbedderConfig
-from graphiti_core.cross_encoder.client import CrossEncoderClient
+from graphiti_core.embedder.client import EmbedderClient
 from graphiti_core.nodes import EpisodeType
-import json as json_mod
 import numpy as np
 
-
-# ── Clients ──────────────────────────────────────────────────────────────────
-
-class DeepSeekClient(OpenAIGenericClient):
-    async def _generate_response(self, messages, response_model=None, max_tokens=8192, model_size=ModelSize.medium):
-        from openai.types.chat import ChatCompletionMessageParam
-        openai_messages = []
-        for m in messages:
-            m.content = self._clean_input(m.content)
-            if m.role == 'user':
-                openai_messages.append({'role': 'user', 'content': m.content})
-            elif m.role == 'system':
-                openai_messages.append({'role': 'system', 'content': m.content})
-        if response_model is not None:
-            schema = response_model.model_json_schema()
-            schema_instruction = f"\n\nRespond with valid JSON matching this schema:\n```json\n{json_mod.dumps(schema, indent=2)}\n```\nRespond ONLY with the JSON object."
-            for i, msg in enumerate(openai_messages):
-                if msg['role'] == 'system':
-                    openai_messages[i] = {'role': 'system', 'content': str(msg['content']) + schema_instruction}
-                    break
-            else:
-                openai_messages.insert(0, {'role': 'system', 'content': schema_instruction})
-        response = await self.client.chat.completions.create(
-            model=self.model, messages=openai_messages,
-            temperature=self.temperature, max_tokens=self.max_tokens,
-            response_format={'type': 'json_object'},
-        )
-        return json_mod.loads(response.choices[0].message.content or '{}')
-
-
-class PassthroughReranker(CrossEncoderClient):
-    async def rank(self, query, passages):
-        return [(p, 1.0 - i * 0.01) for i, p in enumerate(passages)]
-
-
-from graphiti_core.embedder.client import EmbedderClient
-from abc import ABC
+from sidecar.client import DeepSeekClient, PassthroughReranker
 
 
 class NomicEmbedder(EmbedderClient):

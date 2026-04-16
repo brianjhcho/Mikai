@@ -13,7 +13,6 @@ Endpoints:
   POST /communities         — Get community summaries
 """
 
-import os
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -22,87 +21,18 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from graphiti_core import Graphiti
-from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
-from graphiti_core.llm_client.config import LLMConfig, ModelSize, DEFAULT_MAX_TOKENS
-from graphiti_core.llm_client.client import Message
-import json
-import typing
-from graphiti_core.embedder.voyage import VoyageAIEmbedder, VoyageAIEmbedderConfig
-from graphiti_core.cross_encoder.client import CrossEncoderClient
 from graphiti_core.nodes import EpisodeType
 from graphiti_core.graphiti import RawEpisode
 from graphiti_core.search.search_config_recipes import COMBINED_HYBRID_SEARCH_RRF
 
+from sidecar.client import (
+    init_graphiti,
+    iso_or_none as _iso_or_none,
+    run_cypher as _run_cypher_on,
+)
+
 logger = logging.getLogger("mikai-graphiti")
 logging.basicConfig(level=logging.INFO)
-
-
-class DeepSeekClient(OpenAIGenericClient):
-    """DeepSeek-compatible client that uses json_object mode instead of json_schema.
-
-    DeepSeek supports structured JSON output but not OpenAI's json_schema
-    response_format type. This client puts the schema in the system prompt
-    and uses json_object mode instead.
-    """
-
-    async def _generate_response(
-        self,
-        messages: list[Message],
-        response_model: type | None = None,
-        max_tokens: int = DEFAULT_MAX_TOKENS,
-        model_size: ModelSize = ModelSize.medium,
-    ) -> dict[str, typing.Any]:
-        from openai.types.chat import ChatCompletionMessageParam
-
-        openai_messages: list[ChatCompletionMessageParam] = []
-        for m in messages:
-            m.content = self._clean_input(m.content)
-            if m.role == 'user':
-                openai_messages.append({'role': 'user', 'content': m.content})
-            elif m.role == 'system':
-                openai_messages.append({'role': 'system', 'content': m.content})
-
-        # If a response model is provided, inject the schema into the system prompt
-        # and use json_object mode (DeepSeek-compatible) instead of json_schema
-        if response_model is not None:
-            schema = response_model.model_json_schema()
-            schema_instruction = (
-                f"\n\nYou MUST respond with valid JSON matching this exact schema:\n"
-                f"```json\n{json.dumps(schema, indent=2)}\n```\n"
-                f"Respond ONLY with the JSON object, no other text."
-            )
-            # Append schema to the last system message, or add a new one
-            injected = False
-            for i, msg in enumerate(openai_messages):
-                if msg['role'] == 'system':
-                    openai_messages[i] = {
-                        'role': 'system',
-                        'content': str(msg['content']) + schema_instruction,
-                    }
-                    injected = True
-                    break
-            if not injected:
-                openai_messages.insert(0, {'role': 'system', 'content': schema_instruction})
-
-        try:
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=openai_messages,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-                response_format={'type': 'json_object'},
-            )
-            result = response.choices[0].message.content or '{}'
-            return json.loads(result)
-        except Exception as e:
-            logger.error(f'DeepSeek error: {e}')
-            raise
-
-
-class PassthroughReranker(CrossEncoderClient):
-    """No-op reranker — avoids OpenAI dependency."""
-    async def rank(self, query: str, passages: list[str]) -> list[tuple[str, float]]:
-        return [(p, 1.0 - i * 0.01) for i, p in enumerate(passages)]
 
 
 # ── Graphiti client ──────────────────────────────────────────────────────────
@@ -113,47 +43,9 @@ graphiti: Graphiti | None = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global graphiti
-
-    neo4j_uri = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
-    neo4j_user = os.environ.get("NEO4J_USER", "neo4j")
-    neo4j_password = os.environ.get("NEO4J_PASSWORD", "mikai-local-dev")
-
-    deepseek_key = os.environ.get("DEEPSEEK_API_KEY")
-    voyage_key = os.environ.get("VOYAGE_API_KEY")
-
-    if not deepseek_key:
-        raise RuntimeError("DEEPSEEK_API_KEY required")
-    if not voyage_key:
-        raise RuntimeError("VOYAGE_API_KEY required")
-
-    logger.info(f"Connecting to Neo4j at {neo4j_uri}")
     logger.info("LLM: DeepSeek V3 | Embeddings: Voyage AI voyage-3")
-
-    llm_client = DeepSeekClient(
-        config=LLMConfig(
-            api_key=deepseek_key,
-            model="deepseek-chat",
-            small_model="deepseek-chat",
-            base_url="https://api.deepseek.com",
-        ),
-        max_tokens=8192,
-    )
-
-    embedder = VoyageAIEmbedder(config=VoyageAIEmbedderConfig(
-        api_key=voyage_key,
-        model="voyage-3",
-    ))
-
-    graphiti = Graphiti(
-        neo4j_uri, neo4j_user, neo4j_password,
-        llm_client=llm_client,
-        embedder=embedder,
-        cross_encoder=PassthroughReranker(),
-    )
-
+    graphiti = await init_graphiti()
     try:
-        await graphiti.build_indices_and_constraints()
-        logger.info("Graphiti initialized, indices ready")
         yield
     finally:
         if graphiti:
@@ -417,31 +309,10 @@ class HistoryResult(BaseModel):
 
 
 async def run_cypher(query: str, **params) -> list[dict]:
-    """Execute a raw Cypher query via Graphiti's Neo4j driver.
-
-    Graphiti wraps the neo4j AsyncDriver. This helper reaches through the
-    wrapper (if present) and executes a session query, returning records as
-    dicts for easy Pydantic mapping.
-    """
+    """Raise 503 if graphiti isn't ready; delegate to the shared helper."""
     if not graphiti:
         raise HTTPException(503, "Graphiti not initialized")
-
-    driver = getattr(graphiti.driver, "driver", graphiti.driver)
-    async with driver.session() as session:
-        result = await session.run(query, **params)
-        return [record.data() async for record in result]
-
-
-def _iso_or_none(v) -> str | None:
-    """Convert a Neo4j datetime/string to ISO format, or return None."""
-    if v is None:
-        return None
-    if isinstance(v, str):
-        return v
-    try:
-        return v.isoformat()
-    except AttributeError:
-        return str(v)
+    return await _run_cypher_on(graphiti, query, **params)
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
