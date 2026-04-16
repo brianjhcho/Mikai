@@ -717,3 +717,86 @@ Each tier serves a different query depth. L1 prevents unnecessary L2/L3 calls. L
 - Building custom API connectors per cloud source (MCP standardizes this; custom connectors are maintenance burden that MCP eliminates)
 
 **Revisit if:** MCP adds a push/subscription mechanism (webhooks, event streams) that replaces polling for Mode 2. Or if Apple opens an App Intents API for Notes content that makes Mode 1 unnecessary for that source.
+
+---
+
+## ARCH-024: L3Backend Port Introduced (Ports & Adapters)
+**Date:** 2026-04-16
+**Source:** Design review of the local-vs-sidecar tension that had been implicit since ARCH-019 but never formally decided
+**Decision:** Introduce an `L3Backend` port (a.k.a. interface) that product code — the MCP server, the L4 engine, the ingestion daemon — depends on exclusively. Two adapters implement the port:
+
+- `GraphitiAdapter` — the current production backend. Calls graphiti-core in-process (from the Python MCP server) or the FastAPI sidecar at `http://localhost:8100` (from other clients). Neo4j + DeepSeek V3 + Voyage AI.
+- `LocalAdapter` — a first-class alternate (see ARCH-025). Fully on-device: embedded graph store, local embeddings, local LLM. Not yet built; design input is `legacy/sqlite-local`.
+
+A composition root (one file, typically `main.py` / `server.ts` depending on the surface) reads `L3_BACKEND=graphiti|local` from the environment and instantiates the chosen adapter. Product code never sees which adapter is running.
+
+**Port surface (domain verbs only, no infrastructure nouns):**
+- `ingestEpisode(content: Episode) -> IngestResult`
+- `search(query: SearchQuery) -> SearchResult[]`
+- `getNode(id: NodeId) -> Node`
+- `expand(seed: NodeId[], hops: int, limit: int) -> Subgraph`
+- `edgesBetween(a: NodeId, b: NodeId) -> Edge[]`
+- `history(id: NodeId) -> HistoryEntry[]`
+- `stats() -> GraphStats`
+- `communities() -> Community[]`
+
+These mirror the primitives ARCH-023 and D-041 already settled at the sidecar level. They speak in domain terms ("episode," "node," "subgraph"), not in Graphiti, Neo4j, or SQLite terms.
+
+**Why now:** Three forces converged. (1) The docs-folder audit in the 2026-04-16 refactor surfaced that no formal decision had been recorded rejecting local-first — ARCH-019 adopted Graphiti by momentum, not by an explicit close on the alternative. (2) A "flip a switch" requirement for privacy-sensitive deployments (see ARCH-025) requires both backends to coexist at runtime, which is the definition of Ports & Adapters. (3) Building L4 directly against Graphiti's raw API would re-couple the product to an adapter and make the future local-first mode impossible to ship without rewriting L4.
+
+The port extraction is structural debt paid now rather than later. Every product feature built before the port landed would have to be re-wired after — cheaper to do it first.
+
+**Supersedes:** ARCH-021 (no dual-backend abstraction layer). ARCH-021 was correct for its context — it blocked SQLite re-entanglement during the Graphiti migration. That risk no longer applies: `LocalAdapter` is a clean, first-class build, not a legacy revival. The concern ARCH-021 raised (maintenance liability of a dual-backend interface) is mitigated by keeping the port surface small and strictly in domain terms.
+
+**Rejected:**
+- Keeping the status quo where product code calls graphiti-core / sidecar directly. Works today but makes ARCH-025 (local-first adapter) impossible without a major rewrite.
+- Exposing Graphiti-specific types in the port (e.g., `runCypher(query: str)`, `getSidecarHealth()`). Defeats the abstraction. If a feature requires adapter-specific access, it belongs in the adapter, and the port needs a more abstract verb.
+- A generic database abstraction (`L3Store` with CRUD primitives). The port models a knowledge-graph domain, not a key-value store; it must speak in graph verbs, not storage verbs.
+
+**Phased rollout:**
+1. Extract port + migrate the current Python MCP server to depend on it (still only `GraphitiAdapter` exists).
+2. Verify the port is clean by instantiating `GraphitiAdapter` twice under different names — catches cases where product code leaked adapter-specific assumptions.
+3. Build `LocalAdapter` per ARCH-025 as a new file implementing the existing port. The merge is additive, not invasive.
+
+**Revisit if:** Port surface grows past ~15 methods — likely a sign of leak from adapter-specific needs into product code. Or if a second adapter is never built within a reasonable window (~6 months) — in which case the abstraction is unused and could be collapsed back into direct calls.
+
+---
+
+## ARCH-025: Local-First Preserved as First-Class Adapter
+**Date:** 2026-04-16
+**Source:** Explicit close on the local-first-vs-sidecar tension that had been unresolved since ARCH-019
+**Decision:** A fully on-device "Granola-style" deployment of MIKAI is preserved as a first-class adapter behind the `L3Backend` port (ARCH-024). This is not a legacy revival, not a future migration, not a fork. It is a supported runtime mode, selectable via `L3_BACKEND=local`, with no product-code changes required to switch.
+
+**What "local" means here:**
+- Embedded graph store (likely SQLite + `sqlite-vec`, informed by `legacy/sqlite-local`)
+- Local embeddings (Nomic via ONNX or equivalent on-device model)
+- Local LLM for extraction (on-device model; specific choice deferred until adapter implementation)
+- Filesystem watchers remain the ingestion primitive — unchanged from ARCH-023
+- Zero external service dependency: no Docker, no Neo4j, no remote API calls
+
+**Why preserve this as first-class rather than shelve it:**
+- **Privacy posture.** The Graphiti adapter sends episode content to DeepSeek V3 and Voyage AI on every ingest. Some users (and Brian's own research workflows with sensitive content) may require that nothing leaves the device.
+- **Distribution model.** "Download MIKAI, it runs entirely on your laptop" is a materially different product than "install Docker, run Neo4j, configure a sidecar." Some personas reject the latter.
+- **Latency.** Sub-millisecond local reads vs ~500ms HTTP + Neo4j round-trip. Matters for L4's proactive surfacing.
+- **Cost posture.** The cloud-adapter path is ~$0.005–$0.01 per episode in API spend at current rates. Local is zero marginal cost after model download. At ingestion rates >100 episodes/day this compounds.
+- **Architectural symmetry.** Having two adapters forces the port surface to stay honest — any leak of Graphiti-specific assumption breaks the local path and gets caught immediately.
+
+**What this decision is *not*:**
+- Not a commitment to ship `LocalAdapter` on any particular date. The sequencing is: (a) ARCH-024 port extraction, (b) `GraphitiAdapter` stabilization behind the port, (c) `LocalAdapter` implementation as bandwidth allows.
+- Not a reversal of ARCH-019. Graphiti remains the default adapter. `L3_BACKEND=graphiti` is the unset-default path.
+- Not a merge from `legacy/sqlite-local`. That branch is a design reference; `LocalAdapter` is a clean implementation against the ARCH-024 port.
+
+**Tradeoffs accepted:**
+- **Model quality gap.** DeepSeek V3 is stronger at entity resolution than current on-device LLMs. `LocalAdapter` will produce lower-quality extraction until on-device models close the gap. This is acceptable; users selecting the local mode are trading quality for privacy/control.
+- **Feature gap.** Graphiti-specific features (community detection, bitemporal edges with native support) may ship on `GraphitiAdapter` first and on `LocalAdapter` later or never. The port surface should not stall waiting for `LocalAdapter` to catch up.
+
+**Relation to `legacy/sqlite-local`:** The `legacy/sqlite-local` branch is reclassified from "archival only" to "design input." Code from it may be studied, extracted, and adapted into `LocalAdapter`, but the branch itself is never merged into main.
+
+**Supersedes:** None directly. Clarifies ARCH-019 (which was read as "Graphiti only" but was more accurately "Graphiti is the current backend"). Reframes `legacy/sqlite-local` from "archival only" to "design input."
+
+**Rejected:**
+- Shelving local-first entirely. Loses the privacy posture and the architectural discipline the two-adapter model enforces.
+- Building `LocalAdapter` on a long-lived branch. Defers integration pain and makes the "flip a switch" story impossible. `LocalAdapter` lands on main as a file, not as a branch merge.
+- Positioning the local mode as "legacy." It is a forward-looking, first-class mode — just one that ships later than the default.
+
+**Revisit if:** On-device LLMs close the quality gap such that `LocalAdapter` becomes strictly equal-or-better than `GraphitiAdapter` — at that point the default might flip, and `GraphitiAdapter` becomes the alternate. Or if zero users ever select `L3_BACKEND=local` and the adapter has been live for ~6 months — in which case the privacy/distribution hypothesis was wrong and the adapter can be removed to simplify the port.

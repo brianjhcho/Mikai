@@ -1,44 +1,35 @@
-<!-- Generated: 2026-04-11 -->
+# MIKAI — agent context
 
-# MIKAI
+> **AI agents working on this repo:** The authoritative session context is `CLAUDE.md`. Read that first. This file mirrors the key facts for non-Claude agents (codex, etc.) but may lag CLAUDE.md between updates — when in doubt, trust CLAUDE.md.
 
 ## Purpose
 MIKAI is a task-state awareness engine ("noonchi") — the AI that knows where you are in your thinking across apps and tells you what to do next.
 
-## Current architectural state
+## Architecture in one paragraph
 
-MIKAI is mid-migration from a dual SQLite/Supabase backend to Graphiti + Neo4j as the sole L3 knowledge graph. Main has been cleaned to reflect this direction:
+Two conceptual layers: **L3** is a bitemporal knowledge graph; **L4** is task-state awareness (thread detection, state classification, next-step inference — the product). L3 is accessed through an `L3Backend` port (ARCH-024). Two adapters exist on main: `GraphitiAdapter` (default, FastAPI sidecar at `:8100` + Neo4j) and `LocalAdapter` (first-class alternate, fully on-device per ARCH-025). Ingestion is hybrid (ARCH-023): filesystem watchers + MCP client polling + drop folder, all converging on `L3Backend.ingestEpisode()`. Product code depends only on the port, never on adapter-specific infrastructure.
 
-- **L3 (knowledge graph) → Graphiti + Neo4j** — `infra/graphiti/`
-- **L4 (task-state awareness)** — to be rebuilt against Graphiti. Prior SQLite-backed L4 preserved on `feat/l4-testing`.
-- **Ingestion** — via Python scripts in `infra/graphiti/scripts/`. The TypeScript source connectors have been retired; any new ingestion path is built directly against the Graphiti sidecar.
-- **Product surface (MCP server)** — to be rebuilt. The prior SQLite-coupled MCP server is preserved on `legacy/sqlite-local` and `wip/2026-04-10-presplit`.
+## Where to look for what
+- `docs/STATUS.md` — what's actually live on main right now
+- `docs/DECISIONS.md` — append-only architecture decision log (ARCH-*, D-*)
+- `docs/GRAPHITI_INTEGRATION.md` — Graphiti adapter technical details and the scaling patch
+- `docs/L4_RESEARCH_INTEGRATION.md` — L4 design spec
+- `docs/EPISTEMIC_EDGE_VOCABULARY.md` — node/edge taxonomy
+- `docs/NOONCHI_STRATEGIC_ANALYSIS.md` — product framing / why noonchi is the moat
+- `docs/ARCHITECTURE_GAPS.md`, `docs/OPEN_QUESTIONS.md` — known gaps and unresolved questions
 
-For the full architectural snapshot that motivated this cleanup, see `docs/CURRENT_STACK.md`. For the cleanup inventory, see `docs/CLEANUP_CANDIDATES.md`.
-
-## Repository layout (post-cleanup)
+## Repository layout
 
 | Path | Purpose |
 |------|---------|
-| `infra/graphiti/` | Graphiti L3 infrastructure (Neo4j docker-compose, FastAPI sidecar, Python import and community-detection scripts) |
-| `docs/` | Architecture reference, decision log, cleanup inventory, current stack snapshot |
-| `private/` | Strategy docs (gitignored, local only) |
-| `package.json` | Minimal shell — repo metadata only, no Node dependencies |
-| `.env.example` | Graphiti + Neo4j environment variables |
+| `infra/graphiti/` | Graphiti adapter infra (Neo4j docker-compose, FastAPI sidecar, Python MCP server, import scripts) |
+| `docs/` | Architecture reference, decision log, status, research docs |
+| `scripts/` | Reproducible patches and dev utilities (e.g., `apply_graphiti_patch.py`) |
+| `private/` | Strategy docs (gitignored) |
+| `.env.example` | Environment variables including `L3_BACKEND` selector |
 
-## Branches
-
-| Branch | Purpose |
-|--------|---------|
-| `main` | Graphiti-only. Clean slate for Graphiti-native rebuild. |
-| `feat/l4-testing` | L4 pipeline work-in-progress (reads SQLite, needs porting to Graphiti) |
-| `legacy/sqlite-local` | Frozen pointer at the last state where SQLite L3 was live (commit `b8f07ee`) |
-| `legacy/supabase` | Frozen pointer at v0.2.0, the pure Supabase era (commit `2a0bf8c`) |
-| `wip/2026-04-10-presplit` | Safety snapshot from before the cleanup, including the 861-line MCP server rewrite |
-| `chore/cleanup-2026-04-11` | This cleanup branch |
-
-## For AI agents working on this repo
-
-Read `docs/CURRENT_STACK.md` first for the honest state of the architecture as of 2026-04-10/11. Then read `docs/GRAPHITI_INTEGRATION.md` for the scaling patch applied to graphiti-core and for operational notes on the 6,990-entity graph.
-
-All future product code targets the Graphiti sidecar at `http://localhost:8100`. Do not reintroduce SQLite or Supabase paths. If a local-data option is needed in the future, revive it from `legacy/sqlite-local`.
+## Rules agents must follow
+1. Depend on the `L3Backend` port, not on adapters. No direct Cypher, no direct SQLite, no direct sidecar HTTP calls from product code.
+2. Do not leak adapter-specific types into port signatures.
+3. Do not merge from `legacy/sqlite-local` or `legacy/supabase` into main. Those branches are design input, not source material.
+4. After every build task, report both a technical summary (for commit message) and a plain-English explanation (for Brian).
