@@ -19,22 +19,18 @@ these touch-points with inline comments.
 
 import argparse
 import asyncio
-import json
 import logging
 import os
 import sys
-import typing
 from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml  # pyyaml>=6.0
 
+# Bring the sidecar package onto sys.path regardless of how this script is run.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 from graphiti_core import Graphiti
-from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
-from graphiti_core.llm_client.config import LLMConfig, ModelSize, DEFAULT_MAX_TOKENS
-from graphiti_core.llm_client.client import Message
-from graphiti_core.embedder.voyage import VoyageAIEmbedder, VoyageAIEmbedderConfig
-from graphiti_core.cross_encoder.client import CrossEncoderClient
 from graphiti_core.nodes import EpisodeType
 
 # MCP client imports — exact paths depend on installed mcp SDK version.
@@ -47,6 +43,13 @@ except ImportError as _e:  # pragma: no cover
         "MCP client libraries not found. Ensure mcp>=1.0 is installed.\n"
         f"Original error: {_e}"
     )
+
+from sidecar.client import init_graphiti as _init_graphiti_client
+from sidecar.ingest import (
+    interpolate_tool_args,
+    load_state as _load_state_at,
+    save_state as _save_state_at,
+)
 
 logger = logging.getLogger("mikai-mcp-ingest")
 logging.basicConfig(
@@ -61,122 +64,13 @@ MIKAI_DIR = Path.home() / ".mikai"
 CONFIG_PATH = MIKAI_DIR / "mcp_sources.yaml"
 STATE_PATH = MIKAI_DIR / "mcp_sync_state.json"
 
-# ── Graphiti client classes (mirrored from sidecar/mcp_server.py) ─────────────
-
-
-class DeepSeekClient(OpenAIGenericClient):
-    """DeepSeek-compatible client using json_object mode instead of json_schema."""
-
-    async def _generate_response(
-        self,
-        messages: list[Message],
-        response_model: type | None = None,
-        max_tokens: int = DEFAULT_MAX_TOKENS,
-        model_size: ModelSize = ModelSize.medium,
-    ) -> dict[str, typing.Any]:
-        from openai.types.chat import ChatCompletionMessageParam
-
-        openai_messages: list[ChatCompletionMessageParam] = []
-        for m in messages:
-            m.content = self._clean_input(m.content)
-            if m.role == "user":
-                openai_messages.append({"role": "user", "content": m.content})
-            elif m.role == "system":
-                openai_messages.append({"role": "system", "content": m.content})
-
-        if response_model is not None:
-            schema = response_model.model_json_schema()
-            schema_instruction = (
-                f"\n\nYou MUST respond with valid JSON matching this exact schema:\n"
-                f"```json\n{json.dumps(schema, indent=2)}\n```\n"
-                f"Respond ONLY with the JSON object, no other text."
-            )
-            injected = False
-            for i, msg in enumerate(openai_messages):
-                if msg["role"] == "system":
-                    openai_messages[i] = {
-                        "role": "system",
-                        "content": str(msg["content"]) + schema_instruction,
-                    }
-                    injected = True
-                    break
-            if not injected:
-                openai_messages.insert(
-                    0, {"role": "system", "content": schema_instruction}
-                )
-
-        try:
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=openai_messages,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-                response_format={"type": "json_object"},
-            )
-            result = response.choices[0].message.content or "{}"
-            return json.loads(result)
-        except Exception as e:
-            logger.error(f"DeepSeek error: {e}")
-            raise
-
-
-class PassthroughReranker(CrossEncoderClient):
-    """No-op reranker — avoids OpenAI cross-encoder dependency."""
-
-    async def rank(
-        self, query: str, passages: list[str]
-    ) -> list[tuple[str, float]]:
-        return [(p, 1.0 - i * 0.01) for i, p in enumerate(passages)]
-
 
 # ── Graphiti initialization ──────────────────────────────────────────────────
 
 
 async def init_graphiti() -> Graphiti:
-    """Initialize the Graphiti client with Neo4j + DeepSeek + Voyage AI."""
-    neo4j_uri = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
-    neo4j_user = os.environ.get("NEO4J_USER", "neo4j")
-    neo4j_password = os.environ.get("NEO4J_PASSWORD", "mikai-local-dev")
-
-    deepseek_key = os.environ.get("DEEPSEEK_API_KEY")
-    voyage_key = os.environ.get("VOYAGE_API_KEY")
-
-    if not deepseek_key:
-        raise RuntimeError("DEEPSEEK_API_KEY required")
-    if not voyage_key:
-        raise RuntimeError("VOYAGE_API_KEY required")
-
-    logger.info(f"Connecting to Neo4j at {neo4j_uri}")
-
-    llm_client = DeepSeekClient(
-        config=LLMConfig(
-            api_key=deepseek_key,
-            model="deepseek-chat",
-            small_model="deepseek-chat",
-            base_url="https://api.deepseek.com",
-        ),
-        max_tokens=8192,
-    )
-
-    embedder = VoyageAIEmbedder(
-        config=VoyageAIEmbedderConfig(
-            api_key=voyage_key,
-            model="voyage-3",
-        )
-    )
-
-    g = Graphiti(
-        neo4j_uri,
-        neo4j_user,
-        neo4j_password,
-        llm_client=llm_client,
-        embedder=embedder,
-        cross_encoder=PassthroughReranker(),
-    )
-
-    await g.build_indices_and_constraints()
-    logger.info("Graphiti initialized")
-    return g
+    """Thin wrapper — delegates to the shared factory."""
+    return await _init_graphiti_client()
 
 
 # ── Checkpoint state ─────────────────────────────────────────────────────────
@@ -184,24 +78,12 @@ async def init_graphiti() -> Graphiti:
 
 def load_state() -> dict[str, str]:
     """Load last-sync timestamps keyed by source name."""
-    if not STATE_PATH.exists():
-        return {}
-    try:
-        with STATE_PATH.open() as fh:
-            return json.load(fh)
-    except Exception as e:
-        logger.warning(f"Could not read sync state from {STATE_PATH}: {e}")
-        return {}
+    return _load_state_at(STATE_PATH)
 
 
 def save_state(state: dict[str, str]) -> None:
     """Persist last-sync timestamps to disk."""
-    MIKAI_DIR.mkdir(parents=True, exist_ok=True)
-    try:
-        with STATE_PATH.open("w") as fh:
-            json.dump(state, fh, indent=2)
-    except Exception as e:
-        logger.warning(f"Could not write sync state to {STATE_PATH}: {e}")
+    _save_state_at(state, STATE_PATH)
 
 
 # ── Config loading ────────────────────────────────────────────────────────────
@@ -274,23 +156,6 @@ def load_config() -> dict:
         return {"sources": {}}
 
     return cfg
-
-
-# ── Tool-arg interpolation ────────────────────────────────────────────────────
-
-
-def interpolate_tool_args(
-    tool_args: dict, last_sync: str | None
-) -> dict:
-    """Replace ${LAST_SYNC} placeholders with the actual timestamp string."""
-    last_sync_val = last_sync or datetime.now(tz=timezone.utc).isoformat()
-    result = {}
-    for k, v in tool_args.items():
-        if isinstance(v, str):
-            result[k] = v.replace("${LAST_SYNC}", last_sync_val)
-        else:
-            result[k] = v
-    return result
 
 
 # ── MCP client poll ───────────────────────────────────────────────────────────
