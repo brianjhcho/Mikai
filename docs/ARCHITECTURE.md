@@ -1,281 +1,108 @@
-# MIKAI Architecture & Technical Stack
+# MIKAI — Architecture
 
-*Last updated: 2026-03-24 (D-039: Next.js removed, MCP server is sole surface)*
+> **Consolidated from:** `ARCHITECTURE.md` (original, Supabase-era — fully rewritten), `GRAPHITI_INTEGRATION.md`, `CURRENT_STACK.md` (Pass 2, 2026-04-16)
+> **Authoritative for:** how the system is built today — the port/adapter shape, the Graphiti adapter, the ingestion model, the L4 product layer boundary, the LocalAdapter design posture, and known operational issues.
+
+This doc describes the *how*. For the *what* and *why*, see VISION.md and DECISIONS.md. For volatile state (what's actually on `main` right now), see STATUS.md.
 
 ---
 
-## System Overview
+## §1 — System shape
 
-MIKAI is a local-first intent intelligence engine. It ingests personal digital content, extracts a structured knowledge graph with typed reasoning relationships, and exposes it to Claude Desktop via MCP.
+MIKAI is built as Ports & Adapters. Product code — the MCP server, the L4 engine, the ingestion daemon — depends on a single interface (`L3Backend`) and never on a specific graph backend. Two adapters implement the port, selected at startup by the `L3_BACKEND` environment variable.
 
 ```
-Sources (Apple Notes, files, Gmail, iMessage)
-    │
-    ▼
-Ingestion (zero LLM — chunking + storage)
-    │
-    ▼
-Extraction
-├── Track A: Claude Haiku → reasoning map (authored content)
-├── Track B: Rule engine → action patterns (behavioral traces)
-└── Track C: Smart split → searchable segments (all content)
-    │
-    ▼
-Supabase (Postgres + pgvector)
-├── sources    — raw content
-├── nodes      — extracted reasoning units with embeddings
-├── edges      — typed reasoning relationships
-└── segments   — condensed passages for fast search
-    │
-    ▼
-MCP Server (8 tools → Claude Desktop)
+             ┌──────────────────────────────────────────┐
+             │  Product code (depends only on the port) │
+             │                                          │
+             │  - Python MCP server (Claude Desktop)    │
+             │  - L4 engine (thread/state/next-step)    │
+             │  - Ingestion daemon (filesystem + MCP)   │
+             └──────────────────────┬───────────────────┘
+                                    │
+                    ┌───────────────▼───────────────┐
+                    │        L3Backend PORT         │
+                    │   (8 methods, domain verbs)   │
+                    │                               │
+                    │  ingestEpisode, search,       │
+                    │  getNode, expand,             │
+                    │  edgesBetween, history,       │
+                    │  stats, communities           │
+                    └──────┬───────────────┬────────┘
+                           │               │
+              ┌────────────▼─┐         ┌───▼─────────────┐
+              │ GraphitiAdapter│         │ LocalAdapter   │
+              │ (live)         │         │ (in design)    │
+              │                │         │                │
+              │ graphiti-core  │         │ embedded graph │
+              │ Neo4j 5.26     │         │ local embed    │
+              │ DeepSeek V3    │         │ local LLM      │
+              │ Voyage voyage-3│         │                │
+              └────────────────┘         └────────────────┘
+              L3_BACKEND=graphiti         L3_BACKEND=local
+              (default)                   (first-class alt)
 ```
 
----
+**Port surface (ARCH-024).** Eight methods, all in domain terms — no infrastructure nouns. Product code cannot tell which adapter is running:
 
-## Implementation Stack
+- `ingestEpisode(content: Episode) -> IngestResult`
+- `search(query: SearchQuery) -> SearchResult[]`
+- `getNode(id: NodeId) -> Node`
+- `expand(seed: NodeId[], hops: int, limit: int) -> Subgraph`
+- `edgesBetween(a: NodeId, b: NodeId) -> Edge[]`
+- `history(id: NodeId) -> HistoryEntry[]`
+- `stats() -> GraphStats`
+- `communities() -> Community[]`
 
-| Component | Technology | Role |
-|-----------|------------|------|
-| LLM (extraction) | Claude Haiku (`claude-haiku-4-5-20251001`) | Track A reasoning-map extraction |
-| LLM (synthesis) | Claude Sonnet 4.6 | Terminal desire synthesis (future) |
-| Embeddings | Voyage AI `voyage-3` (1024-dim) | Node + segment embeddings |
-| Database | Supabase (Postgres + pgvector) | All storage, vector search, graph traversal |
-| MCP Server | `@modelcontextprotocol/sdk` (stdio) | Product surface — 8 tools for Claude Desktop |
-| Scheduler | macOS launchd | Automated 30-min sync pipeline |
-| Runtime | Node.js + tsx | All scripts and server |
+**Why this shape.** Three forces (see ARCH-024): (1) the docs-folder audit surfaced that no formal decision had been recorded rejecting local-first — ARCH-019 adopted Graphiti by momentum, not by an explicit close; (2) a "flip a switch" requirement for privacy-sensitive deployments (ARCH-025) requires both backends to coexist at runtime, which is the definition of Ports & Adapters; (3) building L4 directly against Graphiti's raw API would re-couple the product to an adapter and make the future local-first mode impossible to ship without rewriting L4.
 
----
-
-## Data Model (Supabase / Postgres)
-
-```sql
-CREATE TABLE sources (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  type TEXT NOT NULL,           -- 'llm_thread' | 'note' | 'voice' | 'web_clip' | 'document'
-  label TEXT,
-  raw_content TEXT NOT NULL,
-  metadata JSONB DEFAULT '{}',
-  source TEXT,                  -- 'apple-notes' | 'claude-thread' | 'perplexity' | 'manual' | 'imessage' | 'gmail'
-  chunk_count INT DEFAULT 0,
-  node_count INT DEFAULT 0,
-  edge_count INT DEFAULT 0,
-  content_hash TEXT,
-  created_at TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE TABLE nodes (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  source_id UUID REFERENCES sources(id) ON DELETE CASCADE,
-  content TEXT NOT NULL,
-  label TEXT NOT NULL,
-  node_type TEXT NOT NULL,      -- 'concept' | 'project' | 'question' | 'decision' | 'tension'
-  embedding VECTOR(1024),
-  track TEXT,                   -- 'A' (LLM-extracted) | 'B' (behavioral trace)
-  occurrence_count INT DEFAULT 1,
-  query_hit_count INT DEFAULT 0,
-  confidence_weight FLOAT DEFAULT 1.0,
-  has_action_verb BOOLEAN DEFAULT false,
-  stall_probability FLOAT,
-  resolved_at TIMESTAMPTZ,
-  metadata JSONB DEFAULT '{}',
-  created_at TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE TABLE edges (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  from_node UUID REFERENCES nodes(id) ON DELETE CASCADE,
-  to_node UUID REFERENCES nodes(id) ON DELETE CASCADE,
-  relationship TEXT NOT NULL,   -- see docs/EPISTEMIC_EDGE_VOCABULARY.md
-  note TEXT,
-  weight FLOAT DEFAULT 1.0,
-  created_at TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE TABLE segments (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  source_id UUID REFERENCES sources(id) ON DELETE CASCADE,
-  topic_label TEXT NOT NULL,
-  processed_content TEXT NOT NULL,
-  processed_embedding VECTOR(1024),
-  created_at TIMESTAMPTZ DEFAULT now()
-);
-```
-
-**Taxonomy:** See `docs/EPISTEMIC_EDGE_VOCABULARY.md` for the full specification of node types, edge types, priority ordering, and extraction quality standard.
+ARCH-024 supersedes ARCH-021 (which had prohibited an abstraction layer). That prior decision was correct for its context — it blocked SQLite re-entanglement during the Graphiti migration. That risk no longer applies because `LocalAdapter` is a clean, first-class build, not a legacy revival.
 
 ---
 
-## Three-Track Extraction Pipeline
+## §2 — The Graphiti adapter
 
-### Track A: Authored Content → Claude Reasoning Map
+`GraphitiAdapter` is the default and currently the only live adapter. It runs graphiti-core (by Zep) on top of Neo4j 5.26, using DeepSeek V3 for entity extraction and resolution, and Voyage AI `voyage-3` (1024 dimensions) for embeddings. The adapter is exposed via a FastAPI sidecar at `http://localhost:8100` for non-Python clients, and is also called in-process from the Python MCP server (D-040) to avoid the HTTP hop.
 
-**Script:** `npm run build-graph` → `engine/graph/build-graph.js`
-**Sources:** Apple Notes, LLM threads, personal reflections, Perplexity threads
-**Process:** Claude Haiku extracts 5-7 nodes + typed edges per source → Voyage AI embeds each node → write to `nodes` + `edges`
-**Cost:** ~$0.01 per source
+**The scaling patch.** graphiti-core's `_resolve_with_llm` in `graphiti_core/utils/maintenance/node_operations.py` spreads `**candidate.attributes` for every candidate returned by hybrid search, with no upper bound. At ~4,500 entities, the resolution prompt exceeded DeepSeek's 131K context window (requesting 2.3M+ tokens). The MIKAI patch caps candidates at 50 and strips attributes from the resolution prompt (name + labels only — the LLM doesn't need full summaries to disambiguate identity). Prompt size drops to a fixed ~1,000 tokens regardless of graph size. Quality impact: minimal. The patch is reproducible via `scripts/apply_graphiti_patch.py` (D-042) and is applied after every `pip install --upgrade graphiti-core`.
 
-The extraction prompt produces a *reasoning map*, not a summary. A valid extraction must include tension/question nodes — if every node is a concept, extraction has drifted to summarization. See `lib/ingest-pipeline.ts` → `extractGraph()`.
+**The `DeepSeekClient` adapter.** graphiti-core's base OpenAI client assumes `json_schema` response format. DeepSeek V3 doesn't support it, so the sidecar subclasses `OpenAIGenericClient` and overrides `_generate_response` to use `json_object` mode with the JSON schema injected into the system prompt. The sidecar also uses a `PassthroughReranker` to avoid an OpenAI dependency for cross-encoder reranking.
 
-### Track B: Behavioral Traces → Rule Engine
+**The live graph.** As of the last measurement: 6,990 entities, 8,056 edges, 1,158 episodes (1,102 Apple Notes complete, 87 Claude thread turns partial). Hub entities include International Villages (50 edges), Germaine (39), MIKAI (33+), Brian (30), AI (26). Orphan rate: 17.6% (1,233 entities with no edges) — a mix of noise fragments ("A bee", "2327 storage number") and substantive-but-isolated nodes awaiting community detection.
 
-**Script:** Same `build-graph.js` (routes automatically by source type)
-**Sources:** iMessage, Gmail
-**Process:** Action-verb scan on raw text → creates `concept` nodes with `has_action_verb: true`, `stall_probability: 0.6`, `track: 'B'` → no LLM calls, no embeddings
-**Cost:** $0
+**Cost.** Early import (cold graph, everything new): ~$0.01 per episode. Steady-state (mature graph where Tier 1/2 deterministic resolution handles 80%+ of entities): ~$0.005 per episode. At ~10 new episodes/day this is roughly $1.50/month.
 
-Source type determines extraction tool (D-027). Never apply the LLM reasoning-map prompt to behavioral traces.
-
-### Track C: All Content → Searchable Segments
-
-**Script:** `npm run build-segments` → `engine/graph/build-segments.js`
-**Sources:** All authored content (apple-notes, perplexity, manual, claude-thread)
-**Process:** `smart-split.js` splits by source type (zero LLM) → Voyage AI embeds → write to `segments`
-**Cost:** ~$0.001 per source (embedding only)
+**Details.** Full technical write-up — the 4-step resolution pipeline, cost curves, embedding comparison (Voyage vs. Nomic), best-practices review of graphiti-core, the upstream PR draft — lives in `docs/research/graphiti-review.md`.
 
 ---
 
-## Ingestion Layer
+## §3 — Ingestion — the hybrid model
 
-**Script:** Source connectors call `engine/ingestion/ingest-direct.ts`
-**Process:** Accept raw content → clean via `preprocess.ts` → chunk → store in `sources` with `chunk_count`
-**No LLM calls.** Ingestion and extraction are decoupled (ARCH-014). After ingest, run `build-graph` then `build-segments` separately.
-
-### Source Connectors
-
-| Connector | Script | Method |
-|-----------|--------|--------|
-| Apple Notes | `sources/apple-notes/sync-direct.js` | osascript (direct read) |
-| Local files | `sources/local-files/sync.js` | File scan + `ingest-direct.ts` |
-| iMessage | `sources/imessage/sync.js` | SQLite read of `chat.db` + `ingest-direct.ts` |
-| Gmail | `sources/gmail/sync.js` | Google API + `ingest-direct.ts` |
-| Claude exports | `scripts/watch-claude-exports.js` | File watcher → `sync:local` |
-| Claude Code | `scripts/watch-claude-code.js` | Session scanner → `ingest-direct.ts` |
-
-### Preprocessing (`engine/ingestion/preprocess.ts`)
-
-| Source type | What it strips |
-|---|---|
-| `apple-notes` | HTML tags, entities, backslash breaks |
-| `markdown` | Frontmatter, image syntax, bare URLs, header markers |
-| `claude-export` | JSON → user/assistant text turns only |
-| `imessage` | Timestamps, phone numbers → `[contact]` |
-| `gmail` | Quoted replies, headers, HTML |
-| `browser` | Nav, footer, scripts, cookie banners |
+Ingestion uses a hybrid of three patterns, all converging on a single write path (`L3Backend.ingestEpisode()`). **Mode 1** is filesystem watchers (Python `watchdog` + macOS FSEvents) for local sources with no API — Apple Notes, Claude Code sessions, local files. **Mode 2** is MCP client polling for cloud sources that expose MCP servers (Gmail, Google Calendar, Google Drive). **Mode 3** is a drop folder (`~/.mikai/imports/`) as the manual fallback for everything else. Custom API connectors per source are rejected; MCP standardizes that boundary. See ARCH-023 for the full rationale and build phases.
 
 ---
 
-## MCP Server (The Product)
+## §4 — The L4 product layer
 
-**File:** `surfaces/mcp/server.ts`
-**Transport:** stdio (runs as `npx tsx surfaces/mcp/server.ts`)
-**No web server required.** Standalone process.
+L4 — thread detection, state classification, next-step inference, intention-behavior gap detection — is a separate product layer **above** the L3Backend port. Per D-041, the port exposes only generic graph primitives (search, node fetch, BFS expand, edges-between, history, stats, episode write, communities). It does **not** implement tension detection, thread detection, state classification, stalled-project surfacing, or next-step inference. Those are L4 concerns.
 
-### Tools
+This separation is load-bearing. Mixing L4 semantics into the port would couple the product layer to a specific adapter (Graphiti's community detection, Graphiti's bitemporal edges) and make either (a) the second adapter impossible to ship, or (b) the L4 design impossible to evolve independently from Graphiti's API. Keeping L4 strictly above the port means the same L4 code works with `GraphitiAdapter` today and `LocalAdapter` later.
 
-| Tool | Tier | What it does |
-|------|------|-------------|
-| `get_brief` | L1 | ~400-token context snapshot (tensions, stalled items, stats) |
-| `search_knowledge` | L2 | Vector search over segments → top-K passages |
-| `search_graph` | L3 | 5 seed nodes → 1-hop edge expansion → cap 15 nodes |
-| `get_tensions` | L3 | Tension nodes ranked by edge count |
-| `get_stalled` | L3 | Nodes with stall_probability > threshold |
-| `get_status` | — | Knowledge base health (counts, timestamps, pending) |
-| `mark_resolved` | Write | Set `resolved_at` + zero `stall_probability` |
-| `add_note` | Write | Create source + segments from conversation |
-
-### Three-Tier Memory Model (D-038)
-
-| Tier | What | Size | Cost |
-|------|------|------|------|
-| L1 | `get_brief` — always-available context | ~400 tokens | Free (Supabase query) |
-| L2 | `search_knowledge` — segment retrieval | 25K+ segments | Embedding per query |
-| L3 | `search_graph` — graph traversal | 2K+ nodes | Embedding + traversal |
-
-L1 prevents unnecessary L2/L3 calls. L2 handles most queries. L3 surfaces structural reasoning.
-
-### Graph Retrieval (inside MCP server)
-
-1. Embed query → vector similarity → 5 seed nodes
-2. Fetch all edges touching seeds (1-hop)
-3. Rank connected nodes by edge priority (tensions first)
-4. Cap at 15 total nodes
-5. Serialize as structured text for Claude
+L4 is built once, against the port, on a dedicated branch. For the full build spec — the five-paper research integration (ProMemAssist, OmniActions, Inner Thoughts, PPP, MEMTRACK), the pipeline stages (detect → classify → evaluate gate → infer), the hypothesis that state classification may be rule-based (zero LLM) with only next-step inference needing LLM synthesis — see FOUNDATIONS.md §3.
 
 ---
 
-## Inference Layer
+## §5 — LocalAdapter (in design)
 
-### Stall Detection Rule Engine
+`LocalAdapter` is a first-class alternate adapter behind the same port. Selected via `L3_BACKEND=local`. Fully on-device: embedded graph store (likely SQLite + `sqlite-vec`, informed by `legacy/sqlite-local`), local embeddings (Nomic via ONNX or equivalent), local LLM for extraction. Zero external service dependency. Same ingestion primitive (filesystem watchers from ARCH-023).
 
-**File:** `engine/inference/rule-engine.ts`
-**Runner:** `npm run run-rule-engine`
-
-High-confidence rule (all four met → 0.8):
-- `occurrence_count >= 2`
-- `days_since_first_seen > 14`
-- `has_action_verb = true`
-- `resolved_at IS NULL`
-
-Otherwise: weighted combination of action_verb (0.3) + recurrence (0.3) + staleness (0.2) + hit_boost (0.1) × confidence_weight.
-
-LLM is reserved for 3 roles only (D-026): Track A extraction, terminal desire synthesis, NLG for delivery. Everything else is ML infrastructure.
+The design posture per ARCH-025 is that this is not a legacy revival, not a fork, not a future migration — it is a supported runtime mode preserved as first-class. The architectural discipline the two-adapter model enforces (port surface stays honest, no Graphiti-specific leaks into product code) is itself a reason to keep both adapters alive. Design input comes from `legacy/sqlite-local` (frozen at `b8f07ee`, v0.3 SQLite implementation); code may be studied and adapted but the branch is never merged into main.
 
 ---
 
-## Scheduler
+## §6 — Known operational issues
 
-**File:** `engine/scheduler/daily-sync.sh`
-**Schedule:** macOS launchd (configurable interval)
-
-Pipeline stages (sequential):
-1. Apple Notes sync (osascript)
-2. Local files sync
-3. iMessage sync
-4. Gmail sync
-5. Claude Code session scan
-6. `build-graph` (Track A + B extraction)
-7. `run-rule-engine` (stall scoring)
-8. `build-segments` (Track C segmentation)
-
-Lockfile at `/tmp/mikai-sync.lock`. Logs to `engine/scheduler/logs/`.
-
----
-
-## Epistemic Content Type Framework
-
-Not all content is equal signal. Source quality by epistemic type:
-
-| Type | Signal Value | Graph Treatment |
-|---|---|---|
-| Processed reflection | Highest | High-confidence nodes, preserve reasoning chain |
-| Active working note | High | Concept clusters, flag for recurrence |
-| Research absorption | Medium | Extract into user's frame |
-| Fragment / capture | Low | Store, weight low, watch for recurrence |
-| Reference material | Lowest | Skip or low-weight nodes |
-
-See `docs/EPISTEMIC_DESIGN.md` for the full philosophical foundations.
-
----
-
-## Key Architecture Decisions
-
-| Decision | What was decided |
-|---|---|
-| ARCH-001 | Supabase only — no separate vector DB |
-| ARCH-013 | Claude Haiku for extraction; Voyage AI voyage-3 for embeddings |
-| ARCH-014 | Ingestion and extraction are decoupled — never merge them |
-| ARCH-015 | Graph traversal: 5 seeds → 1-hop → cap 15 nodes |
-| ARCH-016 | Embeddings at node level, not chunk level |
-| ARCH-017 | Fixed taxonomy — see `docs/EPISTEMIC_EDGE_VOCABULARY.md` |
-| ARCH-018 | Stay on Supabase through Phase 2 (PuppyGraph experiment: marginal gain) |
-| D-026 | LLM reserved for 3 roles only |
-| D-027 | Source type determines extraction tool |
-| D-038 | Three-tier memory (L1/L2/L3) |
-| D-039 | MCP server is sole product surface (Next.js removed) |
-
-Full decision log: `docs/DECISIONS.md`
-
----
-
-*This document describes the architecture as built (L1-L3: memory interface, memory infrastructure, graph/retrieval). For the strategic direction — task-state awareness as the product layer (L4) above memory — see `docs/NOONCHI_STRATEGIC_ANALYSIS.md`. For competitive positioning and the evaluation bridge design, see `docs/MEMORY_ARCHITECTURE_THESIS.md`. For the epistemic foundations, see `docs/EPISTEMIC_DESIGN.md`. For gaps and risks, see `docs/ARCHITECTURE_GAPS.md`.*
+- **17.6% orphan entities.** 1,233 of 6,990 Neo4j entities have zero edges. Mix of noise fragments ("A bee", "2327 storage number") and substantive-but-isolated nodes ("Let's Talk", "Alexander technique"). Community detection pass pending. See OPEN.md.
+- **18.5% L4 state-classification accuracy on the SQLite era.** The `feat/l4-testing` branch carries the prior L4 implementation, which ran against SQLite. Needs re-evaluation once ported onto the `L3Backend` port. See OPEN.md.
+- **Extraction prompt tuned to Brian's writing style.** The reasoning-map extraction prompt was validated on Brian's reflective, framework-heavy corpus. Whether it generalizes to users who write quick action items or operational notes is unresolved. See OPEN.md (O-025, O-035).
+- **Graphiti dependency is early-stage (v0.5.x).** API stability is not guaranteed. The patch is load-bearing. Fork trigger conditions documented in D-042 and `docs/research/graphiti-review.md`.
