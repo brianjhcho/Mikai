@@ -21,15 +21,14 @@ Always start with `docs/STATUS.md` for the volatile "what's actually on main rig
 | Working on... | Read first |
 |---|---|
 | Current state of main / what's live | `docs/STATUS.md` |
-| L3 graph / entity resolution / Graphiti patch | `docs/GRAPHITI_INTEGRATION.md`, `docs/GRAPHITI_BEST_PRACTICES_REVIEW.md` |
-| L3 port/adapter design | `docs/DECISIONS.md` → ARCH-024, ARCH-025 |
-| Ingestion (filesystem, MCP client, drop folder) | `docs/DECISIONS.md` → ARCH-023 |
-| L4 thread/state detection | `docs/L4_RESEARCH_INTEGRATION.md`, `docs/SEGMENTATION_FRAMEWORK.md` |
-| Edge vocabulary / epistemic schema | `docs/EPISTEMIC_EDGE_VOCABULARY.md`, `docs/EPISTEMIC_DESIGN.md` |
-| Product positioning / noonchi / moat | `docs/NOONCHI_STRATEGIC_ANALYSIS.md`, `docs/INTENT_INTELLIGENCE_MANIFESTO.md`, `docs/MEMORY_ARCHITECTURE_THESIS.md` |
+| Product vision / noonchi / positioning / moat | `docs/VISION.md` |
+| Architecture / port-adapter / Graphiti patch / current stack | `docs/ARCHITECTURE.md` |
+| L3 port/adapter design | `docs/ARCHITECTURE.md`, `docs/DECISIONS.md` → ARCH-024, ARCH-025 |
+| Ingestion (filesystem, MCP client, drop folder) | `docs/ARCHITECTURE.md`, `docs/DECISIONS.md` → ARCH-023 |
+| L4 design / edge vocabulary / epistemic schema / segmentation | `docs/FOUNDATIONS.md` |
+| Open questions / structural gaps / unresolved | `docs/OPEN.md` |
 | Architecture decisions (append-only) | `docs/DECISIONS.md` |
-| Structural gaps in current build | `docs/ARCHITECTURE_GAPS.md` |
-| Open / unresolved questions | `docs/OPEN_QUESTIONS.md` |
+| Raw research / archived drafts (Graphiti review, cleanup inventory, L4 papers, memory thesis) | `docs/research/` |
 
 ## Architectural direction
 
@@ -51,7 +50,7 @@ L4 (thread/state detection, next-step inference) is a separate product layer abo
 
 ## Graphiti operational notes
 
-The 6,990-entity graph lives in Neo4j. graphiti-core is patched to cap candidate resolution at 50 entities and strip attributes from resolution prompts — without this patch, the LLM context overflows at scale. Patch is reproducible via `scripts/apply_graphiti_patch.py` (D-042). Full technical write-up: `docs/GRAPHITI_INTEGRATION.md`.
+The 6,990-entity graph lives in Neo4j. graphiti-core is patched to cap candidate resolution at 50 entities and strip attributes from resolution prompts — without this patch, the LLM context overflows at scale. Patch is reproducible via `scripts/apply_graphiti_patch.py` (D-042). Full technical write-up: `docs/ARCHITECTURE.md` (raw research: `docs/research/graphiti-review.md`).
 
 The sidecar uses a custom `DeepSeekClient` that adapts DeepSeek V3 to Graphiti's JSON-schema expectations by injecting the schema into the system prompt and using `json_object` response format.
 
