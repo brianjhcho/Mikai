@@ -277,4 +277,80 @@ def build_mcp(get_graphiti: Callable[[], Graphiti | None]) -> MCPBundle:
             logger.info("mcp_tool=get_stats args=[] duration_ms=%.1f status=error error=%s(%s)", (time.perf_counter() - t0) * 1000, type(exc).__name__, exc)
             raise
 
-    return MCPBundle(mcp=mcp, tool_names=["search", "get_history", "add_note", "get_stats"])
+    @mcp.tool(
+        description=(
+            "Retrieve the original source episode prose for a query. Returns "
+            "the raw content of the top-K matching episodes (notes, "
+            "conversations, excerpts) ranked by full-text relevance — not "
+            "the LLM-summarized edge facts that `search` returns. Use this "
+            "when the user asks 'what have I written about X' or wants to "
+            "read their own words back rather than compressed claims. Each "
+            "result includes the source label and reference time."
+        )
+    )
+    async def get_source(query: str, num_results: int = 5) -> str:
+        t0 = time.perf_counter()
+        try:
+            g = get_graphiti()
+            if not g:
+                return "Graphiti not initialized"
+
+            if not query.strip():
+                return "Empty query — nothing to retrieve."
+
+            # Neo4j's fulltext query language requires escaping some chars and
+            # accepts boolean operators; passing a raw user query is usually
+            # fine for simple terms. For safety, wrap multi-word queries in
+            # quotes so Lucene treats them as a phrase; fall back to single
+            # token if quoting produces zero results.
+            driver = getattr(g.driver, "driver", g.driver)
+            rows: list[dict] = []
+            async with driver.session() as session:
+                for lucene_q in (query, f'"{query}"', query.replace(" ", " OR ")):
+                    result = await session.run(
+                        """
+                        CALL db.index.fulltext.queryNodes("episode_content", $q)
+                        YIELD node, score
+                        RETURN
+                            node.uuid AS uuid,
+                            node.content AS content,
+                            node.source AS source,
+                            node.source_description AS source_description,
+                            node.reference_time AS reference_time,
+                            score
+                        ORDER BY score DESC
+                        LIMIT $limit
+                        """,
+                        q=lucene_q,
+                        limit=num_results,
+                    )
+                    rows = [record.data() async for record in result]
+                    if rows:
+                        break
+
+            if not rows:
+                return f"No source episodes found for: {query}"
+
+            lines = [f"## Source episodes for: {query}\n"]
+            for i, r in enumerate(rows, 1):
+                label = r.get("source_description") or r.get("source") or "episode"
+                ref_time = _iso(r.get("reference_time"))
+                content = (r.get("content") or "").strip()
+                lines.append(f"### {i}. {label}")
+                if ref_time:
+                    lines.append(f"_{ref_time}_")
+                lines.append("")
+                lines.append(content if content else "_(empty content)_")
+                lines.append("")
+
+            output = "\n".join(lines)
+            logger.info("mcp_tool=get_source args=[query, num_results] duration_ms=%.1f status=ok", (time.perf_counter() - t0) * 1000)
+            return output
+        except Exception as exc:
+            logger.info("mcp_tool=get_source args=[query, num_results] duration_ms=%.1f status=error error=%s(%s)", (time.perf_counter() - t0) * 1000, type(exc).__name__, exc)
+            raise
+
+    return MCPBundle(
+        mcp=mcp,
+        tool_names=["search", "get_history", "add_note", "get_stats", "get_source"],
+    )

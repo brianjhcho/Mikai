@@ -35,7 +35,7 @@ Apple Notes (osascript) → import_from_dump.py → Graphiti sidecar (POST /epis
 | `Dockerfile` | Python 3.12 + graphiti-core[anthropic,voyageai] + FastAPI |
 | `requirements.txt` | Python dependencies |
 | `sidecar/main.py` | FastAPI app: REST endpoints + `/mcp` mount wrapping graphiti-core |
-| `sidecar/mcp_tools.py` | FastMCP tool handlers (L3): search, get_history, add_note, get_stats |
+| `sidecar/mcp_tools.py` | FastMCP tool handlers (L3): search, get_history, add_note, get_stats, get_source |
 | `scripts/import_from_dump.py` | Import Apple Notes dump into Graphiti with retry logic |
 | `scripts/import_apple_notes.py` | Direct osascript → Graphiti import (alternative) |
 | `scripts/read_notes.applescript` | Read Apple Notes to /tmp/mikai_notes_raw.txt |
@@ -61,7 +61,7 @@ Apple Notes (osascript) → import_from_dump.py → Graphiti sidecar (POST /epis
 **MCP (for Claude Desktop / mobile / browser):**
 | Endpoint | Purpose |
 |----------|---------|
-| `/mcp` | FastMCP Streamable HTTP. Tools: search, get_history, add_note, get_stats |
+| `/mcp` | FastMCP Streamable HTTP. Tools: search, get_history, add_note, get_stats, get_source |
 
 ## Claude client configuration
 
