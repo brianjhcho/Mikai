@@ -64,6 +64,12 @@ private/
 .omc/
 .claude/
 
+# Superset / project session tool state
+.superset/
+
+# Eval harness output (per-run artifacts)
+docs/evals/run-*.md
+
 # Build cache
 tsconfig.tsbuildinfo
 sources/local-files/export/perplexity/
