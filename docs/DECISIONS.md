@@ -748,7 +748,7 @@ Each tier serves a different query depth. L1 prevents unnecessary L2/L3 calls. L
 
 **Why:** The manifesto claimed "memory is what you said, intent intelligence is what you meant." The current MIKAI returns only *what you meant* (the extracted claim) and discards *what you said* (the prose that earned the claim). Both are useful — for "give me facts" → edges; for "give me context" → prose. The existing tool shape forces every query through the compression layer, losing the richness users expect from a memory product.
 
-**What shipped this session:** Nothing yet — this is a recognized gap, documented so the next branch can address it. The episode content is already in Neo4j; only the tool surface is missing.
+**What shipped:** `get_source(query, num_results=5)` added to `infra/graphiti/sidecar/mcp_tools.py`. Uses Neo4j's existing `episode_content` fulltext index (created by Graphiti's `build_indices_and_constraints()`) to rank Episodic nodes by relevance to the query, then returns the raw `content` string for each — formatted as markdown with source label and reference time. Falls back from phrase-match → quoted-phrase → OR-split when the first query form produces zero results. Live-validated: `get_source("Sucafina")` returns Brian's original conversation turns verbatim, matching the content Claude.ai's built-in memory had been surfacing.
 
 **Rejected:**
 - Modifying `search` to dump episode content alongside edges by default (makes every response token-expensive; Claude should choose based on intent).

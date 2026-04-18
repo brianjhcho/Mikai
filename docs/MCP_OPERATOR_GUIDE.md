@@ -4,14 +4,15 @@
 
 MIKAI's MCP endpoint at `/mcp` exposes your Graphiti knowledge graph to Claude Desktop, mobile (iOS/Android), and the Claude.ai browser web app via Streamable HTTP. The endpoint is mounted inside the Graphiti sidecar FastAPI server — same process, same Neo4j connection, single public URL.
 
-The MCP server implements four L3 (graph primitives) tools:
+The MCP server implements five L3 (graph primitives) tools:
 
 - **`search(query, num_results=10)`** — Hybrid search (semantic + BM25 + reciprocal rank fusion) across the graph. Returns edges (relationships) and adjacent nodes ranked by relevance. Start here for queries like "what am I contradicting?" or "what depends on X?"
 - **`get_history(query, as_of?, num_results=10)`** — Bitemporal point-in-time search. Returns current facts and superseded (invalidated) facts separately, so you can see how beliefs have evolved. Pass an ISO datetime in `as_of` (e.g. `2026-03-15T00:00:00`) to see the graph as it looked on that date.
 - **`add_note(content, source_description="claude-conversation")`** — Write a new insight into the knowledge graph as a Graphiti episode. Graphiti extracts entities and relationships automatically from the content.
 - **`get_stats()`** — Graph quality snapshot: total entities, relationships, episodes, communities, and orphan count (entities with no relationships).
+- **`get_source(query, num_results=5)`** — Retrieve the raw source prose for the top-K matching episodes. Use this when the user asks "what have I written about X" or wants their own words back rather than compressed edge facts. Complements `search` — `search` returns claims, `get_source` returns the text those claims were extracted from.
 
-Reference the decision log (docs/DECISIONS.md D-040, D-041, D-043) for the architectural rationale. The sidecar exposes REST endpoints for ingestion and admin; `/mcp` is the only surface exposed to Claude clients.
+Reference the decision log (docs/DECISIONS.md D-040, D-041, D-043, D-045) for the architectural rationale. The sidecar exposes REST endpoints for ingestion and admin; `/mcp` is the only surface exposed to Claude clients.
 
 ---
 
