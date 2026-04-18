@@ -529,13 +529,13 @@ Avg tension edge delta: **+1.2** (gate was ≥2). Multi-hop traversal adds nodes
 
 ---
 
-## D-034: 30-Day Beta Target — 5 Users via MCP
-**Date:** 2026-03
-**Source:** Competitive Strategy & Positioning Analysis
-**Decision:** 30-day launch target: 5 beta users querying their personal graphs via MCP in Claude Desktop. Week 1: MCP server. Week 2: onboarding pipeline for non-Brian users. Week 3: private beta recruitment. Week 4: iterate and ship public beta.
-**Why:** The MCP server is largely a protocol wrapper around existing /api/chat infrastructure. 5 users is enough to test extraction quality on non-Brian content (the highest-risk unknown) while small enough to support personally.
-**Rejected:** Larger beta (support overhead), solo use only (doesn't test generalization).
-**Revisit if:** MCP server takes longer than 1 week, or extraction quality on non-Brian content is too poor to ship.
+## D-034: Solo-First MCP Validation — Brian on Desktop, Mobile, and Browser
+**Date:** 2026-04-17 (revised from 2026-03)
+**Source:** Revised during the mcp-layer branch kickoff
+**Decision:** Validate the MCP layer with Brian as the only user before recruiting any beta cohort. The L3 graph must be reachable from all three Claude surfaces Brian uses day-to-day: Claude Desktop (stdio MCP), Claude mobile (remote MCP), and the Claude.ai browser web app (remote MCP). No non-Brian onboarding pipeline, no private beta recruitment, no public beta on this branch.
+**Why:** Generalization risk is downstream of surface coverage. If the graph is only queryable from Desktop, the product fails the "always available" criterion that makes a memory layer useful in the first place — Brian's actual usage is split across desktop, phone, and browser. Solo validation across all three surfaces exercises the transport modes (stdio vs remote MCP), auth, and latency envelopes before any other user is subjected to them. Extraction-quality-on-non-Brian-content is a later-stage question; it's not worth de-risking until the surfaces themselves are proven on a single corpus.
+**Rejected:** 5-user beta before surface coverage is complete (previous D-034 stance — premature, optimizes for generalization before basic availability). Desktop-only solo use (doesn't cover Brian's real usage pattern). Building mobile/browser surfaces after a beta launch (would force a breaking change on early users).
+**Revisit if:** All three surfaces are working reliably for Brian and the next blocker becomes "is this useful for anyone else," at which point reopen beta recruitment as a separate decision.
 
 ---
 
@@ -688,3 +688,84 @@ Each tier serves a different query depth. L1 prevents unnecessary L2/L3 calls. L
 - Upstream PR rejected or unresponsive for 30+ days
 - A graphiti-core upgrade breaks the patch AND contains needed features
 **Revisit if:** Any fork trigger condition is met.
+
+---
+
+## D-043: MCP Transport — Mounted Inside the Sidecar, Streamable HTTP Only
+**Date:** 2026-04-17
+**Source:** mcp-layer branch — surface-coverage refactor driven by the revised D-034
+**Decision:** The MCP server for Claude Desktop, mobile, and browser is mounted at `/mcp` inside the existing Graphiti sidecar FastAPI app using FastMCP's `streamable_http_app()`. One process, one Graphiti singleton, one public URL. Transport is Streamable HTTP only — no stdio code path in MIKAI. Claude Desktop reaches it via the `npx mcp-remote http://localhost:8100/mcp` shim, which handles the stdio↔HTTP bridge without any MIKAI-side stdio implementation.
+**Why:** The revised D-034 requires all three Claude surfaces (Desktop + mobile + browser) reach the same L3 graph. Mobile and browser require remote MCP over Streamable HTTP; Desktop can reach remote MCP via the community-maintained `mcp-remote` shim. Standing up stdio *and* HTTP code paths inside MIKAI would double the transport surface, duplicate the Graphiti init, and drift over time — all to avoid a one-line `mcp-remote` invocation on the client side. Mounting inside the sidecar (rather than a separate daemon) collapses the Graphiti singleton, the patched graphiti-core, and the public URL into one process, which simplifies Cloudflare Tunnel exposure and removes the 520-line duplicated `mcp_server.py`.
+**What changed on this branch:**
+- Added `sidecar/mcp_tools.py` exporting `build_mcp(get_graphiti)` → FastMCP with the 4 L3 tools.
+- `sidecar/main.py` constructs the FastMCP instance, nests `mcp.session_manager.run()` inside the Graphiti lifespan, and mounts the ASGI app at `/mcp`.
+- Deleted `sidecar/mcp_server.py` (the stdio-only standalone server) and its duplicated `DeepSeekClient` / `PassthroughReranker` / `init_graphiti` code.
+- Updated `infra/graphiti/AGENTS.md` with the new architecture diagram, the `/mcp` endpoint row, and the Claude Desktop `mcp-remote` config snippet.
+**Rejected:**
+- Dual-transport single codebase with a `--transport {stdio,http}` CLI flag (Pattern A). Two deployment processes, two Graphiti inits, double the surface for no gain when `mcp-remote` already bridges Desktop.
+- Full migration from raw `mcp.server.Server` to FastMCP across the whole stack (Pattern B). We did migrate the 4 tools to FastMCP because ASGI mount requires it, but this is a local change, not a project-wide SDK swap.
+- Two literal scripts sharing Neo4j (Pattern C). Guaranteed to drift; every new tool would be written twice.
+- Standalone long-running HTTP MCP daemon separate from the sidecar. Would duplicate Graphiti init and require a second Cloudflare Tunnel entry.
+**Supersedes:** D-040's implementation detail that MCP runs as a standalone stdio process. The MCP-is-Python, MCP-uses-graphiti-in-process, MCP-is-the-sole-product-surface parts of D-040 all stand; only the *transport* and *process boundary* have changed.
+**Revisit if:**
+- A Claude client drops Streamable HTTP support (would force re-adding stdio).
+- `mcp-remote` becomes unmaintained or unreliable (alternate Desktop path would be needed).
+- The sidecar grows tools that cannot safely share a process with the REST ingestion endpoints (then split into two processes behind the same tunnel, not two codebases).
+- A second user joins (triggers OAuth work per D-034; separate decision).
+
+---
+
+## D-044: Claude-Client MCP Compatibility Findings
+**Date:** 2026-04-18
+**Source:** mcp-layer branch — live integration debugging against Claude Desktop, Claude.ai web, and Claude mobile during the MCP output layer rollout
+**Decision:** MIKAI's `/mcp` endpoint must accommodate three client-side protocol quirks discovered while wiring Pattern D to Claude.ai's hosted Custom Connector. Fixes landed in `infra/graphiti/sidecar/main.py` and `infra/graphiti/sidecar/mcp_tools.py`; record here so the pattern isn't re-discovered.
+
+**Findings:**
+
+1. **`/mcp` (no trailing slash) cannot 307-redirect.** Starlette's default `Mount` class redirects `/mcp` → `/mcp/` with HTTP 307 for trailing-slash consistency. Claude.ai's hosted MCP client does not follow that redirect on POST — the JSON-RPC body is lost and the handshake fails. Fix: an ASGI middleware (`MCPTrailingSlashMiddleware`) that rewrites `scope["path"]` from `/mcp` to `/mcp/` before routing. No redirect issued.
+
+2. **`TransportSecuritySettings` rejects unfamiliar Host headers.** The MCP Python SDK's `StreamableHTTPSessionManager` ships with DNS rebinding protection on by default, which rejects any `Host` header not in its allow-list. When Claude.ai connects via a tunnel (Tailscale Funnel, Cloudflare Tunnel, etc.), the inbound `Host` is the tunnel's public hostname — not knowable at build time. Result: every request 421 Misdirected Request. Fix: `TransportSecuritySettings(enable_dns_rebinding_protection=False)` on the FastMCP instance. Authentication becomes the real security boundary.
+
+3. **Claude.ai's first probe uses `Accept: application/json` without `text/event-stream`.** Streamable HTTP requires both. The probe returns 406 Not Acceptable, Claude.ai falls back to probing OAuth discovery endpoints (`.well-known/oauth-authorization-server`, `.well-known/oauth-protected-resource`, `/register`), all 404 on a bearer-only server, then retries with the proper Accept header and succeeds. The 406 is non-blocking but produces spurious "Couldn't reach the MCP server" UI errors on the Claude.ai connector page even when the connector works in-chat. Not fixed in code — Claude.ai's retry recovers. Recorded so the cosmetic error isn't mistaken for a real failure.
+
+4. **Claude.ai's Custom Connector form does not expose a bearer-token field.** Only Name, URL, OAuth Client ID, OAuth Client Secret. Static bearer tokens are fine for Claude Desktop (via `mcp-remote`) but not reachable from Claude.ai web or Claude mobile. The supported auth path for those surfaces is **OAuth 2.0 + Dynamic Client Registration** — the server must expose `/.well-known/oauth-authorization-server` and `/register` endpoints, and Claude.ai will auto-register as a client. Until OAuth is implemented on the sidecar, `auth_required: false` is the operational compromise for mobile/browser access.
+
+**Why:** All four findings are client-side behaviors of Claude's hosted MCP infrastructure, not things MIKAI gets to vote on. A correctly-implemented MCP server must tolerate them. Documenting them here prevents re-debugging.
+
+**Rejected:** Emitting HTTP 308 instead of 307 (clients still don't follow). Adding an allow-list of tunnel hostnames to TransportSecuritySettings (fragile — hostname changes per deployment). Implementing a pre-flight `Accept` header rewrite (too invasive; Claude.ai's retry already recovers).
+
+**Revisit if:**
+- Claude.ai begins exposing a bearer-token field on the Custom Connector form (would let us re-enable bearer auth without OAuth).
+- The MCP Streamable HTTP spec adds a canonical "allow any Host" setting that doesn't require disabling DNS rebinding protection entirely.
+- Claude.ai stops probing OAuth endpoints on unauthenticated servers (would remove the cosmetic 406 → 404 → retry sequence).
+
+---
+
+## D-045: `search` Returns Edges, Not Prose — `get_source` Tool Gap
+**Date:** 2026-04-18
+**Source:** Live comparison between Claude.ai's built-in memory and MIKAI's `search` tool, same query (Sucafina/Martin). Claude's memory gave a multi-paragraph narrative from the original conversation; MIKAI returned compressed bullet-point facts.
+**Decision:** MIKAI ships with an L3 tool gap: `search` returns edges — LLM-summarized one-line facts like "Sucafina is headquartered in Geneva" — never the source episode prose that grounds those edges. For "what have I written about X" queries (the most intuitive user request), this makes MIKAI retrieve thinner content than Claude's own session memory, inverting the manifesto's core promise. Add a new L3 tool `get_source(query, num_results)` that returns the raw episode content alongside edges, so Claude can choose edges vs. prose based on the question.
+
+**Why:** The manifesto claimed "memory is what you said, intent intelligence is what you meant." The current MIKAI returns only *what you meant* (the extracted claim) and discards *what you said* (the prose that earned the claim). Both are useful — for "give me facts" → edges; for "give me context" → prose. The existing tool shape forces every query through the compression layer, losing the richness users expect from a memory product.
+
+**What shipped this session:** Nothing yet — this is a recognized gap, documented so the next branch can address it. The episode content is already in Neo4j; only the tool surface is missing.
+
+**Rejected:**
+- Modifying `search` to dump episode content alongside edges by default (makes every response token-expensive; Claude should choose based on intent).
+- Returning raw Graphiti internal fields (leaks implementation detail to MCP clients).
+
+**Revisit if:** The new tool lands in `feat/l4-engine` or a dedicated branch (scope: fetch top-K episodes for a query, format as markdown with source labels and timestamps). After the tool ships, re-run the eval suite — questions A1, C1, C2 in `scripts/eval_mikai.py` should show improved MIKAI responses relative to a Claude-with-memory baseline.
+
+---
+
+## D-046: Solo-User Eval Harness — Semi-Manual Until API Credits Available
+**Date:** 2026-04-18
+**Source:** Attempt to build a fully automated A/B eval (MIKAI arm via Anthropic API with MCP connector; baseline arm via Claude.ai manual copy-paste).
+**Decision:** The eval harness (`scripts/eval_mikai.py`) is semi-manual: automates the MIKAI arm via the Anthropic Messages API with `mcp_servers` parameter, but requires the user to manually paste the Claude.ai-with-memory baseline responses. Fully automated reproduction of Claude.ai's built-in memory is not possible without either browser automation (Playwright driving a logged-in Claude.ai session) or API credits to substitute for a synthetic memory layer.
+**Why:** Claude.ai's consumer memory feature is not exposed via the Anthropic developer API. Automating the baseline arm requires either scraping Claude.ai (fragile, ToS gray area) or approximating the memory with a retrieval layer over exported conversations (valid but not the same benchmark). For a solo-user eval, 30 seconds of copy-paste per question is cheaper than building either alternative.
+**Rejected:**
+- Full Playwright harness (1-2 hours to build, fragile against Claude.ai UI changes).
+- Synthetic memory via Claude.ai conversation export + embedding retrieval (changes the baseline from "Claude with real memory" to "Claude with my retrieval hack" — undermines the comparison).
+- Fully manual eval (no automation at all). Rejected because the MIKAI arm benefits from being automatable, even if the baseline isn't.
+**Open constraint:** Max subscription does NOT include Anthropic API credits — the two wallets are separate. Current `~/.mikai/config.json` Anthropic key is exhausted. Path forward: either (a) top up ~$5 of API credit and run `scripts/eval_mikai.py` directly, or (b) register MIKAI as a Claude Code MCP server (`claude mcp add`) and spawn agents that use the user's Max quota instead. Option (b) requires a Claude Code session restart to pick up the new MCP registration.
+**Revisit if:** Anthropic adds API credits to Max tier, or exposes Claude.ai's consumer memory via the API. Either would simplify the harness substantially.

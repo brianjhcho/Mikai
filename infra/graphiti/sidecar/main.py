@@ -11,6 +11,11 @@ Endpoints:
   POST /episode             — Add single episode
   POST /episode/bulk        — Bulk import (add_episode_bulk)
   POST /communities         — Get community summaries
+  *    /mcp                 — MCP Streamable HTTP (Claude Desktop/mobile/browser)
+
+D-043: MCP is mounted in-process at /mcp, sharing the Graphiti singleton
+with the REST endpoints above. One codebase, one Graphiti connection, one
+public URL for all three Claude surfaces.
 """
 
 import os
@@ -18,8 +23,10 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from graphiti_core import Graphiti
 from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
@@ -32,6 +39,8 @@ from graphiti_core.cross_encoder.client import CrossEncoderClient
 from graphiti_core.nodes import EpisodeType
 from graphiti_core.graphiti import RawEpisode
 from graphiti_core.search.search_config_recipes import COMBINED_HYBRID_SEARCH_RRF
+
+from sidecar.mcp_tools import build_mcp
 
 logger = logging.getLogger("mikai-graphiti")
 logging.basicConfig(level=logging.INFO)
@@ -109,6 +118,10 @@ class PassthroughReranker(CrossEncoderClient):
 
 graphiti: Graphiti | None = None
 
+_mcp_bundle = build_mcp(lambda: graphiti)
+mcp = _mcp_bundle.mcp
+_mcp_tool_names = _mcp_bundle.tool_names
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -154,7 +167,9 @@ async def lifespan(app: FastAPI):
     try:
         await graphiti.build_indices_and_constraints()
         logger.info("Graphiti initialized, indices ready")
-        yield
+        async with mcp.session_manager.run():
+            logger.info("MCP streamable HTTP session manager ready at /mcp")
+            yield
     finally:
         if graphiti:
             await graphiti.close()
@@ -162,6 +177,67 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="MIKAI Graphiti Sidecar", version="2.0.0", lifespan=lifespan)
+app.mount("/mcp", mcp.streamable_http_app())
+
+
+class MCPBearerAuthMiddleware(BaseHTTPMiddleware):
+    """Gate /mcp requests with bearer token auth when MIKAI_MCP_TOKEN is set.
+
+    If MIKAI_MCP_TOKEN is unset, all /mcp requests pass through (localhost-solo mode).
+    REST endpoints (anything not under /mcp) are never touched.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        if not (path == "/mcp" or path.startswith("/mcp/")):
+            return await call_next(request)
+
+        token = os.environ.get("MIKAI_MCP_TOKEN")
+        if not token:
+            return await call_next(request)
+
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header == f"Bearer {token}":
+            return await call_next(request)
+
+        return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+
+
+app.add_middleware(MCPBearerAuthMiddleware)
+
+
+class MCPTrailingSlashMiddleware:
+    """Rewrite /mcp (no slash) to /mcp/ before routing.
+
+    Starlette's Mount redirects /mcp → /mcp/ with a 307, which MCP clients
+    (including Claude.ai's hosted Custom Connector) do not follow for POSTs —
+    the JSON-RPC body is lost and the handshake fails. Rewriting the ASGI
+    scope in-place avoids the redirect entirely.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http" and scope.get("path") == "/mcp":
+            scope = dict(scope)
+            scope["path"] = "/mcp/"
+            scope["raw_path"] = b"/mcp/"
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(MCPTrailingSlashMiddleware)
+
+
+@app.get("/mcp-healthcheck")
+async def mcp_healthcheck():
+    """Public smoke-test endpoint — always reachable even when /mcp requires auth."""
+    return {
+        "mcp": "ok",
+        "graphiti": graphiti is not None,
+        "tools": _mcp_tool_names,
+        "auth_required": bool(os.environ.get("MIKAI_MCP_TOKEN")),
+    }
 
 
 # ── Models ───────────────────────────────────────────────────────────────────
