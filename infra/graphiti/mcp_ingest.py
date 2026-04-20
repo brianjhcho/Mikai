@@ -22,6 +22,7 @@ import asyncio
 import logging
 import os
 import sys
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -178,22 +179,43 @@ def _extract_text(content_item) -> str | None:
     return None
 
 
+# ── Injectable collaborators (for tests) ──────────────────────────────────────
+#
+# poll_source() takes its external dependencies as keyword-only parameters.
+# Production wiring uses the defaults below; tests pass in-memory fakes.
+
+
+@asynccontextmanager
+async def _default_stdio_session(command: str, args: list, env: dict):
+    """Production session factory: stdio subprocess → MCP ClientSession."""
+    server_params = StdioServerParameters(command=command, args=args, env=env)
+    async with stdio_client(server_params) as (read_stream, write_stream):
+        async with ClientSession(read_stream, write_stream) as session:
+            await session.initialize()
+            yield session
+
+
+def _utc_now() -> datetime:
+    return datetime.now(tz=timezone.utc)
+
+
 async def poll_source(
     source_name: str,
     source_cfg: dict,
     graphiti: Graphiti,
     state: dict[str, str],
+    *,
+    session_factory=_default_stdio_session,
+    now=_utc_now,
+    state_path: Path = STATE_PATH,
+    sleep=asyncio.sleep,
 ) -> None:
     """
     Connect to one MCP server, call its configured tool, and ingest results.
 
-    The MCP client API used here follows mcp>=1.0 conventions:
-      - StdioServerParameters(command, args, env) describes the subprocess
-      - stdio_client(...) is an async context manager yielding (read, write)
-      - ClientSession(read, write) is an async context manager
-      - session.initialize() completes the MCP handshake
-      - session.call_tool(name, arguments) returns a CallToolResult with a
-        .content list of content items
+    Collaborators (`session_factory`, `now`, `state_path`, `sleep`) are
+    injectable so the poll loop can be exercised without a subprocess,
+    network, or wall-clock delay. Production callers rely on the defaults.
     """
     command = source_cfg.get("command", "npx")
     args = source_cfg.get("args", [])
@@ -219,25 +241,8 @@ async def poll_source(
     )
 
     try:
-        # NOTE: StdioServerParameters accepts command, args, env.
-        # If the mcp SDK version uses different field names, adjust here.
-        server_params = StdioServerParameters(
-            command=command,
-            args=args,
-            env=merged_env,
-        )
-
-        # stdio_client is an async context manager. If the SDK uses a
-        # different entry point (e.g. mcp.client.stdio.connect), update here.
-        async with stdio_client(server_params) as (read_stream, write_stream):
-            # ClientSession is also an async context manager.
-            async with ClientSession(read_stream, write_stream) as session:
-                # initialize() completes the MCP protocol handshake.
-                await session.initialize()
-
-                # Call the configured tool.
-                result = await session.call_tool(tool_name, tool_args)
-
+        async with session_factory(command, args, merged_env) as session:
+            result = await session.call_tool(tool_name, tool_args)
     except Exception as e:
         logger.error(
             f"[{source_name}] MCP server failed to start or tool call failed: {e}"
@@ -248,7 +253,7 @@ async def poll_source(
     content_items = getattr(result, "content", []) or []
     items_found = len(content_items)
     items_ingested = 0
-    poll_time = datetime.now(tz=timezone.utc).isoformat()
+    poll_time = now().isoformat()
 
     logger.info(f"[{source_name}] Items found: {items_found}")
 
@@ -263,7 +268,7 @@ async def poll_source(
                 episode_body=text,
                 source=EpisodeType.text,
                 source_description=source_description,
-                reference_time=datetime.now(tz=timezone.utc),
+                reference_time=now(),
                 group_id=group_id,
             )
             items_ingested += 1
@@ -274,12 +279,12 @@ async def poll_source(
             logger.error(f"[{source_name}] add_episode failed: {e}")
 
         # 2-second delay between add_episode calls to avoid overwhelming Neo4j.
-        await asyncio.sleep(2)
+        await sleep(2)
 
     # Update checkpoint to the poll time (even if 0 items — avoids re-fetching
     # the same empty window on next poll).
     state[source_name] = poll_time
-    save_state(state)
+    _save_state_at(state, state_path)
 
     logger.info(
         f"[{source_name}] Done. found={items_found} ingested={items_ingested} "
