@@ -108,6 +108,15 @@ Schema in docs/ARCHITECTURE.md did not match what was deployed. Pass 1 and Pass 
 ### [O-028] When does the reactive→proactive transition happen?
 MIKAI launches reactive (user asks, graph answers via MCP). Vision is proactive (surfaces stalled items via WhatsApp/notification). Define proactive readiness criteria: (a) graph density threshold, (b) stall detection precision measured against confirm/dismiss, (c) delivery timing model validated. Do not build proactive delivery until all three are met.
 
+### [O-039] Deduplication on watcher/daemon restart (Phase 3 ingestion)
+Filesystem watchers (ARCH-023 Mode 1) fire on every file event. If the daemon crashes mid-batch or restarts, it re-processes files it has already ingested. Graphiti's 4-tier entity resolution deduplicates *entities* at extraction time, but not at the file-event level — so the work of calling `add_episode()` (DeepSeek + Voyage API calls, ~$0.005–$0.01 each per ARCH-025) happens again for no new knowledge. Phase 3 buildout: per-source content-hash checkpoint (sha256 of file content keyed by path) checked before invoking `add_episode`. Related: Gap 4, ARCH-023.
+
+### [O-040] Daemon lifecycle — no supervisor decided (Phase 3 ingestion)
+ARCH-023 specifies what the daemon does, not how it stays running. No `launchd` plist exists, no `docker compose` service for the daemon (only for Neo4j + sidecar), no manual start/stop script. The practical consequence (verified 2026-04-17): even after `feat/ingestion-automation` and `feat/ingestion-mcp-client` merge, nothing auto-starts — the daemon has to be invoked from a terminal each boot, which means no auto-ingestion is running on main. Phase 3 buildout: decide between (a) `launchd` plist at `~/Library/LaunchAgents/` (macOS-native, survives reboot, no Docker dependency), (b) adding the daemon as a `docker compose` service alongside the sidecar (portable, heavier), or (c) a supervisord/systemd unit for a Linux target. Related: O-018, ARCH-023.
+
+### [O-041] Burst-import API rate limits (Phase 3 ingestion)
+`poll_source` enforces a 2-second sleep between `add_episode` calls to protect Neo4j. No equivalent protection for DeepSeek or Voyage API rate limits. Bulk first-import of a new source (e.g. enabling Gmail with `newer_than:30d` returning thousands of messages) could hit DeepSeek's HTTP 429 in minutes. Phase 3 buildout: either (a) a token-bucket ceiling per external API in `sidecar/client.py`, or (b) exponential backoff + retry around the `add_episode` call site. Must be resolvable without introducing a message queue (ARCH-023 explicitly rejects that path). Related: ARCH-023.
+
 ---
 
 ## Low — philosophical, long-horizon
