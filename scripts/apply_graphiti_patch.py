@@ -14,7 +14,7 @@ The fix: cap candidates at 50 and strip attributes (name + labels only).
 Quality tradeoff is minimal — the LLM disambiguates by name similarity,
 not by reading full summaries.
 
-Full write-up: docs/GRAPHITI_INTEGRATION.md §Scaling Issue
+Full write-up: docs/ARCHITECTURE.md (raw research: docs/research/graphiti-review.md)
 
 Usage:
     python scripts/apply_graphiti_patch.py
@@ -46,7 +46,7 @@ PATCHED_CODE = f"""existing_nodes_context = [
         {{
             **{{"name": candidate.name, "entity_types": candidate.labels}},
             # MIKAI patch: stripped attributes to prevent context overflow at scale.
-            # See docs/GRAPHITI_INTEGRATION.md for full rationale.
+            # See docs/ARCHITECTURE.md for full rationale.
         }}
         for candidate in indexes.existing_nodes[:{MAX_CANDIDATES}]  # MIKAI patch: capped
     ]"""

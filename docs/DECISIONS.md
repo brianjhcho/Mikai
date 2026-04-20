@@ -680,7 +680,7 @@ Each tier serves a different query depth. L1 prevents unnecessary L2/L3 calls. L
 **Date:** 2026-04-11
 **Source:** Best practices review of graphiti-core (docs/GRAPHITI_BEST_PRACTICES_REVIEW.md)
 **Decision:** Maintain graphiti-core as a pip dependency with a reproducible patch script (scripts/apply_graphiti_patch.py) rather than forking. The patch fixes the context-window overflow in node_operations.py (candidate cap at 50, attribute stripping). Submit an upstream PR for a configurable max_resolution_candidates parameter. Fork only if the trigger conditions are met.
-**Why:** Forking creates an ongoing merge burden — every graphiti-core release must be manually merged into the fork. With one patched file and a reproducible script, the maintenance cost is near zero. The patch is well-documented (docs/GRAPHITI_INTEGRATION.md) and the upstream PR is drafted (docs/UPSTREAM_PR_DRAFT.md).
+**Why:** Forking creates an ongoing merge burden — every graphiti-core release must be manually merged into the fork. With one patched file and a reproducible script, the maintenance cost is near zero. The patch is well-documented (docs/ARCHITECTURE.md; raw research in docs/research/graphiti-review.md) and an upstream PR draft exists on the `feat/ingestion-automation` branch.
 **Fork trigger conditions:**
 - Need to change Graphiti's Neo4j schema (node labels, edge properties)
 - Need to modify the entity resolution algorithm beyond the candidate cap

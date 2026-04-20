@@ -11,12 +11,12 @@ Two conceptual layers: **L3** is a bitemporal knowledge graph; **L4** is task-st
 
 ## Where to look for what
 - `docs/STATUS.md` — what's actually live on main right now
+- `docs/VISION.md` — product vision, noonchi positioning, why it's the moat
+- `docs/ARCHITECTURE.md` — port/adapter stack, Graphiti adapter details, scaling patch
+- `docs/FOUNDATIONS.md` — L4 design, edge vocabulary, epistemic schema, segmentation
+- `docs/OPEN.md` — known gaps and unresolved questions
 - `docs/DECISIONS.md` — append-only architecture decision log (ARCH-*, D-*)
-- `docs/GRAPHITI_INTEGRATION.md` — Graphiti adapter technical details and the scaling patch
-- `docs/L4_RESEARCH_INTEGRATION.md` — L4 design spec
-- `docs/EPISTEMIC_EDGE_VOCABULARY.md` — node/edge taxonomy
-- `docs/NOONCHI_STRATEGIC_ANALYSIS.md` — product framing / why noonchi is the moat
-- `docs/ARCHITECTURE_GAPS.md`, `docs/OPEN_QUESTIONS.md` — known gaps and unresolved questions
+- `docs/research/` — raw research and pre-consolidation archive
 
 ## Repository layout
 
