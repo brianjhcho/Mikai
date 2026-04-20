@@ -35,6 +35,7 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - VOYAGE_API_KEY=${VOYAGE_API_KEY:-}
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - MIKAI_MCP_TOKEN=${MIKAI_MCP_TOKEN:-}
       - MIKAI_DB_PATH=/data/mikai.db
     volumes:
       - ${HOME}/.mikai:/data:ro
