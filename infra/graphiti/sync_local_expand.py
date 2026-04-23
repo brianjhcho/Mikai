@@ -275,3 +275,175 @@ def run_drop_folder_watcher(
     observer.start()
     logger.info("Drop-folder watcher started on %s", drop_folder)
     return observer
+
+
+# ── Watcher 2 — local files ───────────────────────────────────────────────────
+
+import yaml  # pyyaml>=6.0
+from watchdog.observers.polling import PollingObserver
+
+LOCAL_FILES_CONFIG_PATH = MIKAI_DIR / "local_files.yaml"
+LOCAL_FILES_STATE_PATH = MIKAI_DIR / "local_files_state.json"
+
+_DEFAULT_LOCAL_FILES_CONFIG = {
+    "watches": [
+        {"path": "~/Documents/research", "glob": "**/*.md"},
+        {"path": "~/Downloads", "glob": "*.pdf"},
+    ],
+    "max_file_size_mb": 10,
+}
+
+
+def _load_local_files_config(config_path: Path = LOCAL_FILES_CONFIG_PATH) -> dict:
+    """Load ``~/.mikai/local_files.yaml``; return defaults if missing."""
+    if not config_path.exists():
+        logger.info(
+            "Local files config not found at %s — using defaults.", config_path
+        )
+        return _DEFAULT_LOCAL_FILES_CONFIG
+    try:
+        with config_path.open() as fh:
+            cfg = yaml.safe_load(fh)
+            if not cfg or not isinstance(cfg, dict):
+                return _DEFAULT_LOCAL_FILES_CONFIG
+            return cfg
+    except Exception as exc:
+        logger.warning("Cannot load local files config %s: %s", config_path, exc)
+        return _DEFAULT_LOCAL_FILES_CONFIG
+
+
+class _LocalFilesHandler(FileSystemEventHandler):
+    """
+    Watchdog handler for locally-watched file trees.
+
+    Uses content-hash + absolute-path keying so the same file content at
+    different paths produces separate episodes.
+    """
+
+    def __init__(
+        self,
+        add_episode_fn: AddEpisodeFn,
+        *,
+        max_file_size_bytes: int,
+        state_path: Path = LOCAL_FILES_STATE_PATH,
+        glob_pattern: str = "**/*",
+        loop: asyncio.AbstractEventLoop | None = None,
+    ) -> None:
+        super().__init__()
+        self._add_episode_fn = add_episode_fn
+        self._max_bytes = max_file_size_bytes
+        self._state_path = state_path
+        self._glob = glob_pattern
+        self._loop = loop
+
+    def on_created(self, event: FileSystemEvent) -> None:
+        if not event.is_directory:
+            self._handle(Path(event.src_path))
+
+    def on_modified(self, event: FileSystemEvent) -> None:
+        if not event.is_directory:
+            self._handle(Path(event.src_path))
+
+    def _handle(self, file_path: Path) -> None:
+        loop = self._loop or asyncio.get_event_loop()
+        asyncio.run_coroutine_threadsafe(self._ingest(file_path), loop)
+
+    async def _ingest(self, file_path: Path) -> None:
+        if not file_path.exists() or not file_path.is_file():
+            return
+
+        # Size check.
+        try:
+            size = file_path.stat().st_size
+        except OSError:
+            return
+        if size > self._max_bytes:
+            logger.info(
+                "Skipping oversized file (%d bytes > %d): %s",
+                size, self._max_bytes, file_path.name,
+            )
+            return
+
+        if is_sensitive_name(file_path.name):
+            logger.info("Skipping sensitive filename: %s", file_path.name)
+            return
+
+        sha256 = _sha256_file(file_path)
+        if sha256 is None:
+            return
+
+        abs_path_str = str(file_path.resolve())
+        dedup_key = f"{abs_path_str}::{sha256}"
+
+        state = _load_json(self._state_path)
+        if dedup_key in state:
+            logger.debug(
+                "Already ingested (key %s…): %s", dedup_key[:24], file_path.name
+            )
+            return
+
+        text = _extract_text_from_file(file_path)
+        if text is None or not text.strip():
+            return
+
+        try:
+            await self._add_episode_fn(
+                name=file_path.name,
+                content=text,
+                source_description="local-files",
+            )
+        except Exception as exc:
+            logger.error("add_episode_fn failed for %s: %s", file_path.name, exc)
+            return
+
+        state[dedup_key] = {
+            "filename": abs_path_str,
+            "ingested_at": datetime.now(tz=timezone.utc).isoformat(),
+        }
+        _save_json(state, self._state_path)
+        logger.info("Ingested local file: %s", abs_path_str)
+
+
+def run_local_files_watcher(
+    add_episode_fn: AddEpisodeFn,
+    *,
+    config_path: Path = LOCAL_FILES_CONFIG_PATH,
+    state_path: Path = LOCAL_FILES_STATE_PATH,
+    poll_interval: int = 300,
+    loop: asyncio.AbstractEventLoop | None = None,
+) -> PollingObserver:
+    """
+    Start a PollingObserver for all paths declared in the local-files config.
+
+    Returns the running PollingObserver.  Injectable parameters support tests.
+    """
+    cfg = _load_local_files_config(config_path)
+    watches = cfg.get("watches") or _DEFAULT_LOCAL_FILES_CONFIG["watches"]
+    max_mb = float(cfg.get("max_file_size_mb", 10))
+    max_bytes = int(max_mb * 1024 * 1024)
+
+    observer = PollingObserver(timeout=poll_interval)
+
+    for watch_spec in watches:
+        raw_path = watch_spec.get("path", "~/Documents/research")
+        glob = watch_spec.get("glob", "**/*")
+        watch_path = Path(raw_path).expanduser().resolve()
+        watch_path.mkdir(parents=True, exist_ok=True)
+
+        handler = _LocalFilesHandler(
+            add_episode_fn,
+            max_file_size_bytes=max_bytes,
+            state_path=state_path,
+            glob_pattern=glob,
+            loop=loop or asyncio.get_event_loop(),
+        )
+        observer.schedule(handler, str(watch_path), recursive=True)
+        logger.info(
+            "Local-files watcher scheduled: %s (glob=%s)", watch_path, glob
+        )
+
+    observer.start()
+    logger.info(
+        "Local-files PollingObserver started (%d path(s))", len(watches)
+    )
+    return observer

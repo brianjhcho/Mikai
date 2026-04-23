@@ -26,6 +26,7 @@ import pytest
 
 from sync_local_expand import (
     _DropFolderHandler,
+    _LocalFilesHandler,
     _load_json,
     _save_json,
 )
@@ -252,3 +253,116 @@ class TestDropFolder:
         await handler._ingest(proc_file)
 
         assert add_ep.calls == []
+
+
+# ── Local files tests ─────────────────────────────────────────────────────────
+
+
+class TestLocalFiles:
+    async def test_happy_path_md_file_ingested(self, tmp_path):
+        watch_dir = tmp_path / "research"
+        watch_dir.mkdir()
+        state_path = tmp_path / "local_files_state.json"
+        add_ep = FakeAddEpisode()
+
+        md_file = watch_dir / "paper.md"
+        md_file.write_text("# Research\n\nImportant findings.", encoding="utf-8")
+
+        handler = _LocalFilesHandler(
+            add_ep,
+            max_file_size_bytes=10 * 1024 * 1024,
+            state_path=state_path,
+            loop=asyncio.get_event_loop(),
+        )
+        await handler._ingest(md_file)
+
+        assert len(add_ep.calls) == 1
+        assert add_ep.calls[0]["name"] == "paper.md"
+        assert add_ep.calls[0]["source_description"] == "local-files"
+        assert "Research" in add_ep.calls[0]["content"]
+
+    async def test_oversized_file_is_skipped(self, tmp_path):
+        watch_dir = tmp_path / "downloads"
+        watch_dir.mkdir()
+        state_path = tmp_path / "local_files_state.json"
+        add_ep = FakeAddEpisode()
+
+        big_file = watch_dir / "huge.txt"
+        # 1 byte over the 100-byte limit for this test.
+        big_file.write_bytes(b"x" * 101)
+
+        handler = _LocalFilesHandler(
+            add_ep,
+            max_file_size_bytes=100,
+            state_path=state_path,
+            loop=asyncio.get_event_loop(),
+        )
+        await handler._ingest(big_file)
+
+        assert add_ep.calls == []
+
+    async def test_sensitive_filename_is_skipped(self, tmp_path):
+        watch_dir = tmp_path / "docs"
+        watch_dir.mkdir()
+        state_path = tmp_path / "local_files_state.json"
+        add_ep = FakeAddEpisode()
+
+        secret_file = watch_dir / "password_vault.txt"
+        secret_file.write_text("p@ssw0rd", encoding="utf-8")
+
+        handler = _LocalFilesHandler(
+            add_ep,
+            max_file_size_bytes=10 * 1024 * 1024,
+            state_path=state_path,
+            loop=asyncio.get_event_loop(),
+        )
+        await handler._ingest(secret_file)
+
+        assert add_ep.calls == []
+
+    async def test_dedup_state_prevents_re_ingestion(self, tmp_path):
+        watch_dir = tmp_path / "research"
+        watch_dir.mkdir()
+        state_path = tmp_path / "local_files_state.json"
+        add_ep = FakeAddEpisode()
+
+        md_file = watch_dir / "notes.md"
+        content = "# Stable notes"
+        md_file.write_text(content, encoding="utf-8")
+
+        handler = _LocalFilesHandler(
+            add_ep,
+            max_file_size_bytes=10 * 1024 * 1024,
+            state_path=state_path,
+            loop=asyncio.get_event_loop(),
+        )
+
+        await handler._ingest(md_file)
+        assert len(add_ep.calls) == 1
+
+        # Second call — same file, same content — should be deduped.
+        await handler._ingest(md_file)
+        assert len(add_ep.calls) == 1  # still only 1
+
+    async def test_changed_content_triggers_new_ingestion(self, tmp_path):
+        watch_dir = tmp_path / "research"
+        watch_dir.mkdir()
+        state_path = tmp_path / "local_files_state.json"
+        add_ep = FakeAddEpisode()
+
+        md_file = watch_dir / "evolving.md"
+        md_file.write_text("version 1", encoding="utf-8")
+
+        handler = _LocalFilesHandler(
+            add_ep,
+            max_file_size_bytes=10 * 1024 * 1024,
+            state_path=state_path,
+            loop=asyncio.get_event_loop(),
+        )
+        await handler._ingest(md_file)
+        assert len(add_ep.calls) == 1
+
+        # Overwrite with new content — hash changes, new dedup key.
+        md_file.write_text("version 2 — updated content", encoding="utf-8")
+        await handler._ingest(md_file)
+        assert len(add_ep.calls) == 2
