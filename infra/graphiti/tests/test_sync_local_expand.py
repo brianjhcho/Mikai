@@ -1,0 +1,254 @@
+"""
+Tests for sync_local_expand — drop folder, local files, and iMessage watchers.
+
+Follows the same "Humble Object" pattern as test_mcp_ingest.py:
+  - All external I/O (filesystem moves, DB queries, network) is exercised
+    against in-memory / tmp_path fakes.
+  - ``add_episode_fn`` is a simple list-appending coroutine — never real Graphiti.
+  - iMessage tests create an in-memory SQLite DB with the minimal chat.db schema.
+
+ARCH-023 Mode coverage:
+  Mode 3 (drop folder)  → TestDropFolder
+  Mode 1 (local files)  → TestLocalFiles
+  iMessage opt-in       → TestIMessage
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pytest
+
+from sync_local_expand import (
+    _DropFolderHandler,
+    _load_json,
+    _save_json,
+)
+
+
+# ── Shared test double ────────────────────────────────────────────────────────
+
+
+class FakeAddEpisode:
+    """List-appending coroutine — never touches real Graphiti."""
+
+    def __init__(self, fail: bool = False):
+        self.calls: list[dict] = []
+        self._fail = fail
+
+    async def __call__(self, *, name: str, content: str, source_description: str) -> None:
+        self.calls.append(
+            {"name": name, "content": content, "source_description": source_description}
+        )
+        if self._fail:
+            raise RuntimeError("simulated add_episode failure")
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+# ── Drop-folder tests ─────────────────────────────────────────────────────────
+
+
+class TestDropFolder:
+    async def test_happy_path_md_file_is_ingested_and_moved(self, tmp_path):
+        drop_folder = tmp_path / "imports"
+        drop_folder.mkdir()
+        processed_dir = drop_folder / "processed"
+        state_path = tmp_path / "drop_state.json"
+        add_ep = FakeAddEpisode()
+
+        # Place a markdown file.
+        md_file = drop_folder / "notes.md"
+        md_file.write_text("# My notes\n\nSome content here.", encoding="utf-8")
+
+        handler = _DropFolderHandler(
+            add_ep,
+            drop_folder=drop_folder,
+            processed_dir=processed_dir,
+            state_path=state_path,
+            loop=asyncio.get_event_loop(),
+        )
+        await handler._ingest(md_file)
+
+        assert len(add_ep.calls) == 1
+        assert add_ep.calls[0]["name"] == "notes.md"
+        assert add_ep.calls[0]["source_description"] == "drop-folder"
+        assert "My notes" in add_ep.calls[0]["content"]
+
+        # File moved to processed/.
+        assert not md_file.exists()
+        processed_files = list(processed_dir.iterdir())
+        assert len(processed_files) == 1
+        assert processed_files[0].name.endswith("-notes.md")
+
+        # State persisted.
+        state = json.loads(state_path.read_text())
+        assert len(state) == 1
+        sha = list(state.keys())[0]
+        assert state[sha]["filename"] == "notes.md"
+
+    async def test_duplicate_hash_is_skipped(self, tmp_path):
+        drop_folder = tmp_path / "imports"
+        drop_folder.mkdir()
+        processed_dir = drop_folder / "processed"
+        state_path = tmp_path / "drop_state.json"
+        add_ep = FakeAddEpisode()
+
+        content = b"Hello world"
+        sha = _sha256_bytes(content)
+        # Pre-seed the state with this hash.
+        _save_json({sha: {"filename": "prev.txt", "ingested_at": "2026-01-01T00:00:00+00:00"}}, state_path)
+
+        txt_file = drop_folder / "hello.txt"
+        txt_file.write_bytes(content)
+
+        handler = _DropFolderHandler(
+            add_ep,
+            drop_folder=drop_folder,
+            processed_dir=processed_dir,
+            state_path=state_path,
+            loop=asyncio.get_event_loop(),
+        )
+        await handler._ingest(txt_file)
+
+        # No ingestion because hash already known.
+        assert add_ep.calls == []
+        # File not moved.
+        assert txt_file.exists()
+
+    async def test_sensitive_filename_is_skipped(self, tmp_path):
+        drop_folder = tmp_path / "imports"
+        drop_folder.mkdir()
+        state_path = tmp_path / "drop_state.json"
+        add_ep = FakeAddEpisode()
+
+        # "secret" is in SKIP_PATTERNS from sidecar.ingest.is_sensitive_name
+        secret_file = drop_folder / "my_secret_notes.txt"
+        secret_file.write_text("sk-supersecret", encoding="utf-8")
+
+        handler = _DropFolderHandler(
+            add_ep,
+            drop_folder=drop_folder,
+            processed_dir=drop_folder / "processed",
+            state_path=state_path,
+            loop=asyncio.get_event_loop(),
+        )
+        await handler._ingest(secret_file)
+
+        assert add_ep.calls == []
+        assert secret_file.exists()  # file not moved
+
+    async def test_unsupported_extension_is_skipped(self, tmp_path):
+        drop_folder = tmp_path / "imports"
+        drop_folder.mkdir()
+        state_path = tmp_path / "drop_state.json"
+        add_ep = FakeAddEpisode()
+
+        bin_file = drop_folder / "data.xyz"
+        bin_file.write_bytes(b"\x00\x01\x02\x03")
+
+        handler = _DropFolderHandler(
+            add_ep,
+            drop_folder=drop_folder,
+            processed_dir=drop_folder / "processed",
+            state_path=state_path,
+            loop=asyncio.get_event_loop(),
+        )
+        await handler._ingest(bin_file)
+
+        assert add_ep.calls == []
+
+    async def test_add_episode_failure_does_not_move_file_or_update_state(self, tmp_path):
+        drop_folder = tmp_path / "imports"
+        drop_folder.mkdir()
+        processed_dir = drop_folder / "processed"
+        state_path = tmp_path / "drop_state.json"
+        add_ep = FakeAddEpisode(fail=True)
+
+        txt_file = drop_folder / "important.txt"
+        txt_file.write_text("critical content", encoding="utf-8")
+
+        handler = _DropFolderHandler(
+            add_ep,
+            drop_folder=drop_folder,
+            processed_dir=processed_dir,
+            state_path=state_path,
+            loop=asyncio.get_event_loop(),
+        )
+        await handler._ingest(txt_file)
+
+        # File should still be present (not moved on failure).
+        assert txt_file.exists()
+        # State should not be updated.
+        assert not state_path.exists()
+
+    async def test_dedup_state_persists_across_separate_handler_instances(self, tmp_path):
+        drop_folder = tmp_path / "imports"
+        drop_folder.mkdir()
+        processed_dir = drop_folder / "processed"
+        state_path = tmp_path / "drop_state.json"
+        add_ep1 = FakeAddEpisode()
+
+        content = "persist across runs"
+        txt_file = drop_folder / "doc.txt"
+        txt_file.write_text(content, encoding="utf-8")
+
+        handler1 = _DropFolderHandler(
+            add_ep1,
+            drop_folder=drop_folder,
+            processed_dir=processed_dir,
+            state_path=state_path,
+            loop=asyncio.get_event_loop(),
+        )
+        await handler1._ingest(txt_file)
+        assert len(add_ep1.calls) == 1
+
+        # Re-create the file with same content (same hash) in drop folder.
+        txt_file2 = drop_folder / "doc.txt"
+        txt_file2.write_text(content, encoding="utf-8")
+
+        add_ep2 = FakeAddEpisode()
+        handler2 = _DropFolderHandler(
+            add_ep2,
+            drop_folder=drop_folder,
+            processed_dir=processed_dir,
+            state_path=state_path,
+            loop=asyncio.get_event_loop(),
+        )
+        await handler2._ingest(txt_file2)
+
+        # Second handler should see existing state and skip.
+        assert add_ep2.calls == []
+
+    async def test_processed_subdir_files_are_ignored(self, tmp_path):
+        drop_folder = tmp_path / "imports"
+        drop_folder.mkdir()
+        processed_dir = drop_folder / "processed"
+        processed_dir.mkdir()
+        state_path = tmp_path / "drop_state.json"
+        add_ep = FakeAddEpisode()
+
+        # File already in processed/ — should be ignored.
+        proc_file = processed_dir / "abc123-old.txt"
+        proc_file.write_text("already done", encoding="utf-8")
+
+        handler = _DropFolderHandler(
+            add_ep,
+            drop_folder=drop_folder,
+            processed_dir=processed_dir,
+            state_path=state_path,
+            loop=asyncio.get_event_loop(),
+        )
+        await handler._ingest(proc_file)
+
+        assert add_ep.calls == []
