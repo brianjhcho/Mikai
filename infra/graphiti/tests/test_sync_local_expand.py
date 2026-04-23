@@ -29,6 +29,8 @@ from sync_local_expand import (
     _LocalFilesHandler,
     _load_json,
     _save_json,
+    run_imessage_watcher,
+    APPLE_EPOCH_OFFSET,
 )
 
 
@@ -366,3 +368,235 @@ class TestLocalFiles:
         md_file.write_text("version 2 — updated content", encoding="utf-8")
         await handler._ingest(md_file)
         assert len(add_ep.calls) == 2
+
+
+# ── iMessage helpers ──────────────────────────────────────────────────────────
+
+
+def _now_apple_ns() -> int:
+    """Current time as Apple epoch nanoseconds."""
+    unix_now = datetime.now(tz=timezone.utc).timestamp()
+    return int((unix_now - APPLE_EPOCH_OFFSET) * 1_000_000_000)
+
+
+def _make_chat_db(path: Path) -> sqlite3.Connection:
+    """
+    Create a minimal chat.db schema at *path* and return the open connection.
+
+    Tables: message, handle, chat_message_join (schema matches macOS 12+ layout).
+    """
+    conn = sqlite3.connect(str(path))
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS handle (
+            rowid  INTEGER PRIMARY KEY,
+            id     TEXT
+        );
+        CREATE TABLE IF NOT EXISTS message (
+            rowid       INTEGER PRIMARY KEY,
+            handle_id   INTEGER,
+            date        INTEGER,
+            text        TEXT,
+            is_from_me  INTEGER DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS chat_message_join (
+            chat_id     INTEGER,
+            message_id  INTEGER
+        );
+    """)
+    conn.commit()
+    return conn
+
+
+def _insert_handle(conn: sqlite3.Connection, id_str: str) -> int:
+    cur = conn.execute("INSERT INTO handle (id) VALUES (?)", (id_str,))
+    conn.commit()
+    return cur.lastrowid
+
+
+def _insert_message(
+    conn: sqlite3.Connection,
+    *,
+    handle_rowid: int,
+    date_ns: int,
+    text: str,
+    is_from_me: int = 0,
+) -> int:
+    cur = conn.execute(
+        "INSERT INTO message (handle_id, date, text, is_from_me) VALUES (?, ?, ?, ?)",
+        (handle_rowid, date_ns, text, is_from_me),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+# ── iMessage tests ────────────────────────────────────────────────────────────
+
+
+class TestIMessage:
+    async def test_opt_in_gate_returns_zero_when_disabled(self, tmp_path):
+        add_ep = FakeAddEpisode()
+        db_path = tmp_path / "chat.db"
+        _make_chat_db(db_path)
+
+        result = await run_imessage_watcher(
+            add_ep,
+            enable=False,
+            db_path=db_path,
+            state_path=tmp_path / "imessage_state.json",
+        )
+
+        assert result == 0
+        assert add_ep.calls == []
+
+    async def test_opt_in_gate_does_not_query_db_when_disabled(self, tmp_path):
+        add_ep = FakeAddEpisode()
+        # Provide no DB at all — if the gate is correctly honoured, no error.
+        missing_db = tmp_path / "nonexistent_chat.db"
+
+        result = await run_imessage_watcher(
+            add_ep,
+            enable=False,
+            db_path=missing_db,
+            state_path=tmp_path / "imessage_state.json",
+        )
+
+        assert result == 0
+
+    async def test_happy_path_ingests_conversation(self, tmp_path):
+        db_path = tmp_path / "chat.db"
+        conn = _make_chat_db(db_path)
+
+        handle_rowid = _insert_handle(conn, "+15551234567")
+        now_ns = _now_apple_ns()
+        _insert_message(conn, handle_rowid=handle_rowid, date_ns=now_ns - 1_000_000_000, text="Hey!", is_from_me=0)
+        _insert_message(conn, handle_rowid=handle_rowid, date_ns=now_ns, text="What's up?", is_from_me=1)
+        conn.close()
+
+        add_ep = FakeAddEpisode()
+        result = await run_imessage_watcher(
+            add_ep,
+            enable=True,
+            checkpoint_hours=24,
+            db_path=db_path,
+            state_path=tmp_path / "imessage_state.json",
+        )
+
+        assert result == 1
+        assert len(add_ep.calls) == 1
+        ep = add_ep.calls[0]
+        assert ep["source_description"] == "imessage"
+        assert "+15551234567" in ep["content"]
+        assert "Hey!" in ep["content"]
+        assert "What's up?" in ep["content"]
+
+    async def test_duplicate_conversation_is_skipped(self, tmp_path):
+        db_path = tmp_path / "chat.db"
+        conn = _make_chat_db(db_path)
+
+        handle_rowid = _insert_handle(conn, "+15550000001")
+        now_ns = _now_apple_ns()
+        rowid = _insert_message(conn, handle_rowid=handle_rowid, date_ns=now_ns, text="Hello", is_from_me=0)
+        conn.close()
+
+        state_path = tmp_path / "imessage_state.json"
+        # Pre-seed with the dedup key for this conversation.
+        dedup_key = f"{handle_rowid}::{rowid}"
+        _save_json({dedup_key: {"handle": "+15550000001", "ingested_at": "2026-01-01T00:00:00+00:00"}}, state_path)
+
+        add_ep = FakeAddEpisode()
+        result = await run_imessage_watcher(
+            add_ep,
+            enable=True,
+            checkpoint_hours=24,
+            db_path=db_path,
+            state_path=state_path,
+        )
+
+        assert result == 0
+        assert add_ep.calls == []
+
+    async def test_sensitive_handle_is_skipped(self, tmp_path):
+        db_path = tmp_path / "chat.db"
+        conn = _make_chat_db(db_path)
+
+        handle_rowid = _insert_handle(conn, "password_reset@example.com")
+        now_ns = _now_apple_ns()
+        _insert_message(conn, handle_rowid=handle_rowid, date_ns=now_ns, text="Reset link", is_from_me=0)
+        conn.close()
+
+        add_ep = FakeAddEpisode()
+        result = await run_imessage_watcher(
+            add_ep,
+            enable=True,
+            checkpoint_hours=24,
+            db_path=db_path,
+            state_path=tmp_path / "imessage_state.json",
+        )
+
+        assert result == 0
+        assert add_ep.calls == []
+
+    async def test_messages_outside_checkpoint_window_not_ingested(self, tmp_path):
+        db_path = tmp_path / "chat.db"
+        conn = _make_chat_db(db_path)
+
+        handle_rowid = _insert_handle(conn, "+15559990000")
+        # Place message 48 hours in the past; checkpoint_hours=1 → should be excluded.
+        old_unix = datetime.now(tz=timezone.utc).timestamp() - 48 * 3600
+        old_apple_ns = int((old_unix - APPLE_EPOCH_OFFSET) * 1_000_000_000)
+        _insert_message(conn, handle_rowid=handle_rowid, date_ns=old_apple_ns, text="Old message", is_from_me=0)
+        conn.close()
+
+        add_ep = FakeAddEpisode()
+        result = await run_imessage_watcher(
+            add_ep,
+            enable=True,
+            checkpoint_hours=1,
+            db_path=db_path,
+            state_path=tmp_path / "imessage_state.json",
+        )
+
+        assert result == 0
+
+    async def test_dedup_state_persists_across_calls(self, tmp_path):
+        db_path = tmp_path / "chat.db"
+        conn = _make_chat_db(db_path)
+
+        handle_rowid = _insert_handle(conn, "+15551112222")
+        now_ns = _now_apple_ns()
+        _insert_message(conn, handle_rowid=handle_rowid, date_ns=now_ns, text="Persistent dedup", is_from_me=0)
+        conn.close()
+
+        state_path = tmp_path / "imessage_state.json"
+        add_ep1 = FakeAddEpisode()
+        result1 = await run_imessage_watcher(
+            add_ep1,
+            enable=True,
+            checkpoint_hours=24,
+            db_path=db_path,
+            state_path=state_path,
+        )
+        assert result1 == 1
+
+        # Second call — same state file — should skip.
+        add_ep2 = FakeAddEpisode()
+        result2 = await run_imessage_watcher(
+            add_ep2,
+            enable=True,
+            checkpoint_hours=24,
+            db_path=db_path,
+            state_path=state_path,
+        )
+        assert result2 == 0
+        assert add_ep2.calls == []
+
+    async def test_missing_db_returns_zero(self, tmp_path):
+        add_ep = FakeAddEpisode()
+        result = await run_imessage_watcher(
+            add_ep,
+            enable=True,
+            db_path=tmp_path / "no_such_chat.db",
+            state_path=tmp_path / "imessage_state.json",
+        )
+        assert result == 0
+        assert add_ep.calls == []

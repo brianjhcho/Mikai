@@ -447,3 +447,174 @@ def run_local_files_watcher(
         "Local-files PollingObserver started (%d path(s))", len(watches)
     )
     return observer
+
+
+# ── Watcher 3 — iMessage ─────────────────────────────────────────────────────
+
+import sqlite3
+
+IMESSAGE_DB_PATH = Path.home() / "Library" / "Messages" / "chat.db"
+IMESSAGE_STATE_PATH = MIKAI_DIR / "imessage_state.json"
+
+# Apple's reference epoch starts 2001-01-01 00:00:00 UTC.
+APPLE_EPOCH_OFFSET = 978307200  # seconds between Unix epoch and Apple epoch
+
+
+def _apple_timestamp_to_dt(apple_ts: int | float) -> datetime:
+    """Convert Apple epoch nanoseconds to UTC datetime."""
+    # chat.db stores timestamps as nanoseconds since Apple epoch on modern macOS.
+    # Older rows may use seconds.  Heuristic: values > 1e10 are nanoseconds.
+    ts = apple_ts
+    if ts and ts > 1e10:
+        ts = ts / 1_000_000_000  # nanoseconds → seconds
+    unix_ts = ts + APPLE_EPOCH_OFFSET
+    return datetime.fromtimestamp(unix_ts, tz=timezone.utc)
+
+
+def _format_imessage_thread(handle: str, messages: list) -> str:
+    """Format a conversation thread as a single episode body string."""
+    lines = [f"iMessage conversation with {handle}"]
+    for msg in messages:
+        dt = _apple_timestamp_to_dt(msg["date"])
+        timestamp = dt.strftime("%Y-%m-%d %H:%M")
+        sender = "me" if msg["is_from_me"] else handle
+        text = (msg["text"] or "").strip()
+        if text:
+            lines.append(f"[{timestamp}] <{sender}>: {text}")
+    return "\n".join(lines)
+
+
+async def run_imessage_watcher(
+    add_episode_fn: AddEpisodeFn,
+    *,
+    enable: bool = False,
+    checkpoint_hours: int = 24,
+    db_path: Path = IMESSAGE_DB_PATH,
+    state_path: Path = IMESSAGE_STATE_PATH,
+) -> int:
+    """
+    Read recent iMessage threads and ingest new conversations as episodes.
+
+    Parameters
+    ----------
+    add_episode_fn:
+        Injectable callback — same signature as the other watchers.
+    enable:
+        Opt-in gate.  Must be explicitly set to True; defaults to False so the
+        watcher does nothing unless the user consciously enables it.
+    checkpoint_hours:
+        How many hours back from now to look for messages.
+    db_path:
+        Path to chat.db (injectable for tests with an in-memory fixture).
+    state_path:
+        Path to the dedup state JSON file (injectable for tests).
+
+    Returns
+    -------
+    int
+        Number of episodes ingested in this run.
+
+    PERMISSIONS NOTE:
+        macOS Full Disk Access is required for the running process.  See module
+        docstring for details.
+    """
+    if not enable:
+        logger.info(
+            "iMessage ingestion disabled (set enable=True to opt in)"
+        )
+        return 0
+
+    if not db_path.exists():
+        logger.warning("iMessage database not found at %s", db_path)
+        return 0
+
+    # Apple epoch cutoff for the query window.
+    now_unix = datetime.now(tz=timezone.utc).timestamp()
+    cutoff_unix = now_unix - checkpoint_hours * 3600
+    # Convert Unix → Apple epoch seconds; then to nanoseconds for comparison.
+    cutoff_apple_ns = int((cutoff_unix - APPLE_EPOCH_OFFSET) * 1_000_000_000)
+
+    state = _load_json(state_path)
+    ingested = 0
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+    except sqlite3.OperationalError as exc:
+        logger.error("Cannot open iMessage DB at %s: %s", db_path, exc)
+        return 0
+
+    try:
+        # Query messages within the checkpoint window, joined to their handle.
+        query = """
+            SELECT
+                m.rowid        AS rowid,
+                m.handle_id    AS handle_id,
+                m.date         AS date,
+                m.text         AS text,
+                m.is_from_me   AS is_from_me,
+                h.id           AS handle
+            FROM message m
+            LEFT JOIN handle h ON m.handle_id = h.rowid
+            WHERE m.date >= ?
+            ORDER BY m.handle_id, m.date ASC
+        """
+        rows = conn.execute(query, (cutoff_apple_ns,)).fetchall()
+    except sqlite3.OperationalError as exc:
+        logger.error("iMessage DB query failed: %s", exc)
+        conn.close()
+        return 0
+
+    # Group messages by handle_id.
+    conversations: dict = {}
+    handle_map: dict = {}
+    for row in rows:
+        hid = row["handle_id"]
+        conversations.setdefault(hid, []).append(dict(row))
+        handle_map[hid] = row["handle"] or str(hid)
+
+    for handle_id, messages in conversations.items():
+        handle = handle_map[handle_id]
+
+        if is_sensitive_name(handle):
+            logger.info("Skipping sensitive iMessage handle: %s", handle)
+            continue
+
+        newest_rowid = max(m["rowid"] for m in messages)
+        dedup_key = f"{handle_id}::{newest_rowid}"
+
+        if dedup_key in state:
+            logger.debug(
+                "Already ingested conversation %s (newest rowid %d)",
+                handle, newest_rowid,
+            )
+            continue
+
+        episode_body = _format_imessage_thread(handle, messages)
+
+        try:
+            await add_episode_fn(
+                name=f"imessage-{handle}",
+                content=episode_body,
+                source_description="imessage",
+            )
+        except Exception as exc:
+            logger.error(
+                "add_episode_fn failed for iMessage handle %s: %s", handle, exc
+            )
+            continue
+
+        state[dedup_key] = {
+            "handle": handle,
+            "newest_rowid": newest_rowid,
+            "ingested_at": datetime.now(tz=timezone.utc).isoformat(),
+        }
+        _save_json(state, state_path)
+        ingested += 1
+        logger.info(
+            "Ingested iMessage conversation: %s (%d messages)", handle, len(messages)
+        )
+
+    conn.close()
+    logger.info("iMessage run complete. ingested=%d", ingested)
+    return ingested
