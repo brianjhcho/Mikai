@@ -140,15 +140,33 @@ async def _dry_run_ingest(
     )
 
 
+async def _seed_only_ingest(
+    *, name: str, content: str, source_description: str,
+    reference_time: datetime, group_id: str,
+) -> None:
+    """Used with --seed-only: walks the dedup path, writes state, but never
+    calls Graphiti. After a --seed-only pass, --once becomes a no-op against
+    already-present content; only subsequent changes trigger real ingestion.
+
+    Rationale: the initial corpus (Apple Notes, Claude Code threads) was
+    bulk-imported before the daemon existed. A fresh --once run with an empty
+    state file would re-ingest ~1,100 Apple Notes at ~$0.005-0.01 each per
+    ARCH-025 AND create duplicate episodes in Graphiti. Seeding avoids both.
+    """
+    logger.debug(f"[SEED-ONLY][{source_description}] state-recorded: {name!r}")
+
+
 # ── Apple Notes ───────────────────────────────────────────────────────────────
 
 APPLE_SCRIPT = """\
+set delimField to (ASCII character 0)
+set delimRecord to (ASCII character 1)
 set output to ""
 tell application "Notes"
     repeat with n in every note
         set t to name of n
         set b to plain text of n
-        set output to output & t & "\x00" & b & "\x01"
+        set output to output & t & delimField & b & delimRecord
     end repeat
 end tell
 return output
@@ -449,18 +467,26 @@ async def daemon_loop(
 
 
 async def _main_async(args: argparse.Namespace) -> None:
-    if args.dry_run:
-        ingest_fn: IngestFn = _dry_run_ingest
+    if args.seed_only:
+        ingest_fn: IngestFn = _seed_only_ingest
+        logger.info(
+            "SEED-ONLY mode — walking dedup path, recording state hashes, "
+            "but NOT calling Graphiti. Subsequent --once runs will only "
+            "ingest items that changed after this seed pass."
+        )
+    elif args.dry_run:
+        ingest_fn = _dry_run_ingest
         logger.info("DRY-RUN mode — no episodes will be written to Graphiti.")
     else:
         logger.info("Initializing Graphiti...")
         graphiti = await _init_graphiti_client()
         ingest_fn = _make_default_ingest_fn(graphiti)
 
-    if args.once:
+    if args.once or args.seed_only:
         notes, turns = await run_sync_pass(ingest_fn=ingest_fn)
+        label = "--seed-only" if args.seed_only else "--once"
         logger.info(
-            f"--once pass complete. apple-notes={notes} claude-code-turns={turns}"
+            f"{label} pass complete. apple-notes={notes} claude-code-turns={turns}"
         )
         return
 
@@ -475,6 +501,11 @@ def main() -> None:
                         help="Run one pass and exit.")
     parser.add_argument("--dry-run", action="store_true",
                         help="Log what would be ingested without writing to Graphiti.")
+    parser.add_argument("--seed-only", action="store_true",
+                        help="Walk the dedup path and record state hashes "
+                             "without calling Graphiti. Use once before the first "
+                             "real --once run to avoid re-ingesting already-imported "
+                             "content.")
     args = parser.parse_args()
     asyncio.run(_main_async(args))
 
