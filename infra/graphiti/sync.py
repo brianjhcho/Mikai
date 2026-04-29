@@ -45,6 +45,7 @@ from sidecar.ingest import (
 
 import notes_sqlite
 import permissions
+from sidecar.rate_limit import bucket_for
 
 logger = logging.getLogger("mikai-sync")
 logging.basicConfig(
@@ -106,13 +107,21 @@ IngestFn = Callable[..., Awaitable[None]]
 
 
 def _make_default_ingest_fn(graphiti: Graphiti) -> IngestFn:
-    """Bind a real Graphiti instance to an IngestFn-compatible callable."""
+    """Bind a real Graphiti instance to an IngestFn-compatible callable.
+
+    Each call burns one DeepSeek (LLM extraction) and several Voyage
+    (embedding) credits. The rate limiter buckets gate both — first
+    import of a new source can produce thousands of calls in a burst,
+    which previously hit DeepSeek's 429 in minutes (O-041).
+    """
     async def _ingest(
         *, name: str, content: str, source_description: str,
         reference_time: datetime, group_id: str,
     ) -> None:
         preview = content[:80].replace("\n", " ")
         logger.info(f"[{source_description}] ingesting: {preview!r}")
+        await bucket_for("deepseek").acquire()
+        await bucket_for("voyage").acquire()
         try:
             result = await graphiti.add_episode(
                 name=name,

@@ -51,6 +51,7 @@ from sidecar.ingest import (
     load_state as _load_state_at,
     save_state as _save_state_at,
 )
+from sidecar.rate_limit import bucket_for
 
 logger = logging.getLogger("mikai-mcp-ingest")
 logging.basicConfig(
@@ -262,6 +263,8 @@ async def poll_source(
         if not text or not text.strip():
             continue
 
+        await bucket_for("deepseek").acquire()
+        await bucket_for("voyage").acquire()
         try:
             await graphiti.add_episode(
                 name=f"{source_name}-{poll_time}",

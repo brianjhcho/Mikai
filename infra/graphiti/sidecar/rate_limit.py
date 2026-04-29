@@ -1,12 +1,17 @@
 """
 Async token-bucket rate limiter for the MIKAI Graphiti sidecar.
 
-References O-041. Callers on the add_episode path should call
-``await bucket_for('deepseek').acquire()`` before invoking graphiti so that
-DeepSeek and Voyage API calls stay within their per-minute limits.
+References O-041. Wired into the two direct ``graphiti.add_episode`` call
+sites: ``sync.py`` (Apple Notes + Claude Code) and ``mcp_ingest.py`` (cloud
+sources). Each acquires from ``bucket_for('deepseek')`` and
+``bucket_for('voyage')`` before the call so first-import bursts can't hit
+DeepSeek's 429 ceiling.
 
-TODO(lead): wire bucket_for('deepseek').acquire() into mcp_ingest.py and
-sync.py once Phase A lands. grep TODO(lead) to find all wiring points.
+If you add a new direct add_episode call, mirror that pattern — or route
+through the shared ``_make_default_ingest_fn`` helper in sync.py which
+has it built in. ``sync_local_expand.py`` works through an injected
+``add_episode_fn``; its eventual driver should pass the same rate-limited
+callback.
 
 Usage::
 
