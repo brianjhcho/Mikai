@@ -39,60 +39,16 @@ from typing import Any, Awaitable, Callable, Protocol
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "infra" / "graphiti"))
 
-# `sidecar/main.py` carries the canonical DeepSeekClient + PassthroughReranker
-# wiring. We import them so this eval harness shares the same patched-graphiti
-# stack the live sidecar uses; no second source of truth for client config.
-from sidecar.main import DeepSeekClient, PassthroughReranker  # type: ignore
+# Re-use the canonical Graphiti wiring from the live sidecar so we share
+# its DeepSeek + Voyage + scaling-patch config — no second source of truth.
+from sidecar.client import init_graphiti  # type: ignore  # noqa: E402
 
-from graphiti_core import Graphiti
-from graphiti_core.embedder.voyage import VoyageAIEmbedder, VoyageAIEmbedderConfig
-from graphiti_core.llm_client.config import LLMConfig
+from graphiti_core import Graphiti  # noqa: E402
 
 logger = logging.getLogger("mikai-eval-nodes")
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 EVALS_DIR = REPO_ROOT / "docs" / "evals"
-
-
-# ── Graphiti construction (mirrors sidecar/main.py) ──────────────────────────
-
-
-def _require_env(var: str) -> str:
-    import os
-    val = os.environ.get(var)
-    if not val:
-        raise RuntimeError(f"{var} required")
-    return val
-
-
-async def init_graphiti() -> Graphiti:
-    import os
-    neo4j_uri = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
-    neo4j_user = os.environ.get("NEO4J_USER", "neo4j")
-    neo4j_password = os.environ.get("NEO4J_PASSWORD", "mikai-local-dev")
-
-    llm_client = DeepSeekClient(
-        config=LLMConfig(
-            api_key=_require_env("DEEPSEEK_API_KEY"),
-            model="deepseek-chat",
-            small_model="deepseek-chat",
-            base_url="https://api.deepseek.com",
-        ),
-        max_tokens=8192,
-    )
-    embedder = VoyageAIEmbedder(config=VoyageAIEmbedderConfig(
-        api_key=_require_env("VOYAGE_API_KEY"),
-        model="voyage-3",
-    ))
-    g = Graphiti(
-        neo4j_uri, neo4j_user, neo4j_password,
-        llm_client=llm_client,
-        embedder=embedder,
-        cross_encoder=PassthroughReranker(),
-    )
-    # Read-only eval — skip build_indices_and_constraints to keep this fast
-    # and to make sure we never accidentally mutate schema during a rating run.
-    return g
 
 
 async def run_cypher(graphiti: Graphiti, query: str, **params) -> list[dict]:
@@ -310,7 +266,7 @@ def append_results_md(
 
 
 async def open_graphiti_probe() -> tuple[GraphitiProbe, Callable[[], Awaitable[None]]]:
-    g = await _init_graphiti_client()
+    g = await init_graphiti()
 
     async def _close() -> None:
         await g.close()
