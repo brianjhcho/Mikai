@@ -25,6 +25,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -41,6 +42,9 @@ from sidecar.ingest import (
     load_state as _load_state_at,
     save_state as _save_state_at,
 )
+
+import notes_sqlite
+import permissions
 
 logger = logging.getLogger("mikai-sync")
 logging.basicConfig(
@@ -82,7 +86,7 @@ def _default_osascript_runner(script: str) -> tuple[str, str, int]:
     try:
         proc = subprocess.run(
             ["osascript", "-e", script],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=600,
         )
         return proc.stdout, proc.stderr, proc.returncode
     except subprocess.TimeoutExpired:
@@ -162,24 +166,59 @@ APPLE_SCRIPT = """\
 set delimField to (ASCII character 0)
 set delimRecord to (ASCII character 1)
 set output to ""
+set skipped to 0
 tell application "Notes"
-    repeat with n in every note
-        set t to name of n
-        set b to plain text of n
-        set output to output & t & delimField & b & delimRecord
+    set theNotes to every note
+    repeat with i from 1 to count of theNotes
+        try
+            set n to item i of theNotes
+            set t to name of n
+            set b to body of n
+            set output to output & t & delimField & b & delimRecord
+        on error
+            set skipped to skipped + 1
+        end try
     end repeat
 end tell
+log "mikai-sync: notes skipped (unreadable) = " & skipped
 return output
 """
+
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_HTML_ENTITIES = {
+    "&nbsp;": " ", "&amp;": "&", "&lt;": "<", "&gt;": ">",
+    "&quot;": '"', "&apos;": "'", "&#39;": "'", "&rsquo;": "'",
+    "&lsquo;": "'", "&ldquo;": '"', "&rdquo;": '"',
+}
+
+
+def _strip_html(html: str) -> str:
+    """Apple Notes returns rich-text bodies as HTML — strip tags + decode the
+    handful of entities that show up in practice. Anything more elaborate
+    (table layout, inline images) loses its formatting but keeps the text,
+    which is what graph extraction needs."""
+    text = _HTML_TAG_RE.sub("", html)
+    for entity, replacement in _HTML_ENTITIES.items():
+        text = text.replace(entity, replacement)
+    return "\n".join(line.strip() for line in text.splitlines() if line.strip())
 
 
 def fetch_apple_notes(
     *, runner: OsascriptRunner = _default_osascript_runner,
-) -> list[tuple[str, str]] | None:
-    """Run osascript to enumerate all notes as (title, body) pairs.
+) -> list[tuple[str, str, str]] | None:
+    """Legacy AppleScript path — kept behind --legacy-applescript as a
+    fallback for users who can't grant Full Disk Access (e.g. corporate
+    Mac with MDM-locked TCC).
 
-    Returns None on subprocess failure (app not running, permission denied,
-    osascript timeout). Returns [] if the runner succeeded but Notes is empty.
+    On a 1,000-note corpus this takes ~10 minutes per pass because each
+    `body of n` is a separate Apple Event round-trip. Prefer the SQLite
+    path (`fetch_apple_notes_via_sqlite`) which does the same work in
+    ~20 seconds.
+
+    Returns None on subprocess failure, else list of (identifier, title,
+    body) triples. AppleScript has no stable note id, so identifier is
+    "applescript:<content-hash>" — collision-resistant for distinct notes,
+    but renames or edits change identity (small dedup-state leak).
     """
     stdout, stderr, rc = runner(APPLE_SCRIPT)
     if rc != 0:
@@ -188,26 +227,65 @@ def fetch_apple_notes(
     raw = stdout.strip()
     if not raw:
         return []
-    notes: list[tuple[str, str]] = []
+    notes: list[tuple[str, str, str]] = []
     for chunk in raw.split("\x01"):
         chunk = chunk.strip()
         if not chunk:
             continue
         parts = chunk.split("\x00", 1)
         title = parts[0].strip() if parts else ""
-        body = parts[1].strip() if len(parts) > 1 else ""
-        notes.append((title, body))
+        body = _strip_html(parts[1]) if len(parts) > 1 else ""
+        identifier = f"applescript:{_note_hash(title, body)}"
+        notes.append((identifier, title, body))
     return notes
+
+
+# Type for any fetcher: list of (identifier, title, body) triples or None.
+NotesFetcher = Callable[[], list[tuple[str, str, str]] | None]
+
+
+def fetch_apple_notes_via_sqlite(
+    *,
+    note_store: Path = notes_sqlite.DEFAULT_NOTE_STORE,
+    interactive_prompt: bool = True,
+) -> list[tuple[str, str, str]] | None:
+    """Default Apple Notes path — direct SQLite + protobuf read.
+
+    ~20 seconds for 1,000 notes vs ~10 min via AppleScript. Requires Full
+    Disk Access; if FDA is missing, prompts the user (via System Settings
+    deep link), logs guidance, and returns None so the caller skips Apple
+    Notes for this pass. Subsequent passes re-check.
+
+    Returns None on permission failure or read error, else list of
+    (title, body) pairs in the same shape as fetch_apple_notes().
+    """
+    has_access, reason = permissions.check_full_disk_access(canary=note_store)
+    if not has_access:
+        logger.warning(f"Apple Notes (sqlite): FDA not granted — {reason}")
+        if interactive_prompt:
+            permissions.prompt_for_full_disk_access(reason=reason)
+        return None
+    try:
+        with notes_sqlite.copy_note_store(note_store) as snapshot:
+            return [
+                (n.identifier or f"sqlite-pk:{n.z_pk}", n.title, n.body)
+                for n in notes_sqlite.iter_notes(snapshot)
+            ]
+    except (OSError, Exception) as e:
+        logger.warning(f"Apple Notes SQLite read failed: {e}")
+        return None
 
 
 def _note_hash(title: str, body: str) -> str:
     return hashlib.sha256(f"{title}\x00{body}".encode("utf-8")).hexdigest()
 
 
-def _note_key(title: str) -> str:
-    """Stable lookup key for a note. Uses title (titles rarely collide in
-    one user's Notes app; body-hash alone would lose the rename signal)."""
-    return hashlib.sha256(title.encode("utf-8")).hexdigest()
+def _note_key(identifier: str) -> str:
+    """Stable lookup key for a note. The fetcher provides the identifier:
+    SQLite supplies ZIDENTIFIER (UUID), AppleScript supplies a content-hash
+    fallback. Either way, we just hash whatever the fetcher gives us so
+    the key length stays uniform in state.json."""
+    return hashlib.sha256(identifier.encode("utf-8")).hexdigest()
 
 
 async def sync_apple_notes(
@@ -215,12 +293,20 @@ async def sync_apple_notes(
     *,
     ingest_fn: IngestFn,
     runner: OsascriptRunner = _default_osascript_runner,
+    notes_fetcher: NotesFetcher | None = None,
     now: Callable[[], datetime] = _utc_now,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     state_path: Path = STATE_PATH,
+    episode_delay: float = EPISODE_DELAY_SECONDS,
 ) -> int:
-    """Sync Apple Notes whose content hash changed since last pass."""
-    notes = fetch_apple_notes(runner=runner)
+    """Sync Apple Notes whose content hash changed since last pass.
+
+    `notes_fetcher` defaults to the SQLite path. Pass a different callable
+    (e.g. lambda: fetch_apple_notes(runner=runner)) to use the AppleScript
+    fallback. The callable returns list[(title, body)] or None on failure.
+    """
+    fetcher = notes_fetcher or fetch_apple_notes_via_sqlite
+    notes = fetcher()
     if notes is None:
         return 0
 
@@ -228,10 +314,10 @@ async def sync_apple_notes(
     stored: dict[str, str] = note_state.setdefault("hashes", {})
     count = 0
 
-    for title, body in notes:
+    for identifier, title, body in notes:
         if not title and not body:
             continue
-        key = _note_key(title)
+        key = _note_key(identifier)
         h = _note_hash(title, body)
         if stored.get(key) == h:
             continue  # unchanged since last pass — dedup per O-039
@@ -247,8 +333,8 @@ async def sync_apple_notes(
         )
         stored[key] = h
         count += 1
-        if count > 1:
-            await sleep(EPISODE_DELAY_SECONDS)
+        if count > 1 and episode_delay > 0:
+            await sleep(episode_delay)
 
     _save_state_at(state, state_path)
     if count:
@@ -350,6 +436,7 @@ async def sync_claude_code(
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     base_path: Path = CLAUDE_PROJECTS_PATH,
     state_path: Path = STATE_PATH,
+    episode_delay: float = EPISODE_DELAY_SECONDS,
 ) -> int:
     """Tail all Claude Code JSONL files; ingest any new turns since last pass."""
     code_state = state.setdefault("claude_code", {"offsets": {}})
@@ -380,7 +467,8 @@ async def sync_claude_code(
                 group_id=GROUP_ID_CLAUDE_CODE,
             )
             count += 1
-            await sleep(EPISODE_DELAY_SECONDS)
+            if episode_delay > 0:
+                await sleep(episode_delay)
 
     _save_state_at(state, state_path)
     if count:
@@ -395,21 +483,34 @@ async def run_sync_pass(
     *, ingest_fn: IngestFn,
     state_path: Path = STATE_PATH,
     osascript_runner: OsascriptRunner = _default_osascript_runner,
+    notes_fetcher: NotesFetcher | None = None,
     jsonl_lister: JsonlLister = _default_jsonl_lister,
     now: Callable[[], datetime] = _utc_now,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     base_claude_path: Path = CLAUDE_PROJECTS_PATH,
+    episode_delay: float = EPISODE_DELAY_SECONDS,
 ) -> tuple[int, int]:
-    """One full pass across Apple Notes + Claude Code. Returns (notes, turns)."""
+    """One full pass across Apple Notes + Claude Code. Returns (notes, turns).
+
+    `episode_delay` defaults to EPISODE_DELAY_SECONDS to protect Neo4j during
+    real ingestion. Pass 0 for --seed-only / --dry-run runs where there is no
+    backend to protect — otherwise seeding the corpus burns hours of sleep.
+
+    `notes_fetcher` overrides the default SQLite path — set to a lambda that
+    calls fetch_apple_notes(runner=...) for the AppleScript fallback.
+    """
     state = _load_state_at(state_path)
     apple = await sync_apple_notes(
         state, ingest_fn=ingest_fn, runner=osascript_runner,
+        notes_fetcher=notes_fetcher,
         now=now, sleep=sleep, state_path=state_path,
+        episode_delay=episode_delay,
     )
     code = await sync_claude_code(
         state, ingest_fn=ingest_fn, lister=jsonl_lister,
         now=now, sleep=sleep, base_path=base_claude_path,
         state_path=state_path,
+        episode_delay=episode_delay,
     )
     return apple, code
 
@@ -482,8 +583,27 @@ async def _main_async(args: argparse.Namespace) -> None:
         graphiti = await _init_graphiti_client()
         ingest_fn = _make_default_ingest_fn(graphiti)
 
+    notes_fetcher: NotesFetcher | None = None
+    if args.legacy_applescript:
+        logger.info("Apple Notes path: AppleScript (--legacy-applescript)")
+        notes_fetcher = lambda: fetch_apple_notes()
+    else:
+        logger.info("Apple Notes path: SQLite + protobuf (default)")
+        # Pre-flight FDA check so the user sees the prompt at startup rather
+        # than during the first sync. The check is cheap; the prompt is a
+        # no-op if access is already granted.
+        has_access, reason = permissions.check_full_disk_access()
+        if not has_access:
+            logger.warning(f"Full Disk Access not granted: {reason}")
+            permissions.prompt_for_full_disk_access(reason=reason)
+
     if args.once or args.seed_only:
-        notes, turns = await run_sync_pass(ingest_fn=ingest_fn)
+        episode_delay = 0.0 if (args.seed_only or args.dry_run) else EPISODE_DELAY_SECONDS
+        notes, turns = await run_sync_pass(
+            ingest_fn=ingest_fn,
+            episode_delay=episode_delay,
+            notes_fetcher=notes_fetcher,
+        )
         label = "--seed-only" if args.seed_only else "--once"
         logger.info(
             f"{label} pass complete. apple-notes={notes} claude-code-turns={turns}"
@@ -506,6 +626,12 @@ def main() -> None:
                              "without calling Graphiti. Use once before the first "
                              "real --once run to avoid re-ingesting already-imported "
                              "content.")
+    parser.add_argument("--legacy-applescript", action="store_true",
+                        help="Use the AppleScript path for Apple Notes "
+                             "instead of the SQLite + protobuf default. "
+                             "~10 min per pass on 1000 notes vs ~20s for "
+                             "SQLite — only useful if Full Disk Access "
+                             "cannot be granted (e.g. MDM-locked Mac).")
     args = parser.parse_args()
     asyncio.run(_main_async(args))
 

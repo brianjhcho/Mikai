@@ -63,6 +63,14 @@ def make_osascript_runner(stdout: str = "", stderr: str = "", rc: int = 0):
     return _run
 
 
+def make_legacy_fetcher(stdout: str = "", stderr: str = "", rc: int = 0):
+    """Wrap the osascript runner as a NotesFetcher so tests can keep their
+    canned-stdout style without paying for the SQLite path. Mirrors what
+    sync.py does when --legacy-applescript is passed."""
+    runner = make_osascript_runner(stdout=stdout, stderr=stderr, rc=rc)
+    return lambda: sync.fetch_apple_notes(runner=runner)
+
+
 async def _noop_sleep(_seconds: float) -> None:
     return None
 
@@ -94,7 +102,11 @@ class TestFetchAppleNotes:
         raw = _encode_osascript_notes([("My title", "My body content")])
         runner = make_osascript_runner(stdout=raw)
         notes = sync.fetch_apple_notes(runner=runner)
-        assert notes == [("My title", "My body content")]
+        assert len(notes) == 1
+        identifier, title, body = notes[0]
+        assert title == "My title"
+        assert body == "My body content"
+        assert identifier.startswith("applescript:")
 
     def test_parses_multiple_notes(self):
         raw = _encode_osascript_notes([
@@ -104,13 +116,30 @@ class TestFetchAppleNotes:
         ])
         runner = make_osascript_runner(stdout=raw)
         notes = sync.fetch_apple_notes(runner=runner)
-        assert [t for t, _ in notes] == ["First", "Second", "Third"]
+        assert [t for _, t, _ in notes] == ["First", "Second", "Third"]
+        # All identifiers must be unique — same title on different notes
+        # would otherwise re-ingest forever (regression for O-039 dedup).
+        assert len({i for i, _, _ in notes}) == 3
 
     def test_handles_empty_body(self):
         raw = "Title only\x00\x01"
         runner = make_osascript_runner(stdout=raw)
         notes = sync.fetch_apple_notes(runner=runner)
-        assert notes == [("Title only", "")]
+        assert len(notes) == 1
+        _, title, body = notes[0]
+        assert (title, body) == ("Title only", "")
+
+    def test_duplicate_titles_get_distinct_identifiers(self):
+        """Regression for the dedup bug: two notes with the same title but
+        different content must still be tracked independently."""
+        raw = _encode_osascript_notes([
+            ("Sept 2022", "first month log"),
+            ("Sept 2022", "second month log"),
+        ])
+        runner = make_osascript_runner(stdout=raw)
+        notes = sync.fetch_apple_notes(runner=runner)
+        ids = [i for i, _, _ in notes]
+        assert ids[0] != ids[1]
 
 
 # ── sync_apple_notes ─────────────────────────────────────────────────────────
@@ -128,7 +157,7 @@ class TestSyncAppleNotes:
         count = await sync.sync_apple_notes(
             state,
             ingest_fn=fake,
-            runner=make_osascript_runner(stdout=raw),
+            notes_fetcher=make_legacy_fetcher(stdout=raw),
             now=_fixed_now("2026-04-20T10:00:00+00:00"),
             sleep=_noop_sleep,
             state_path=tmp_path / "state.json",
@@ -147,7 +176,7 @@ class TestSyncAppleNotes:
         state: dict = {}
         fake = FakeIngestFn()
         kwargs = dict(
-            runner=make_osascript_runner(stdout=raw),
+            notes_fetcher=make_legacy_fetcher(stdout=raw),
             now=_fixed_now("2026-04-20T10:00:00+00:00"),
             sleep=_noop_sleep,
             state_path=tmp_path / "state.json",
@@ -168,12 +197,12 @@ class TestSyncAppleNotes:
         first_raw = _encode_osascript_notes([("n1", "original body")])
         await sync.sync_apple_notes(
             state, ingest_fn=fake,
-            runner=make_osascript_runner(stdout=first_raw), **kwargs,
+            notes_fetcher=make_legacy_fetcher(stdout=first_raw), **kwargs,
         )
         second_raw = _encode_osascript_notes([("n1", "edited body — now longer")])
         await sync.sync_apple_notes(
             state, ingest_fn=fake,
-            runner=make_osascript_runner(stdout=second_raw), **kwargs,
+            notes_fetcher=make_legacy_fetcher(stdout=second_raw), **kwargs,
         )
         assert len(fake.calls) == 2
         assert "original body" in fake.calls[0].content
@@ -184,7 +213,7 @@ class TestSyncAppleNotes:
         count = await sync.sync_apple_notes(
             {},
             ingest_fn=fake,
-            runner=make_osascript_runner(stderr="not authorized", rc=1),
+            notes_fetcher=make_legacy_fetcher(stderr="not authorized", rc=1),
             now=_fixed_now("2026-04-20T10:00:00+00:00"),
             sleep=_noop_sleep,
             state_path=tmp_path / "state.json",
@@ -200,7 +229,7 @@ class TestSyncAppleNotes:
         state1: dict = {}
         await sync.sync_apple_notes(
             state1, ingest_fn=fake1,
-            runner=make_osascript_runner(stdout=raw),
+            notes_fetcher=make_legacy_fetcher(stdout=raw),
             now=_fixed_now("2026-04-20T10:00:00+00:00"),
             sleep=_noop_sleep, state_path=state_path,
         )
@@ -212,7 +241,7 @@ class TestSyncAppleNotes:
         fake2 = FakeIngestFn()
         await sync.sync_apple_notes(
             state2, ingest_fn=fake2,
-            runner=make_osascript_runner(stdout=raw),
+            notes_fetcher=make_legacy_fetcher(stdout=raw),
             now=_fixed_now("2026-04-20T10:00:00+00:00"),
             sleep=_noop_sleep, state_path=state_path,
         )
@@ -224,7 +253,7 @@ class TestSyncAppleNotes:
         await sync.sync_apple_notes(
             {},
             ingest_fn=fake,
-            runner=make_osascript_runner(stdout=raw),
+            notes_fetcher=make_legacy_fetcher(stdout=raw),
             now=_fixed_now("2026-04-20T10:00:00+00:00"),
             sleep=_noop_sleep,
             state_path=tmp_path / "state.json",
@@ -444,7 +473,7 @@ class TestRunSyncPass:
         notes, turns = await sync.run_sync_pass(
             ingest_fn=fake,
             state_path=tmp_path / "state.json",
-            osascript_runner=make_osascript_runner(stdout=raw),
+            notes_fetcher=make_legacy_fetcher(stdout=raw),
             jsonl_lister=lambda _b: [sess],
             now=_fixed_now("2026-04-20T10:00:00+00:00"),
             sleep=_noop_sleep,
@@ -464,7 +493,7 @@ class TestRunSyncPass:
         notes, turns = await sync.run_sync_pass(
             ingest_fn=fake,
             state_path=tmp_path / "state.json",
-            osascript_runner=make_osascript_runner(rc=1, stderr="denied"),
+            notes_fetcher=make_legacy_fetcher(rc=1, stderr="denied"),
             jsonl_lister=lambda _b: [sess],
             now=_fixed_now("2026-04-20T10:00:00+00:00"),
             sleep=_noop_sleep,
