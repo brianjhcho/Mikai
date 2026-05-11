@@ -132,6 +132,26 @@ class TestToSample:
         s = eval_nodes.to_sample(node, None)
         assert s.attributes == {}
 
+    def test_strips_any_embedding_field(self):
+        # Real-world: Apple-Notes ingestion path leaves a `nomic_embedding`
+        # property on Entity nodes. The card was flooding the terminal until
+        # we generalized the strip rule to any *_embedding key.
+        node = make_entity_row(
+            "u1", "Discursive Psychology",
+            props={
+                "uuid": "u1", "name": "Discursive Psychology",
+                "name_embedding": [0.1] * 4,
+                "nomic_embedding": [0.2] * 768,
+                "voyage_embedding": [0.3] * 1024,
+                "category": "field",
+            },
+        )
+        s = eval_nodes.to_sample(node, None)
+        assert "name_embedding" not in s.attributes
+        assert "nomic_embedding" not in s.attributes
+        assert "voyage_embedding" not in s.attributes
+        assert s.attributes == {"category": "field"}
+
 
 # ── format_node_card ─────────────────────────────────────────────────────────
 

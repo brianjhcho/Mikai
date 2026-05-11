@@ -164,9 +164,12 @@ def pick_nodes(rows: list[dict], n: int, *, rng: random.Random | None = None) ->
 def to_sample(node_row: dict, episode_row: dict | None) -> NodeSample:
     """Combine a node row + (optional) episode row into a single NodeSample."""
     props = dict(node_row.get("props") or {})
-    # Strip the noisy / structural keys from the attributes view.
-    for k in ("uuid", "name", "name_embedding", "summary", "group_id",
-              "created_at", "labels"):
+    # Strip noisy / structural keys from the attributes view. Embedding
+    # vectors (any *_embedding) are machine-only and flood the card —
+    # drop them whatever the source pipeline named them.
+    for k in ("uuid", "name", "summary", "group_id", "created_at", "labels"):
+        props.pop(k, None)
+    for k in [k for k in props if k.endswith("_embedding")]:
         props.pop(k, None)
 
     return NodeSample(
@@ -184,9 +187,11 @@ def to_sample(node_row: dict, episode_row: dict | None) -> NodeSample:
     )
 
 
-def format_node_card(sample: NodeSample, *, max_episode_chars: int = 1200) -> str:
-    """Pretty-print a NodeSample for the reviewer's terminal. Trims long
-    episode bodies — full content lives in the graph for re-fetch."""
+def format_node_card(sample: NodeSample, *, max_episode_chars: int | None = None) -> str:
+    """Pretty-print a NodeSample for the reviewer's terminal. Pass an int
+    to cap episode-body length (callers that want compact output); the
+    interactive eval CLI defaults to None (no truncation) because the
+    reviewer needs the full source to judge accuracy."""
     lines: list[str] = []
     lines.append("=" * 72)
     lines.append(f"Node:    {sample.name}")
@@ -202,7 +207,7 @@ def format_node_card(sample: NodeSample, *, max_episode_chars: int = 1200) -> st
         lines.append("Source episode: (none — orphan or community-only)")
     else:
         body = sample.episode_content
-        if len(body) > max_episode_chars:
+        if max_episode_chars is not None and len(body) > max_episode_chars:
             body = body[:max_episode_chars] + f"\n... [+{len(sample.episode_content) - max_episode_chars} chars]"
         src = sample.episode_source_description or "(no source_description)"
         lines.append(f"Source episode [{src}] {sample.episode_name or ''}")
