@@ -680,7 +680,7 @@ Each tier serves a different query depth. L1 prevents unnecessary L2/L3 calls. L
 **Date:** 2026-04-11
 **Source:** Best practices review of graphiti-core (docs/GRAPHITI_BEST_PRACTICES_REVIEW.md)
 **Decision:** Maintain graphiti-core as a pip dependency with a reproducible patch script (scripts/apply_graphiti_patch.py) rather than forking. The patch fixes the context-window overflow in node_operations.py (candidate cap at 50, attribute stripping). Submit an upstream PR for a configurable max_resolution_candidates parameter. Fork only if the trigger conditions are met.
-**Why:** Forking creates an ongoing merge burden — every graphiti-core release must be manually merged into the fork. With one patched file and a reproducible script, the maintenance cost is near zero. The patch is well-documented (docs/GRAPHITI_INTEGRATION.md) and the upstream PR is drafted (docs/UPSTREAM_PR_DRAFT.md).
+**Why:** Forking creates an ongoing merge burden — every graphiti-core release must be manually merged into the fork. With one patched file and a reproducible script, the maintenance cost is near zero. The patch is well-documented (docs/ARCHITECTURE.md; raw research in docs/research/graphiti-review.md) and an upstream PR draft exists on the `feat/ingestion-automation` branch.
 **Fork trigger conditions:**
 - Need to change Graphiti's Neo4j schema (node labels, edge properties)
 - Need to modify the entity resolution algorithm beyond the candidate cap
@@ -881,3 +881,34 @@ The port extraction is structural debt paid now rather than later. Every product
 - Fully manual eval (no automation at all). Rejected because the MIKAI arm benefits from being automatable, even if the baseline isn't.
 **Open constraint:** Max subscription does NOT include Anthropic API credits — the two wallets are separate. Current `~/.mikai/config.json` Anthropic key is exhausted. Path forward: either (a) top up ~$5 of API credit and run `scripts/eval_mikai.py` directly, or (b) register MIKAI as a Claude Code MCP server (`claude mcp add`) and spawn agents that use the user's Max quota instead. Option (b) requires a Claude Code session restart to pick up the new MCP registration.
 **Revisit if:** Anthropic adds API credits to Max tier, or exposes Claude.ai's consumer memory via the API. Either would simplify the harness substantially.
+
+---
+
+## D-047: Three-Module Split for the Graphiti Sidecar Package
+**Date:** 2026-04-20
+**Source:** Retroactive formalization of commit `4f65b80` (2026-04-16), surfaced during the `feat/ingestion-mcp-client` ↔ `main` merge reconciliation on 2026-04-20. The refactor had been executed pragmatically but never captured as a decision, which allowed main's parallel `mcp-layer` work to drift back toward the pre-refactor single-file structure.
+**Decision:** The `infra/graphiti/sidecar/` package is split into single-responsibility modules along domain boundaries:
+
+- `sidecar/client.py` — All Graphiti/DeepSeek/Voyage wiring. `DeepSeekClient`, `PassthroughReranker`, `init_graphiti()`, `build_graphiti()`, `run_cypher()`, ISO-format helpers. Consumers: `sidecar/main.py`, `sidecar/mcp_server.py`, `sidecar/mcp_tools.py`, `mcp_ingest.py`, and every `scripts/import_*.py`.
+- `sidecar/ingest.py` — Pure-Python parsers and state helpers. `parse_notes_dump`, `parse_osascript_notes_output`, `parse_claude_turns`, `parse_perplexity_query_and_answer`, `load_state`, `save_state`, `interpolate_tool_args`, `is_sensitive_name`. Zero external dependencies by design, which is what makes the 64+8 tests run in under two seconds.
+- `sidecar/main.py` — FastAPI REST surface and the `/mcp` HTTP mount. No duplicated Graphiti wiring.
+- `sidecar/mcp_server.py` — MCP stdio transport (Claude Desktop). Imports tool-related helpers from `sidecar/client.py`.
+- `sidecar/mcp_tools.py` — MCP streamable-HTTP transport via FastMCP (Claude.ai, mobile, browser). Imports the same helpers.
+
+Consumers depend on `sidecar.client` and `sidecar.ingest` by name. They do not re-implement Graphiti wiring or parsers locally.
+
+**Why:**
+1. **Duplication elimination.** Before `4f65b80`, `DeepSeekClient`, `init_graphiti()`, and the parsers existed verbatim in `sidecar/main.py`, the prior `mcp_server.py` (née `mcp_tools.py`), and each `scripts/import_*.py`. Every DeepSeek JSON-schema fix had to land in 3+ places; misses produced "works here but not there" bugs. The split collapses that to one copy per concern.
+2. **Testability.** Pre-split parsers were embedded next to FastAPI handlers and required spinning the whole sidecar to exercise. Extracting them into `sidecar/ingest.py` — a module with zero external dependencies — is what makes the current `pytest` suite (72 tests, ~1.7s) possible. This is the Humble Object pattern: push I/O to the edge, test orchestration against pure modules.
+3. **Port discipline (ARCH-024).** The `L3Backend` port requires that product code depend on a named interface, not on Graphiti. Having Graphiti wiring in one module (`sidecar/client.py`) makes the adapter boundary one-module-wide — future `LocalAdapter` implementation changes exactly one file's imports.
+
+**Rejected:**
+- Flat single-module sidecar (pre-`4f65b80` shape). Undoes the refactor; reinstates the duplication that motivated it; breaks the test suite's <2s performance; widens the `L3Backend` port boundary to N files.
+- Merging `mcp_server.py` and `mcp_tools.py` into one "MCP module" that handles both stdio and HTTP via a single class. Possible but premature — the two transport APIs (`mcp.server.Server` vs `mcp.server.fastmcp.FastMCP`) have meaningfully different shapes, and unifying them prematurely would force a lowest-common-denominator wrapper. See follow-up below.
+
+**Open follow-up (tool-logic duplication between transports):** `sidecar/mcp_server.py` (stdio) and `sidecar/mcp_tools.py` (HTTP FastMCP) both implement the same five MCP tools (`search`, `get_history`, `add_note`, `get_stats`, `get_source`) via transport-specific APIs. The tool *logic* is duplicated across the two files even after this split. A further refactor should extract the five tool implementations into `sidecar/tool_handlers.py` and have both transport surfaces wrap the shared handlers. Deferred until both transports are proven in production — if Claude Desktop fully adopts streamable HTTP, `mcp_server.py` may be retired entirely, in which case the duplication resolves itself.
+
+**Revisit if:**
+- The `sidecar.client` module grows past ~300 lines — likely a sign it's accumulating concerns that deserve their own module.
+- A third MCP transport arrives before the tool-logic duplication is resolved — at three transports the shared-handler refactor becomes urgent rather than deferred.
+- The test suite ratio (currently 1 test per 4 lines of `ingest.py` + `client.py`) drops materially, which would signal the split is no longer buying testability.

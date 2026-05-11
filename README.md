@@ -6,7 +6,7 @@
 
 As of April 2026, MIKAI's main branch has been cleaned down to its Graphiti + Neo4j L3 infrastructure. The prior TypeScript-based ingestion pipeline, MCP server, and SQLite backend have been retired and preserved on legacy branches for future recovery. The next phase of work is rebuilding the product surface against Graphiti directly.
 
-Read `docs/CURRENT_STACK.md` for the honest snapshot of the current architecture and `docs/CLEANUP_CANDIDATES.md` for the inventory that drove this cleanup.
+Read `docs/STATUS.md` for the honest snapshot of what's live on main and `docs/ARCHITECTURE.md` for the current architecture. Raw cleanup inventory is archived at `docs/research/cleanup-2026-04-11.md`.
 
 ## What MIKAI is becoming
 
@@ -27,7 +27,7 @@ The v0.3 (local SQLite) and v0.2 (Supabase) implementations of both layers have 
 | Embeddings | Voyage AI voyage-3 (1024-dim) + Nomic v1.5 (768-dim, dual embedding) |
 | Sidecar API | FastAPI (Python, Docker) |
 
-Current graph state: approximately 6,990 entities, 8,056 edges, 1,158 episodes. See `docs/GRAPHITI_INTEGRATION.md` for full technical details including the scaling patch applied to `graphiti-core`.
+Current graph state: approximately 6,990 entities, 8,056 edges, 1,158 episodes. See `docs/ARCHITECTURE.md` for full technical details including the scaling patch applied to `graphiti-core` (raw research: `docs/research/graphiti-review.md`).
 
 ## Running the Graphiti stack
 

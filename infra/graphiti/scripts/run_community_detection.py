@@ -11,10 +11,8 @@ Reports:
 """
 
 import asyncio
-import json
 import logging
-import os
-import typing
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -23,79 +21,16 @@ from dotenv import load_dotenv
 env_path = Path("/Users/briancho/Desktop/MIKAI/.env.local")
 load_dotenv(env_path)
 
-from graphiti_core import Graphiti
-from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
-from graphiti_core.llm_client.config import LLMConfig, ModelSize, DEFAULT_MAX_TOKENS
-from graphiti_core.llm_client.client import Message
-from graphiti_core.embedder.voyage import VoyageAIEmbedder, VoyageAIEmbedderConfig
-from graphiti_core.cross_encoder.client import CrossEncoderClient
+# Make sibling `sidecar` package importable.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from sidecar.client import build_graphiti
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
 )
 logger = logging.getLogger("community-detection")
-
-
-class DeepSeekClient(OpenAIGenericClient):
-    """DeepSeek-compatible client that uses json_object mode instead of json_schema."""
-
-    async def _generate_response(
-        self,
-        messages: list[Message],
-        response_model: type | None = None,
-        max_tokens: int = DEFAULT_MAX_TOKENS,
-        model_size: ModelSize = ModelSize.medium,
-    ) -> dict[str, typing.Any]:
-        from openai.types.chat import ChatCompletionMessageParam
-
-        openai_messages: list[ChatCompletionMessageParam] = []
-        for m in messages:
-            m.content = self._clean_input(m.content)
-            if m.role == "user":
-                openai_messages.append({"role": "user", "content": m.content})
-            elif m.role == "system":
-                openai_messages.append({"role": "system", "content": m.content})
-
-        if response_model is not None:
-            schema = response_model.model_json_schema()
-            schema_instruction = (
-                f"\n\nYou MUST respond with valid JSON matching this exact schema:\n"
-                f"```json\n{json.dumps(schema, indent=2)}\n```\n"
-                f"Respond ONLY with the JSON object, no other text."
-            )
-            injected = False
-            for i, msg in enumerate(openai_messages):
-                if msg["role"] == "system":
-                    openai_messages[i] = {
-                        "role": "system",
-                        "content": str(msg["content"]) + schema_instruction,
-                    }
-                    injected = True
-                    break
-            if not injected:
-                openai_messages.insert(0, {"role": "system", "content": schema_instruction})
-
-        try:
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=openai_messages,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-                response_format={"type": "json_object"},
-            )
-            result = response.choices[0].message.content or "{}"
-            return json.loads(result)
-        except Exception as e:
-            logger.error(f"DeepSeek error: {e}")
-            raise
-
-
-class PassthroughReranker(CrossEncoderClient):
-    """No-op reranker — avoids OpenAI dependency."""
-
-    async def rank(self, query: str, passages: list[str]) -> list[tuple[str, float]]:
-        return [(p, 1.0 - i * 0.01) for i, p in enumerate(passages)]
 
 
 async def count_orphans_before(driver) -> int:
@@ -125,42 +60,10 @@ async def count_orphans_in_communities(driver) -> int:
 
 
 async def main():
-    deepseek_key = os.environ.get("DEEPSEEK_API_KEY")
-    voyage_key = os.environ.get("VOYAGE_API_KEY")
-
-    if not deepseek_key:
-        raise RuntimeError("DEEPSEEK_API_KEY not found in environment")
-    if not voyage_key:
-        raise RuntimeError("VOYAGE_API_KEY not found in environment")
-
-    neo4j_uri = "bolt://localhost:7687"
-    neo4j_user = "neo4j"
-    neo4j_password = "mikai-local-dev"
-
-    llm_client = DeepSeekClient(
-        config=LLMConfig(
-            api_key=deepseek_key,
-            model="deepseek-chat",
-            small_model="deepseek-chat",
-            base_url="https://api.deepseek.com",
-        ),
-        max_tokens=8192,
-    )
-
-    embedder = VoyageAIEmbedder(
-        config=VoyageAIEmbedderConfig(
-            api_key=voyage_key,
-            model="voyage-3",
-        )
-    )
-
-    graphiti = Graphiti(
-        neo4j_uri,
-        neo4j_user,
-        neo4j_password,
-        llm_client=llm_client,
-        embedder=embedder,
-        cross_encoder=PassthroughReranker(),
+    graphiti = build_graphiti(
+        neo4j_uri="bolt://localhost:7687",
+        neo4j_user="neo4j",
+        neo4j_password="mikai-local-dev",
     )
 
     try:

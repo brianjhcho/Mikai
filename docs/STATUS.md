@@ -46,14 +46,14 @@
 - **`LocalAdapter`** (ARCH-025). Fully on-device adapter. Design input: `legacy/sqlite-local` (v0.3 SQLite implementation at `b8f07ee`). Not started.
 - **L4 engine on main.** `feat/l4-testing` holds prior SQLite-era work; porting and integration pending the port extraction.
 - **Automated ingestion daemon on main.** Lives on the two `feat/ingestion-*` branches; neither has merged yet.
-- **Eval tooling for graph quality.** Open question (OPEN_QUESTIONS.md O-020).
+- **Eval tooling for graph quality.** Open question (OPEN.md O-020).
 
 ---
 
 ## Known issues
 
 - **17.6% orphan entities** in the Neo4j graph — mostly noise fragments ("A bee", "2327 storage number") or substantive-but-isolated nodes. Needs community detection pass.
-- **Extraction prompt tuned to Brian's reflective writing style** — may not generalize to other users' content (OPEN_QUESTIONS.md O-025).
+- **Extraction prompt tuned to Brian's reflective writing style** — may not generalize to other users' content (OPEN.md O-025).
 - **L4 state-classification accuracy was 18.5%** on the SQLite-era implementation. Must be re-evaluated once ported onto `L3Backend`.
 
 ---
