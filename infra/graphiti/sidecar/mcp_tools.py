@@ -77,6 +77,10 @@ def build_mcp(get_graphiti: Callable[[], Graphiti | None]) -> MCPBundle:
                 return "Graphiti not initialized"
 
             edges = await g.search(query=query, num_results=num_results)
+            logger.info(
+                "mcp_tool=search query=%r num_results=%d results=%d duration_ms=%.1f status=ok",
+                query, num_results, len(edges), (time.perf_counter() - t0) * 1000,
+            )
             if not edges:
                 return f"No results for: {query}"
 
@@ -94,11 +98,9 @@ def build_mcp(get_graphiti: Callable[[], Graphiti | None]) -> MCPBundle:
                     lines.append(f"   _Invalidated: {_iso(e.invalid_at)}_")
                 lines.append("")
 
-            result = "\n".join(lines)
-            logger.info("mcp_tool=search args=[query, num_results] duration_ms=%.1f status=ok", (time.perf_counter() - t0) * 1000)
-            return result
+            return "\n".join(lines)
         except Exception as exc:
-            logger.info("mcp_tool=search args=[query, num_results] duration_ms=%.1f status=error error=%s(%s)", (time.perf_counter() - t0) * 1000, type(exc).__name__, exc)
+            logger.info("mcp_tool=search query=%r duration_ms=%.1f status=error error=%s(%s)", query, (time.perf_counter() - t0) * 1000, type(exc).__name__, exc)
             raise
 
     @mcp.tool(
@@ -328,6 +330,10 @@ def build_mcp(get_graphiti: Callable[[], Graphiti | None]) -> MCPBundle:
                     if rows:
                         break
 
+            logger.info(
+                "mcp_tool=get_source query=%r num_results=%d results=%d duration_ms=%.1f status=ok",
+                query, num_results, len(rows), (time.perf_counter() - t0) * 1000,
+            )
             if not rows:
                 return f"No source episodes found for: {query}"
 
@@ -343,11 +349,9 @@ def build_mcp(get_graphiti: Callable[[], Graphiti | None]) -> MCPBundle:
                 lines.append(content if content else "_(empty content)_")
                 lines.append("")
 
-            output = "\n".join(lines)
-            logger.info("mcp_tool=get_source args=[query, num_results] duration_ms=%.1f status=ok", (time.perf_counter() - t0) * 1000)
-            return output
+            return "\n".join(lines)
         except Exception as exc:
-            logger.info("mcp_tool=get_source args=[query, num_results] duration_ms=%.1f status=error error=%s(%s)", (time.perf_counter() - t0) * 1000, type(exc).__name__, exc)
+            logger.info("mcp_tool=get_source query=%r duration_ms=%.1f status=error error=%s(%s)", query, (time.perf_counter() - t0) * 1000, type(exc).__name__, exc)
             raise
 
     return MCPBundle(
