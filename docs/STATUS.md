@@ -40,6 +40,7 @@
 | `feat/ingestion-mcp-client` | 3 commits ahead of main | Mode 2 (MCP client polling for Gmail, Google Calendar, Google Drive) |
 | `feat/l4-testing` | Needs rework | L4 pipeline originally written against SQLite; needs porting onto `L3Backend` port (ARCH-024) |
 | `feat/stage-4-eval-harness` | WIP, 16 commits ahead | Graph-quality eval tooling: `scripts/eval_nodes.py` (extraction-quality rater), `scripts/eval_queries.py`, baseline scorecard, `scripts/preflight.sh` demo check (OPEN.md O-020) |
+| `feat/stage-5-mcp-oauth` | WIP — code complete, pending live Claude.ai test | Bundled OAuth 2.1 AS in the sidecar (`sidecar/oauth.py`) so Claude.ai web + iPhone can add MIKAI as a Custom Connector (D-048). PKCE + DCR, password-gated consent. 193 sidecar tests pass; verified end-to-end on the public Funnel. |
 
 > Note: the branch landscape has grown past this table (`feat/phase-a/b/c-*`, `feat/stage-2-ingestion-prod`, `fix/sidecar-*`, `refactor/shared-graphiti-client`). CLAUDE.md's branch table and this section both need a reconciliation pass.
 
