@@ -1,6 +1,8 @@
 # Environment variables — never commit secrets
 .env*
 .env.local
+# …but the example template carries no secrets and should be tracked
+!.env.example
 client_secret*.json
 
 # macOS

@@ -14,10 +14,12 @@
 #   5. Sidecar container running — MCP server + FastAPI
 #   6. Sidecar /health (direct)  — desktop Claude path
 #   7. Funnel /health (public)   — iPhone Claude path
+#   8. OAuth discovery (public)  — Claude.ai connector entry point (D-048)
+#   9. /mcp auth gate (--full)   — confirms the OAuth token gate is active
 #
 # Usage:
 #   scripts/preflight.sh           # run all checks
-#   scripts/preflight.sh --full    # also do a real MCP handshake (slower)
+#   scripts/preflight.sh --full    # also probe the /mcp auth gate (slower)
 
 set -u
 
@@ -108,17 +110,27 @@ else
   fail "funnel /health (public)" "${public:-no response} — check funnel + sidecar"
 fi
 
-# 8. MCP handshake (optional, --full)
+# 8. OAuth discovery (public) — the entry point Claude.ai's connector probes
+if oauth_meta=$(curl -sS -m 5 "$FUNNEL_URL/.well-known/oauth-authorization-server" 2>/dev/null) \
+   && echo "$oauth_meta" | grep -q '"issuer"'; then
+  pass "oauth discovery (public)" "Claude.ai connector can register"
+else
+  fail "oauth discovery (public)" "no AS metadata — connector add will fail"
+fi
+
+# 9. /mcp auth gate (optional, --full)
+# With OAuth on (D-048), an unauthenticated /mcp POST must return 401. That
+# 401 is the success condition: it proves the token gate is active.
 if [[ $FULL -eq 1 ]]; then
-  mcp_body='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"preflight","version":"1"}}}'
-  if curl -sS -m 8 -N \
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -m 8 \
        -H "Accept: application/json, text/event-stream" \
        -H "Content-Type: application/json" \
        -X POST "$FUNNEL_URL/mcp" \
-       -d "$mcp_body" 2>/dev/null | grep -q '"serverInfo":{"name":"mikai"'; then
-    pass "mcp handshake (public)" "tools available to remote Claude"
+       -d '{"jsonrpc":"2.0","id":1,"method":"ping"}' 2>/dev/null)
+  if [[ "$code" == "401" ]]; then
+    pass "mcp auth gate (public)" "/mcp requires an OAuth token — gate active"
   else
-    fail "mcp handshake (public)" "initialize failed — MCP server may be wedged"
+    fail "mcp auth gate (public)" "expected 401, got ${code:-no response}"
   fi
 fi
 

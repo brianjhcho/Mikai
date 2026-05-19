@@ -912,3 +912,28 @@ Consumers depend on `sidecar.client` and `sidecar.ingest` by name. They do not r
 - The `sidecar.client` module grows past ~300 lines — likely a sign it's accumulating concerns that deserve their own module.
 - A third MCP transport arrives before the tool-logic duplication is resolved — at three transports the shared-handler refactor becomes urgent rather than deferred.
 - The test suite ratio (currently 1 test per 4 lines of `ingest.py` + `client.py`) drops materially, which would signal the split is no longer buying testability.
+
+---
+
+## D-048: Bundled OAuth 2.1 Authorization Server for the Claude.ai / Mobile Connector
+
+**Date:** 2026-05-19
+**Source:** Live connector debugging — adding MIKAI as a Claude.ai web Custom Connector fails with "Couldn't reach the MCP server" (`ofid_*`). Server-side verification confirmed the `/mcp` endpoint is fully MCP-spec-compliant (`initialize`, `tools/list`, `tools/call`, SSE GET, protocol `2025-06-18` all pass). The failure is isolated to OAuth discovery. Supersedes the interim compromise recorded in D-044 finding 4.
+
+**Decision:** The Graphiti sidecar implements a minimal, single-user OAuth 2.1 Authorization Server — PKCE (S256) + Dynamic Client Registration — co-located with the MCP endpoint, and validates bearer access tokens on `/mcp`. New module `infra/graphiti/sidecar/oauth.py`, wired into `sidecar/main.py`. Activated by `MIKAI_OAUTH_ENABLED=1` and gated by a single operator password (`MIKAI_OAUTH_PASSWORD`). When disabled, the sidecar keeps its prior behavior (open, or static `MIKAI_MCP_TOKEN` bearer); no OAuth routes or token checks are active.
+
+**Why:**
+1. **The D-044 compromise has expired.** D-044 finding 4 named OAuth 2.0 + DCR as the only auth path Claude.ai web and mobile support, and recorded `auth_required: false` as an explicit interim compromise. That compromise worked only because Claude.ai then treated OAuth-discovery 404s as non-blocking (D-044 finding 3: "retries … and succeeds"). As of 2026-05, Claude.ai's connector treats failed OAuth discovery as a hard failure. An unauthenticated server is no longer reachable from web or mobile.
+2. **It is also the first real access control.** The sidecar is currently exposed on a public Tailscale Funnel URL with no authentication — Brian's entire personal knowledge graph is queryable by anyone who has the URL. OAuth closes that, *provided* the `/authorize` consent step has a genuine credential gate. The operator password is therefore load-bearing, not decorative.
+3. **Bundled, not external.** A self-contained AS keeps the deployment dependency-free, proportionate to a single-user product. PKCE makes the public-client flow safe without a client secret.
+
+**Rejected:**
+- **External authorization server** (Auth0/WorkOS/Stytch). Less code, but adds a managed-service account and dependency for a one-user system; off-pattern for MIKAI's self-contained ethos.
+- **Static bearer token only.** Works for Claude Desktop (`mcp-remote`) and Claude Code, but Claude.ai's connector form exposes no bearer field (D-044 finding 4) — cannot reach web or mobile.
+- **Auto-approving `/authorize` consent.** Satisfies the connector protocol but provides zero security: anyone could run DCR + the code flow and mint a token against a public URL.
+- **Implementing via the `mcp` SDK's `mcp.server.auth` scaffolding.** The OAuth metadata documents must be served at the site root, not under the `/mcp` ASGI mount; hand-rolled FastAPI routes keep the sidecar framework-consistent and the emitted documents fully controlled.
+
+**Revisit if:**
+- Claude.ai adds a bearer-token field to the Custom Connector form — would allow static-token auth again and retire the AS.
+- MIKAI gains a second user — the single shared password must then become per-user credentials, at which point an external IdP becomes the proportionate choice.
+- The `LocalAdapter` (ARCH-025) ships — a fully on-device deployment has no public surface and may not need the AS at all.
