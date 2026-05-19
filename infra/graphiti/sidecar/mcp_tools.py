@@ -316,7 +316,7 @@ def build_mcp(get_graphiti: Callable[[], Graphiti | None]) -> MCPBundle:
                             node.content AS content,
                             node.source AS source,
                             node.source_description AS source_description,
-                            node.reference_time AS reference_time,
+                            node.valid_at AS reference_time,
                             score
                         ORDER BY score DESC
                         LIMIT $limit
