@@ -307,6 +307,7 @@ async def sync_apple_notes(
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     state_path: Path = STATE_PATH,
     episode_delay: float = EPISODE_DELAY_SECONDS,
+    persist_state: bool = True,
 ) -> int:
     """Sync Apple Notes whose content hash changed since last pass.
 
@@ -345,7 +346,11 @@ async def sync_apple_notes(
         if count > 1 and episode_delay > 0:
             await sleep(episode_delay)
 
-    _save_state_at(state, state_path)
+    # Never persist the checkpoint on a dry run — doing so advances the
+    # content-hash state past notes that were only *logged*, not ingested,
+    # silently skipping them on the next real pass.
+    if persist_state:
+        _save_state_at(state, state_path)
     if count:
         logger.info(f"Apple Notes: {count} note(s) ingested")
     return count
@@ -446,6 +451,7 @@ async def sync_claude_code(
     base_path: Path = CLAUDE_PROJECTS_PATH,
     state_path: Path = STATE_PATH,
     episode_delay: float = EPISODE_DELAY_SECONDS,
+    persist_state: bool = True,
 ) -> int:
     """Tail all Claude Code JSONL files; ingest any new turns since last pass."""
     code_state = state.setdefault("claude_code", {"offsets": {}})
@@ -479,7 +485,9 @@ async def sync_claude_code(
             if episode_delay > 0:
                 await sleep(episode_delay)
 
-    _save_state_at(state, state_path)
+    # Dry runs must not persist offsets — see note in sync_apple_notes.
+    if persist_state:
+        _save_state_at(state, state_path)
     if count:
         logger.info(f"Claude Code: {count} turn(s) ingested")
     return count
@@ -498,6 +506,7 @@ async def run_sync_pass(
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     base_claude_path: Path = CLAUDE_PROJECTS_PATH,
     episode_delay: float = EPISODE_DELAY_SECONDS,
+    persist_state: bool = True,
 ) -> tuple[int, int]:
     """One full pass across Apple Notes + Claude Code. Returns (notes, turns).
 
@@ -513,13 +522,13 @@ async def run_sync_pass(
         state, ingest_fn=ingest_fn, runner=osascript_runner,
         notes_fetcher=notes_fetcher,
         now=now, sleep=sleep, state_path=state_path,
-        episode_delay=episode_delay,
+        episode_delay=episode_delay, persist_state=persist_state,
     )
     code = await sync_claude_code(
         state, ingest_fn=ingest_fn, lister=jsonl_lister,
         now=now, sleep=sleep, base_path=base_claude_path,
         state_path=state_path,
-        episode_delay=episode_delay,
+        episode_delay=episode_delay, persist_state=persist_state,
     )
     return apple, code
 
@@ -612,6 +621,7 @@ async def _main_async(args: argparse.Namespace) -> None:
             ingest_fn=ingest_fn,
             episode_delay=episode_delay,
             notes_fetcher=notes_fetcher,
+            persist_state=not args.dry_run,
         )
         label = "--seed-only" if args.seed_only else "--once"
         logger.info(

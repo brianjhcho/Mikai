@@ -247,6 +247,38 @@ class TestSyncAppleNotes:
         )
         assert fake2.calls == []  # persisted dedup held across the restart
 
+    async def test_dry_run_does_not_persist_state(self, tmp_path):
+        """persist_state=False must not write the checkpoint.
+
+        Regression for the 2026-05-19 incident: a --dry-run advanced and
+        SAVED the dedup state past content it only logged, so the next real
+        pass silently skipped it. A dry pass must leave no trace on disk.
+        """
+        raw = _encode_osascript_notes([("n1", "body")])
+        state_path = tmp_path / "state.json"
+
+        fake1 = FakeIngestFn()
+        await sync.sync_apple_notes(
+            {}, ingest_fn=fake1,
+            notes_fetcher=make_legacy_fetcher(stdout=raw),
+            now=_fixed_now("2026-04-20T10:00:00+00:00"),
+            sleep=_noop_sleep, state_path=state_path,
+            persist_state=False,
+        )
+        assert len(fake1.calls) == 1
+        assert not state_path.exists()  # dry pass wrote nothing
+
+        # A real pass afterwards must still see the note as new.
+        from sidecar.ingest import load_state
+        fake2 = FakeIngestFn()
+        await sync.sync_apple_notes(
+            load_state(state_path), ingest_fn=fake2,
+            notes_fetcher=make_legacy_fetcher(stdout=raw),
+            now=_fixed_now("2026-04-20T10:00:00+00:00"),
+            sleep=_noop_sleep, state_path=state_path,
+        )
+        assert len(fake2.calls) == 1  # not skipped — the dry run left no trace
+
     async def test_blank_title_and_body_skipped(self, tmp_path):
         raw = "\x00\x01" + _encode_osascript_notes([("real", "content here")])
         fake = FakeIngestFn()
