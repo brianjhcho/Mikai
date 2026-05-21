@@ -972,3 +972,39 @@ Consumers depend on `sidecar.client` and `sidecar.ingest` by name. They do not r
 - Extraction accuracy fails to cross 4.0 after Pydantic schema + edge_type_map + prompt negatives are in place (triggers re-evaluation of LLM choice or schema design).
 - L4 needs typed signals the current edge vocabulary doesn't capture (add new edge types).
 - Bitemporal invalidation proves insufficient for handling contradictions (layer in explicit conflict resolution).
+
+---
+
+## D-050: L3Backend Port Extraction (ARCH-024 implemented)
+
+**Date:** 2026-05-21
+**Source:** Stage 7 work on `feat/stage-7-l3-port` — the implementation of the L3 port that ARCH-024 (2026-04-16) called for but didn't ship.
+
+**Decision:** Product code — sync.py, mcp_ingest.py, mcp_tools.py (HTTP MCP), mcp_server.py (stdio MCP), main.py (REST endpoints) — depends exclusively on `sidecar.l3.L3Backend`, an ABC with 11 async primitives (`ingest_episode`, `ingest_episode_bulk`, `search`, `search_nodes`, `get_node`, `expand`, `edges_between`, `history`, `get_source`, `stats`, `communities`, `close`) and 10 plain-dataclass domain types. The port lives at `sidecar/l3/port.py`. `GraphitiAdapter` (sidecar/l3/graphiti_adapter.py) is the only current implementation; it wraps graphiti-core + Neo4j + the Stage 6 typed-extraction router. A composition root, `sidecar/l3/__init__.py::make_backend()`, reads `MIKAI_L3_BACKEND` (default `"graphiti"`; `"local"` raises NotImplementedError until ARCH-025 lands).
+
+**Why:**
+1. **ARCH-024 had to be cashed out before L4 or LocalAdapter can start.** Until product code stops calling graphiti-core directly, neither the LocalAdapter (ARCH-025) nor the L4 engine (D-041) has a stable interface to depend on. Stage 6's typed extraction sat directly on top of `graphiti.add_episode()` — a port pattern documented but never enforced.
+2. **The adapter encapsulates Graphiti-specific machinery completely.** Rate limiting (DeepSeek + Voyage token buckets) and Stage 6 source-conditional extraction routing live inside `GraphitiAdapter.ingest_episode()`, not in callers. A future `LocalAdapter` makes its own choices about rate limits (none if the LLM is on-device) and extraction shape (no Pydantic kwargs to graphiti-core) without changing any product code.
+3. **Dataclasses, not Pydantic, for port domain types.** Pydantic is the right tool for I/O validation at HTTP boundaries — kept in REST endpoint models (`SearchResult`, `NodeResult`). In-process port handoffs don't need validation; dataclasses are lighter, faster to construct, and don't drag a Pydantic model registry through every call site.
+4. **The port's verb set is read-heavy and primitive-only.** Per D-041, no tension/thread/state-classification semantics leak in. The 11 verbs are the smallest set the current product code actually exercises.
+
+**Rejected:**
+- **Pydantic models for port types.** Costs more per-call construction and locks the port into the Pydantic dependency chain.
+- **Synchronous port methods.** Every current backend's I/O is async; forcing sync would require a thread-pool wrapper inside the adapter.
+- **`L3_BACKEND` env var name (per ARCH-024 prose).** Standardized on `MIKAI_L3_BACKEND` to match the `MIKAI_*` namespace.
+- **Top-level `mikai/l3/` package outside `infra/graphiti/`.** A substantially larger refactor (every script and test import would change paths); deferred until LocalAdapter actually arrives.
+- **Exposing `graphiti_core.EpisodeType` through the port.** `Episode.source_description` is the single source-routing field; adapters map it internally.
+- **Pulling extraction-schema routing (Stage 6 D-049) up into the port.** Would require the port to carry Pydantic class refs, leaking adapter conventions. Routing stays inside `GraphitiAdapter.ingest_episode()`.
+
+**Implementation rollout (four commits on `feat/stage-7-l3-port`):**
+1. `22be46b` — port + GraphitiAdapter + factory + 14 port tests.
+2. `9c67529` — sync.py + mcp_ingest.py + their tests.
+3. `505acba` — mcp_tools.py + mcp_server.py + test_mcp_tools.py rewrite.
+4. `4dca42e` — main.py REST endpoints; raw-Cypher helper deleted.
+
+After this stage, `grep -r graphiti_core infra/graphiti/sidecar/` outside `l3/graphiti_adapter.py` returns zero hits. The port boundary is enforced by absence.
+
+**Revisit if:**
+- `LocalAdapter` arrives and exposes a primitive the port doesn't currently surface. Add it with a default-`NotImplementedError` for backends that don't support it.
+- L4 engine work shows the port's 11 verbs are insufficient — likely candidates: temporal range queries, multi-hop traversals beyond single `expand()`, or write-side compensation. L4-driven, not speculative.
+- A second non-Graphiti adapter is built (e.g. an in-memory test double promoted to first-class). At that point consider moving the port to a top-level `mikai/l3/` package outside `infra/graphiti/`.
