@@ -40,9 +40,9 @@ L4 (thread/state detection, next-step inference) is a separate product layer abo
 
 | Branch | Purpose |
 |---|---|
-| `main` | Port + GraphitiAdapter live; LocalAdapter in design |
-| `feat/ingestion-automation` | Mode 1+3: filesystem watchers + drop folder |
-| `feat/ingestion-mcp-client` | Mode 2: MCP client polling for cloud sources |
+| `main` | Graphiti adapter live; typed extraction (Stage 6) + OAuth (Stage 5) + ingestion daemon (Stage 2) + eval harness (Stage 4) all landed. Port extraction + LocalAdapter still in design. |
+| `feat/ingestion-mcp-client` | Mode 2: MCP client polling for Gmail/Calendar/Drive (not yet merged) |
+| `feat/phase-b-local-expand` | Mode 1 expansion — iMessage + local files watchers (not yet merged) |
 | `feat/l4-testing` | L4 pipeline WIP (needs porting onto `L3Backend`) |
 | `legacy/sqlite-local` | Frozen at v0.3 (`b8f07ee`); design input for `LocalAdapter` |
 | `legacy/supabase` | Frozen at v0.2 (`2a0bf8c`); archival only |
@@ -50,7 +50,7 @@ L4 (thread/state detection, next-step inference) is a separate product layer abo
 
 ## Graphiti operational notes
 
-The 6,990-entity graph lives in Neo4j. graphiti-core is patched to cap candidate resolution at 50 entities and strip attributes from resolution prompts — without this patch, the LLM context overflows at scale. Patch is reproducible via `scripts/apply_graphiti_patch.py` (D-042). Full technical write-up: `docs/ARCHITECTURE.md` (raw research: `docs/research/graphiti-review.md`).
+The graph lives in Neo4j (~2,371 episodes / 9,920+ entities as of 2026-05-20). graphiti-core is patched to cap candidate resolution at 50 entities and strip attributes from resolution prompts — without this patch, the LLM context overflows at scale. Patch is reproducible via `scripts/apply_graphiti_patch.py` (D-042). Full technical write-up: `docs/ARCHITECTURE.md` (raw research: `docs/research/graphiti-review.md`).
 
 The sidecar uses a custom `DeepSeekClient` that adapts DeepSeek V3 to Graphiti's JSON-schema expectations by injecting the schema into the system prompt and using `json_object` response format.
 

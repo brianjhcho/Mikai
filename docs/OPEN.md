@@ -22,8 +22,13 @@ MCP tools historically were read-only. Claude could not record new information f
 ### [O-018] Engine-first vs. distribution-first — when does the surface decision become blocking?
 Proving the engine in isolation is the right Phase 1 call. An engine with no surface has no distribution. The trigger for when the surface decision becomes urgent is undefined. **Hard constraint (2026-03-13):** surface work is blocked on engine validation — an agent fed a weak graph produces confidently wrong outputs. Evaluation (O-020) is a hard dependency, not a nice-to-have gate.
 
-### [O-020] No evaluation methodology for extraction quality
+### [O-020] No evaluation methodology for extraction quality — **partially addressed 2026-05-21**
 The graph contains thousands of nodes. There is no way to measure whether the extraction is good. No ground truth. Informal standard: "does it feel right." Blocks Phase 1 completion and all downstream surface work. Design a minimal evaluation protocol (rate 10 nodes for accuracy + non-obviousness, compare retrieved subgraphs to manually-selected, track groundedness over 20 queries).
+
+**Progress:**
+- **Stage 4 (intrinsic raters, 2026-04-29 → 2026-05-10):** `scripts/eval_nodes.py` + `scripts/eval_queries.py` shipped with a baseline scorecard at `docs/evals/baseline-2026-04-29.md`. Entity accuracy **3.10/5 — failing** the 4.0 threshold; retrieval relevance 6.4/10 and groundedness 4.2/5 — passing. The bimodal distribution surfaced a ~30% noise cluster that drove the Stage 6 design.
+- **Stage 6 (precision/recall against hand-labeled gold set, 2026-05-21):** `eval/` directory with `seed_candidates.py`, `label.py` (keyboard CLI), and `run_l3_eval.py` reads the executable acceptance criteria in `docs/STAGE-6-TYPED-EXTRACTION-BRIEF.md`. Thresholds: entity precision ≥0.85, recall ≥0.75; edge precision ≥0.80, recall ≥0.65; noise rate ≤0.10. **Gated on Brian's 200+200 hand-labeling step** (~30–45 min keyboard time via `python eval/label.py`).
+- **Open question moving forward:** when Stage 6 labels confirm the new pipeline ≥4.3/5, re-extract the existing corpus (gated, ~$15–25, ~1 hr) and re-eval to confirm the lift on real (not synthetic) content. After that, this O-020 is fully resolved.
 
 ### [O-025] Does the extraction prompt generalize beyond Brian's writing style?
 Phase 1 validation was on Brian's corpus. Brian writes reflectively, framework-heavy, explicit about tensions. If extraction produces mostly `concept` nodes from a user who writes quick action items, the graph is useless. Blocks beta launch. Week 3 beta specifically tests this.
