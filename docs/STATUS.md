@@ -2,8 +2,8 @@
 
 > **What this file is:** The volatile state-of-the-world doc. It describes what is actually live on `main` right now — not the long-term vision (`CLAUDE.md`), not the architectural decisions (`docs/DECISIONS.md`), not the intellectual foundations (`docs/EPISTEMIC_*.md`). Update this file as main changes. If it contradicts CLAUDE.md, update CLAUDE.md only if the change is a principle, not a state.
 
-**Last meaningful update:** 2026-05-21 (Stage 2 + Stage 4 + Stage 5 + Stage 6 reconciliation pass)
-**Latest commit on main at writing:** `c0c9098` — Merge `feat/stage-5-mcp-oauth` (incl. stage-4 eval scorecards) into main
+**Last meaningful update:** 2026-05-21 (Stage 7 L3Backend port extraction landed)
+**Latest commit on main at writing:** `37a4a15` — D-050: L3Backend port extraction landed
 
 ---
 
@@ -16,6 +16,12 @@
 - **graphiti-core scaling patch** applied via `scripts/apply_graphiti_patch.py` — caps candidate resolution at 50, strips attributes from prompts (D-042)
 - **Custom `DeepSeekClient`** adapting DeepSeek V3 to Graphiti's JSON-schema expectations
 - **Voyage AI `voyage-3`** for embeddings (1024 dim)
+
+### L3 port (Stage 7, D-050)
+- **`L3Backend` ABC** at `infra/graphiti/sidecar/l3/port.py` — 11 async primitives (`ingest_episode`, `ingest_episode_bulk`, `search`, `search_nodes`, `get_node`, `expand`, `edges_between`, `history`, `get_source`, `stats`, `communities`, `close`) + 10 plain dataclass domain types
+- **`GraphitiAdapter`** at `sidecar/l3/graphiti_adapter.py` — the only current implementation; encapsulates rate limiting + Stage 6 typed-extraction routing
+- **Composition root** `sidecar.l3.make_backend()` reads `MIKAI_L3_BACKEND` (default `graphiti`; `local` raises NotImplementedError until ARCH-025 ships)
+- **Product code is port-only.** `grep -r graphiti_core infra/graphiti/sidecar/` outside `l3/graphiti_adapter.py` returns zero hits — the port boundary is enforced by absence.
 
 ### Typed extraction (Stage 6, D-049)
 - **Source-conditional Pydantic entity types** at `infra/graphiti/sidecar/extraction/{claude_thread,apple_note,gmail_message,whatsapp_day}.py` plus shared connectors in `common.py` (Person, Place, Project, Concept — identical class objects across sources so Graphiti resolution merges)
@@ -71,8 +77,7 @@
 
 ## Not yet built
 
-- **`L3Backend` port extraction** (ARCH-024). Product code still calls Graphiti directly. Port extraction is the prerequisite for `LocalAdapter` (ARCH-025).
-- **`LocalAdapter`** (ARCH-025). Fully on-device adapter. Design input: `legacy/sqlite-local`. Not started.
+- **`LocalAdapter`** (ARCH-025). Fully on-device adapter. Design input: `legacy/sqlite-local`. Now unblocked by Stage 7's port extraction (D-050) — implements the same `L3Backend` interface, selected via `MIKAI_L3_BACKEND=local`. Not started.
 - **L4 engine on main** (D-041). `feat/l4-testing` holds prior SQLite-era work; needs the port extraction + a real rewrite.
 - **Head-to-head benchmark against Claude.ai's native memory** (carry-over from the MCP eval pending memory). Was attempted 2026-04-18 with 6 MIKAI answers collected; baselines never collected. Re-feasible once typed extraction is verified.
 
