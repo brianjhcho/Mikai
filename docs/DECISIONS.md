@@ -912,3 +912,38 @@ Consumers depend on `sidecar.client` and `sidecar.ingest` by name. They do not r
 - The `sidecar.client` module grows past ~300 lines — likely a sign it's accumulating concerns that deserve their own module.
 - A third MCP transport arrives before the tool-logic duplication is resolved — at three transports the shared-handler refactor becomes urgent rather than deferred.
 - The test suite ratio (currently 1 test per 4 lines of `ingest.py` + `client.py`) drops materially, which would signal the split is no longer buying testability.
+
+---
+
+## D-049: Source-Conditional Pydantic Extraction (No Second Pass)
+**Date:** 2026-05-21
+**Source:** Stage 6 brief — L3 typed extraction quality improvement (3.10 → ≥4.3)
+**Decision:** Typing happens at extraction time via Graphiti's native `add_episode(entity_types=, edge_types=, edge_type_map=)` parameters. No second LLM pass (no Mem0-style ADD/UPDATE/DELETE/NOOP gate). No projection layer. No OWL ontology validator. Source-conditional Pydantic schemas define entity types per ingestion source (Claude threads, Apple Notes, Gmail, WhatsApp daily summaries). Every epistemic edge carries a `confidence: float` field reflecting the extraction model's certainty about the relationship.
+
+**Why:** Graphiti's entity resolution + bitemporal invalidation (valid_from, expired_at) already provide dedup and contradiction handling semantically. Replicating Mem0's ADD/UPDATE/DELETE/NOOP gate adds LLM cost and latency without manufacturer-supported benefit. Pydantic validation is sufficient to enforce schema integrity — no need for a separate OWL ontology layer. Typing at extraction time means L4 can query `edges where type=UNRESOLVED_TENSION and confidence>0.6` directly, with no post-hoc projection step.
+
+**Rejected:**
+- **Mem0-style ADD/UPDATE/DELETE/NOOP second LLM pass:** Each class (ADD, UPDATE, DELETE) requires a separate LLM invocation. We achieve the same structural outcome (marked-resolved nodes, entity merging) from Graphiti's resolution + our confidence scoring on edges. The second pass is duplicative overhead.
+- **Cognee OWL ontology validation layer:** OWL adds complexity for no gain over Pydantic. If a node doesn't conform to source-conditional schema, Pydantic validation fails at extraction time — manufacturers-supported, simpler, no separate validation loop.
+- **Separate post-extraction projection/re-classification layer:** Constraining edges at extraction time via `edge_type_map` (declaring which edge types may connect which entity types) makes projection unnecessary. L4 gets typed signals directly.
+- **Switching to GPT-4o/Sonnet for extraction LLM:** Deferred — measure first with schema + confidence scores + negative examples. If accuracy still doesn't cross 4.0, revisit LLM choice.
+- **Introducing a second vector store or embedding service:** Graphiti's existing retrieval (Voyage embeddings) is the search layer; no additional embeddings infrastructure.
+
+**Implementation scope (Stream H + supporting streams A–G):**
+1. Source-conditional Pydantic schemas: `claude_thread.py`, `apple_note.py`, `gmail_message.py`, `whatsapp_day.py` (5–15 entity types each).
+2. Shared epistemic edge types: `extraction/epistemic_edges.py` — CONTRADICTS, SUPPORTS, DEPENDS_ON, PARTIALLY_ANSWERS, UNRESOLVED_TENSION, EXTENDS (all carrying confidence).
+3. Shared `edge_type_map` declaring valid connections (e.g., Question → PARTIALLY_ANSWERS → Decision).
+4. Negative few-shot examples in extraction prompt (sourced from noise cluster: "Hearty simple creative", "folly", "The MacNabs").
+5. Query-time recency-decay scoring overlay (time-decays edge scores so fresh facts outrank stale ones).
+6. Eval suite: 200 labeled entities + 200 labeled edges, `eval/run_l3_eval.py` runner.
+
+**Success metrics:**
+- Entity precision ≥0.85, recall ≥0.75 (from labeled_entities.jsonl).
+- Edge precision ≥0.80, recall ≥0.65 (from labeled_edges.jsonl).
+- Noise rate <0.10 (extracted entities failing Pydantic validation or filtered post-hoc as garbage).
+- Kenya-coffee benchmark: Claude thread → Apple Note → Gmail → WhatsApp daily summary all land typed entities and edges in Graphiti, connected through shared Person/Place/Project nodes.
+
+**Revisit if:**
+- Extraction accuracy fails to cross 4.0 after Pydantic schema + edge_type_map + prompt negatives are in place (triggers re-evaluation of LLM choice or schema design).
+- L4 needs typed signals the current edge vocabulary doesn't capture (add new edge types).
+- Bitemporal invalidation proves insufficient for handling contradictions (layer in explicit conflict resolution).
