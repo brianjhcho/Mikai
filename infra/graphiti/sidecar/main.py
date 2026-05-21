@@ -28,48 +28,44 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from graphiti_core import Graphiti
-from graphiti_core.nodes import EpisodeType
-from graphiti_core.graphiti import RawEpisode
-from graphiti_core.search.search_config_recipes import COMBINED_HYBRID_SEARCH_RRF
-
-from sidecar.client import (
-    init_graphiti,
-    iso_or_none as _iso_or_none,
-    run_cypher as _run_cypher_on,
+from sidecar.client import iso_or_none as _iso_or_none
+from sidecar.l3 import (
+    Episode,
+    L3Backend,
+    SearchQuery,
+    make_backend,
 )
 from sidecar.mcp_tools import build_mcp
 from sidecar.recency import apply_recency_decay
-from sidecar.extraction.router import extraction_params_for as _extraction_params_for
 from sidecar.oauth import OAuthConfig, OAuthMiddleware, OAuthProvider
 
 logger = logging.getLogger("mikai-graphiti")
 logging.basicConfig(level=logging.INFO)
 
 
-# ── Graphiti client ──────────────────────────────────────────────────────────
+# ── L3 backend (ARCH-024) ────────────────────────────────────────────────────
 
-graphiti: Graphiti | None = None
+backend: L3Backend | None = None
 
-_mcp_bundle = build_mcp(lambda: graphiti)
+_mcp_bundle = build_mcp(lambda: backend)
 mcp = _mcp_bundle.mcp
 _mcp_tool_names = _mcp_bundle.tool_names
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global graphiti
-    logger.info("LLM: DeepSeek V3 | Embeddings: Voyage AI voyage-3")
-    graphiti = await init_graphiti()
+    global backend
+    logger.info("Composing L3 backend (selector: MIKAI_L3_BACKEND env var)…")
+    backend = await make_backend()
     try:
-        # init_graphiti() already runs build_indices_and_constraints().
+        # make_backend() runs build_indices_and_constraints inside GraphitiAdapter.
         async with mcp.session_manager.run():
             logger.info("MCP streamable HTTP session manager ready at /mcp")
             yield
     finally:
-        if graphiti:
-            await graphiti.close()
-            logger.info("Graphiti connection closed")
+        if backend:
+            await backend.close()
+            logger.info("L3 backend closed")
 
 
 app = FastAPI(title="MIKAI Graphiti Sidecar", version="2.0.0", lifespan=lifespan)
@@ -115,7 +111,7 @@ async def mcp_healthcheck():
     """Public smoke-test endpoint — always reachable even when /mcp requires auth."""
     return {
         "mcp": "ok",
-        "graphiti": graphiti is not None,
+        "graphiti": backend is not None,
         "tools": _mcp_tool_names,
         "auth_required": oauth.active,
         "auth_mode": (
@@ -179,136 +175,127 @@ class CommunityResult(BaseModel):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "backend": "graphiti-deepseek", "neo4j": graphiti is not None}
+    return {"status": "ok", "backend": "graphiti-deepseek", "neo4j": backend is not None}
+
+
+# ── Port → REST translation helpers ──────────────────────────────────────────
+
+
+def _edge_to_result(e) -> "SearchResult":
+    """Convert a port Edge dataclass to the REST SearchResult Pydantic model.
+
+    Field names differ where the port chose Pythonic naming (source_name) over
+    Graphiti's verbose form (source_node_name); we preserve the HTTP API.
+    """
+    return SearchResult(
+        uuid=str(e.uuid),
+        name=e.name or "",
+        fact=e.fact or "",
+        source_node_name=e.source_name,
+        target_node_name=e.target_name,
+        created_at=_iso_or_none(e.created_at),
+        valid_at=_iso_or_none(e.valid_at),
+        invalid_at=_iso_or_none(e.invalid_at),
+        expired_at=_iso_or_none(e.expired_at),
+        episodes=list(e.episodes or []),
+    )
 
 
 @app.post("/search", response_model=list[SearchResult])
 async def search(req: SearchRequest):
-    """Hybrid search via Graphiti (vec + BM25 + RRF)."""
-    if not graphiti:
-        raise HTTPException(503, "Graphiti not initialized")
+    """Hybrid search via the L3 backend (vec + BM25 + RRF on GraphitiAdapter)."""
+    if not backend:
+        raise HTTPException(503, "L3 backend not initialized")
 
-    edges = await graphiti.search(
-        query=req.query,
+    edges = await backend.search(SearchQuery(
+        text=req.query,
         group_ids=req.group_ids,
         num_results=req.num_results,
-    )
+    ))
     if req.recency_decay:
         edges = apply_recency_decay(edges, reference_time=datetime.now())
 
-    return [
-        SearchResult(
-            uuid=str(e.uuid),
-            name=e.name,
-            fact=e.fact,
-            source_node_name=getattr(e, "source_node_name", None),
-            target_node_name=getattr(e, "target_node_name", None),
-            created_at=e.created_at.isoformat() if e.created_at else None,
-            valid_at=e.valid_at.isoformat() if e.valid_at else None,
-            invalid_at=e.invalid_at.isoformat() if e.invalid_at else None,
-            expired_at=e.expired_at.isoformat() if e.expired_at else None,
-            episodes=[str(ep) for ep in (e.episodes or [])],
-        )
-        for e in edges
-    ]
+    return [_edge_to_result(e) for e in edges]
 
 
 @app.post("/episode")
 async def add_episode(req: EpisodeRequest):
-    """Add a single episode."""
-    if not graphiti:
-        raise HTTPException(503, "Graphiti not initialized")
+    """Add a single episode via the L3 backend."""
+    if not backend:
+        raise HTTPException(503, "L3 backend not initialized")
 
-    episode_type = EpisodeType(req.episode_type) if req.episode_type else EpisodeType.text
-    ref_time = datetime.fromisoformat(req.reference_time) if req.reference_time else datetime.now()
+    ref_time = (
+        datetime.fromisoformat(req.reference_time)
+        if req.reference_time else datetime.now()
+    )
 
-    result = await graphiti.add_episode(
-        name=req.source_description,
-        episode_body=req.content,
-        source=episode_type,
+    result = await backend.ingest_episode(Episode(
+        content=req.content,
         source_description=req.source_description,
         reference_time=ref_time,
         group_id=req.group_id,
-        **_extraction_params_for(req.source_description),
-    )
+        name=req.source_description,
+    ))
 
     return {
         "status": "ok",
-        "episode_id": str(result.episode.uuid) if result and result.episode else None,
-        "nodes_created": len(result.nodes) if result and result.nodes else 0,
-        "edges_created": len(result.edges) if result and result.edges else 0,
+        "episode_id": result.episode_uuid or None,
+        "nodes_created": result.entities_extracted,
+        "edges_created": result.edges_extracted,
     }
 
 
 @app.post("/episode/bulk")
 async def add_episode_bulk(req: BulkEpisodeRequest):
-    """Bulk import episodes via Graphiti's add_episode_bulk.
+    """Bulk import episodes — shared-context extraction when the backend
+    supports it (GraphitiAdapter delegates to graphiti.add_episode_bulk)."""
+    if not backend:
+        raise HTTPException(503, "L3 backend not initialized")
 
-    Processes all episodes in one batch — shared context for extraction
-    and dedup. Much cheaper than per-episode import.
-
-    Note: Skips edge invalidation (can run separately after).
-    """
-    if not graphiti:
-        raise HTTPException(503, "Graphiti not initialized")
-
-    raw_episodes = []
+    episodes: list[Episode] = []
     for ep in req.episodes:
-        ref_time = datetime.fromisoformat(ep.reference_time) if ep.reference_time else datetime.now()
-        raw_episodes.append(RawEpisode(
-            name=ep.name,
+        ref_time = (
+            datetime.fromisoformat(ep.reference_time)
+            if ep.reference_time else datetime.now()
+        )
+        episodes.append(Episode(
             content=ep.content,
-            source=EpisodeType(ep.episode_type),
             source_description=ep.source_description,
             reference_time=ref_time,
+            group_id=req.group_id,
+            name=ep.name,
         ))
 
-    logger.info(f"Bulk importing {len(raw_episodes)} episodes...")
-
-    # Derive typed-extraction params from the first episode's source_description.
-    # Bulk imports are typically homogeneous (one source per batch); if a batch
-    # mixes sources the first episode's schema is a reasonable representative and
-    # still produces better extraction than untyped.
-    bulk_source = req.episodes[0].source_description if req.episodes else "mikai-import"
-
-    result = await graphiti.add_episode_bulk(
-        bulk_episodes=raw_episodes,
-        group_id=req.group_id,
-        **_extraction_params_for(bulk_source),
+    logger.info(f"Bulk importing {len(episodes)} episodes…")
+    result = await backend.ingest_episode_bulk(episodes)
+    logger.info(
+        "Bulk import done: %d nodes, %d edges",
+        result.entities_extracted, result.edges_extracted,
     )
-
-    episode_count = len(result.episodes) if result and result.episodes else 0
-    node_count = len(result.nodes) if result and result.nodes else 0
-    edge_count = len(result.edges) if result and result.edges else 0
-    community_count = len(result.communities) if result and result.communities else 0
-
-    logger.info(f"Bulk import done: {episode_count} episodes, {node_count} nodes, {edge_count} edges, {community_count} communities")
 
     return {
         "status": "ok",
-        "episodes_created": episode_count,
-        "nodes_created": node_count,
-        "edges_created": edge_count,
-        "communities_created": community_count,
+        "episodes_created": len(episodes),
+        "nodes_created": result.entities_extracted,
+        "edges_created": result.edges_extracted,
+        # community_count is no longer returned by the port; preserved as 0
+        # for response shape compatibility. Bulk import never created
+        # communities on its own — that's a separate Graphiti pass.
+        "communities_created": 0,
     }
 
 
 @app.post("/communities", response_model=list[CommunityResult])
 async def get_communities():
-    """Get community summaries."""
-    if not graphiti:
-        raise HTTPException(503, "Graphiti not initialized")
+    """Get community summaries via the L3 backend."""
+    if not backend:
+        raise HTTPException(503, "L3 backend not initialized")
 
-    try:
-        results = await graphiti.search_(query="", config=COMBINED_HYBRID_SEARCH_RRF)
-        communities = results.communities if results.communities else []
-        return [
-            CommunityResult(uuid=str(c.uuid), name=c.name, summary=c.summary or "")
-            for c in communities
-        ]
-    except Exception as e:
-        logger.warning(f"Community fetch failed: {e}")
-        return []
+    communities = await backend.communities()
+    return [
+        CommunityResult(uuid=c.uuid, name=c.name, summary=c.summary or "")
+        for c in communities
+    ]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -386,207 +373,107 @@ class HistoryResult(BaseModel):
     superseded: list[SearchResult]
 
 
-# ── Raw Cypher helper ────────────────────────────────────────────────────────
-
-
-async def run_cypher(query: str, **params) -> list[dict]:
-    """Raise 503 if graphiti isn't ready; delegate to the shared helper."""
-    if not graphiti:
-        raise HTTPException(503, "Graphiti not initialized")
-    return await _run_cypher_on(graphiti, query, **params)
-
-
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
 
 @app.get("/stats", response_model=StatsResult)
 async def get_stats():
-    """Graph quality snapshot: entity, edge, episode, community, orphan counts."""
-    rows = await run_cypher("""
-        CALL {
-            MATCH (n:Entity) RETURN count(n) AS entity_count
-        }
-        CALL {
-            MATCH ()-[r:RELATES_TO]->() RETURN count(r) AS edge_count
-        }
-        CALL {
-            MATCH (e:Episodic) RETURN count(e) AS episode_count
-        }
-        CALL {
-            MATCH (c:Community) RETURN count(c) AS community_count
-        }
-        CALL {
-            MATCH (n:Entity)
-            WHERE NOT (n)-[:RELATES_TO]-()
-            RETURN count(n) AS orphan_count
-        }
-        RETURN entity_count, edge_count, episode_count, community_count, orphan_count
-    """)
-
-    if not rows:
-        return StatsResult(
-            entity_count=0, edge_count=0, episode_count=0,
-            community_count=0, orphan_count=0,
-        )
-
-    r = rows[0]
+    """Graph quality snapshot via the L3 backend."""
+    if not backend:
+        raise HTTPException(503, "L3 backend not initialized")
+    s = await backend.stats()
     return StatsResult(
-        entity_count=r.get("entity_count", 0),
-        edge_count=r.get("edge_count", 0),
-        episode_count=r.get("episode_count", 0),
-        community_count=r.get("community_count", 0),
-        orphan_count=r.get("orphan_count", 0),
+        entity_count=s.entities,
+        edge_count=s.edges,
+        episode_count=s.episodes,
+        community_count=s.communities,
+        orphan_count=s.orphans,
     )
 
 
 @app.post("/nodes/search", response_model=list[NodeResult])
 async def search_nodes(req: NodesSearchRequest):
-    """Node-level hybrid search.
+    """Node-level hybrid search. Distinct from /search which returns edges."""
+    if not backend:
+        raise HTTPException(503, "L3 backend not initialized")
 
-    Distinct from /search which returns edges (facts). This returns entity
-    nodes, useful when the product layer needs to seed a traversal or display
-    a list of relevant entities rather than relationships.
-    """
-    if not graphiti:
-        raise HTTPException(503, "Graphiti not initialized")
-
-    # Graphiti's search_() with a node-focused recipe returns node results in
-    # the `.nodes` field of the SearchResults object. We try to use that
-    # recipe; if unavailable in the installed graphiti-core version, fall back
-    # to the combined recipe and pull the nodes field.
-    try:
-        from graphiti_core.search.search_config_recipes import NODE_HYBRID_SEARCH_RRF
-        config = NODE_HYBRID_SEARCH_RRF
-    except ImportError:
-        config = COMBINED_HYBRID_SEARCH_RRF
-
-    results = await graphiti.search_(
-        query=req.query,
-        config=config,
+    nodes = await backend.search_nodes(SearchQuery(
+        text=req.query,
+        num_results=req.num_results,
         group_ids=req.group_ids,
-    )
-    nodes = (results.nodes or []) if results else []
-
+    ))
     return [
         NodeResult(
-            uuid=str(n.uuid),
+            uuid=n.uuid,
             name=n.name,
-            labels=list(getattr(n, "labels", []) or []),
-            summary=getattr(n, "summary", None),
-            created_at=_iso_or_none(getattr(n, "created_at", None)),
+            labels=list(n.labels or []),
+            summary=n.summary,
+            created_at=_iso_or_none(n.created_at),
         )
-        for n in nodes[: req.num_results]
+        for n in nodes
     ]
 
 
 @app.get("/nodes/{uuid}", response_model=NodeResult)
 async def get_node(uuid: str):
-    """Fetch a single entity node by UUID."""
-    rows = await run_cypher("""
-        MATCH (n:Entity {uuid: $uuid})
-        RETURN
-            n.uuid AS uuid,
-            n.name AS name,
-            labels(n) AS labels,
-            n.summary AS summary,
-            n.created_at AS created_at
-    """, uuid=uuid)
-
-    if not rows:
+    """Fetch a single entity node by UUID via the L3 backend."""
+    if not backend:
+        raise HTTPException(503, "L3 backend not initialized")
+    n = await backend.get_node(uuid)
+    if not n:
         raise HTTPException(404, f"Node {uuid} not found")
-
-    r = rows[0]
     return NodeResult(
-        uuid=r.get("uuid") or uuid,
-        name=r.get("name") or "",
-        labels=[lbl for lbl in (r.get("labels") or []) if lbl != "Entity"],
-        summary=r.get("summary"),
-        created_at=_iso_or_none(r.get("created_at")),
+        uuid=n.uuid,
+        name=n.name,
+        labels=list(n.labels or []),
+        summary=n.summary,
+        created_at=_iso_or_none(n.created_at),
+    )
+
+
+def _node_to_result(n) -> NodeResult:
+    return NodeResult(
+        uuid=n.uuid,
+        name=n.name,
+        labels=list(n.labels or []),
+        summary=n.summary,
+        created_at=_iso_or_none(n.created_at),
+    )
+
+
+def _edge_to_edge_result(e) -> EdgeResult:
+    return EdgeResult(
+        uuid=str(e.uuid),
+        source_uuid=str(e.source_uuid or ""),
+        target_uuid=str(e.target_uuid or ""),
+        source_name=e.source_name,
+        target_name=e.target_name,
+        fact=e.fact,
+        valid_at=_iso_or_none(e.valid_at),
+        invalid_at=_iso_or_none(e.invalid_at),
+        expired_at=_iso_or_none(e.expired_at),
+        episodes=list(e.episodes or []),
     )
 
 
 @app.post("/nodes/{uuid}/expand", response_model=ExpandResult)
 async def expand_node(uuid: str, req: ExpandRequest):
-    """BFS 1-hop from a node: return neighboring nodes and connecting edges.
-
-    For the product layer, this is the primitive that enables thread detection,
-    tension surfacing, and any "show me what connects to X" workflow. The L4
-    engine (when it's built) will compose multiple expansions to walk wider.
-    """
-    rows = await run_cypher("""
-        MATCH (center:Entity {uuid: $uuid})
-        OPTIONAL MATCH (center)-[r:RELATES_TO]-(neighbor:Entity)
-        WHERE ($include_invalidated OR r.expired_at IS NULL)
-        WITH center, r, neighbor
-        LIMIT $max_edges
-        RETURN
-            center.uuid AS center_uuid,
-            center.name AS center_name,
-            labels(center) AS center_labels,
-            center.summary AS center_summary,
-            center.created_at AS center_created_at,
-            neighbor.uuid AS neighbor_uuid,
-            neighbor.name AS neighbor_name,
-            labels(neighbor) AS neighbor_labels,
-            neighbor.summary AS neighbor_summary,
-            neighbor.created_at AS neighbor_created_at,
-            r.uuid AS edge_uuid,
-            startNode(r).uuid AS source_uuid,
-            endNode(r).uuid AS target_uuid,
-            startNode(r).name AS source_name,
-            endNode(r).name AS target_name,
-            r.fact AS fact,
-            r.valid_at AS valid_at,
-            r.invalid_at AS invalid_at,
-            r.expired_at AS expired_at,
-            r.episodes AS episodes
-    """, uuid=uuid, max_edges=req.max_edges, include_invalidated=req.include_invalidated)
-
-    if not rows:
+    """BFS 1-hop from a node — center + neighbors + connecting edges."""
+    if not backend:
+        raise HTTPException(503, "L3 backend not initialized")
+    try:
+        sub = await backend.expand(
+            uuid,
+            max_edges=req.max_edges,
+            include_invalidated=req.include_invalidated,
+        )
+    except KeyError:
         raise HTTPException(404, f"Node {uuid} not found")
 
-    first = rows[0]
-    center = NodeResult(
-        uuid=first.get("center_uuid") or uuid,
-        name=first.get("center_name") or "",
-        labels=[lbl for lbl in (first.get("center_labels") or []) if lbl != "Entity"],
-        summary=first.get("center_summary"),
-        created_at=_iso_or_none(first.get("center_created_at")),
-    )
-
-    nodes_by_uuid: dict[str, NodeResult] = {}
-    edges: list[EdgeResult] = []
-
-    for r in rows:
-        if not r.get("neighbor_uuid"):
-            continue
-        nuid = r["neighbor_uuid"]
-        if nuid not in nodes_by_uuid:
-            nodes_by_uuid[nuid] = NodeResult(
-                uuid=nuid,
-                name=r.get("neighbor_name") or "",
-                labels=[lbl for lbl in (r.get("neighbor_labels") or []) if lbl != "Entity"],
-                summary=r.get("neighbor_summary"),
-                created_at=_iso_or_none(r.get("neighbor_created_at")),
-            )
-        if r.get("edge_uuid"):
-            edges.append(EdgeResult(
-                uuid=str(r["edge_uuid"]),
-                source_uuid=str(r.get("source_uuid") or ""),
-                target_uuid=str(r.get("target_uuid") or ""),
-                source_name=r.get("source_name"),
-                target_name=r.get("target_name"),
-                fact=r.get("fact"),
-                valid_at=_iso_or_none(r.get("valid_at")),
-                invalid_at=_iso_or_none(r.get("invalid_at")),
-                expired_at=_iso_or_none(r.get("expired_at")),
-                episodes=[str(ep) for ep in (r.get("episodes") or [])],
-            ))
-
     return ExpandResult(
-        center=center,
-        nodes=list(nodes_by_uuid.values()),
-        edges=edges,
+        center=_node_to_result(sub.center),
+        nodes=[_node_to_result(n) for n in sub.nodes],
+        edges=[_edge_to_edge_result(e) for e in sub.edges],
     )
 
 
@@ -599,109 +486,32 @@ async def edges_between(req: EdgesBetweenRequest):
     search, or community detection), this query reveals the internal
     relationship structure of that cluster.
     """
+    if not backend:
+        raise HTTPException(503, "L3 backend not initialized")
     if not req.node_uuids:
         return []
 
-    rows = await run_cypher("""
-        MATCH (a:Entity)-[r:RELATES_TO]->(b:Entity)
-        WHERE a.uuid IN $uuids AND b.uuid IN $uuids
-            AND ($include_invalidated OR r.invalid_at IS NULL)
-            AND (
-                $as_of IS NULL
-                OR (
-                    r.valid_at <= datetime($as_of)
-                    AND (r.invalid_at IS NULL OR r.invalid_at > datetime($as_of))
-                )
-            )
-        RETURN
-            r.uuid AS uuid,
-            a.uuid AS source_uuid,
-            b.uuid AS target_uuid,
-            a.name AS source_name,
-            b.name AS target_name,
-            r.fact AS fact,
-            r.valid_at AS valid_at,
-            r.invalid_at AS invalid_at,
-            r.expired_at AS expired_at,
-            r.episodes AS episodes
-    """, uuids=req.node_uuids, include_invalidated=req.include_invalidated, as_of=req.as_of)
-
-    return [
-        EdgeResult(
-            uuid=str(r.get("uuid") or ""),
-            source_uuid=str(r.get("source_uuid") or ""),
-            target_uuid=str(r.get("target_uuid") or ""),
-            source_name=r.get("source_name"),
-            target_name=r.get("target_name"),
-            fact=r.get("fact"),
-            valid_at=_iso_or_none(r.get("valid_at")),
-            invalid_at=_iso_or_none(r.get("invalid_at")),
-            expired_at=_iso_or_none(r.get("expired_at")),
-            episodes=[str(ep) for ep in (r.get("episodes") or [])],
-        )
-        for r in rows
-    ]
+    as_of_dt = datetime.fromisoformat(req.as_of) if req.as_of else None
+    edges = await backend.edges_between(
+        req.node_uuids,
+        as_of=as_of_dt,
+        include_invalidated=req.include_invalidated,
+    )
+    return [_edge_to_edge_result(e) for e in edges]
 
 
 @app.post("/history", response_model=HistoryResult)
 async def history(req: HistoryRequest):
-    """Bitemporal point-in-time search.
-
-    Runs a hybrid search and splits results into "current" (edges valid at
-    as_of, or valid now if as_of is omitted) and "superseded" (edges that
-    were valid at some point but are now invalidated). The product layer
-    uses this to answer "what did the graph think about X on date Y" and to
-    track how beliefs have evolved.
-    """
-    if not graphiti:
-        raise HTTPException(503, "Graphiti not initialized")
-
-    edges = await graphiti.search(
-        query=req.query,
-        num_results=req.num_results * 3,  # overfetch for post-filter
-    )
+    """Bitemporal point-in-time search via the L3 backend."""
+    if not backend:
+        raise HTTPException(503, "L3 backend not initialized")
 
     as_of_dt = datetime.fromisoformat(req.as_of) if req.as_of else None
-    current: list[SearchResult] = []
-    superseded: list[SearchResult] = []
-
-    def to_result(e) -> SearchResult:
-        return SearchResult(
-            uuid=str(e.uuid),
-            name=e.name,
-            fact=e.fact,
-            source_node_name=getattr(e, "source_node_name", None),
-            target_node_name=getattr(e, "target_node_name", None),
-            created_at=_iso_or_none(e.created_at),
-            valid_at=_iso_or_none(e.valid_at),
-            invalid_at=_iso_or_none(e.invalid_at),
-            expired_at=_iso_or_none(e.expired_at),
-            episodes=[str(ep) for ep in (e.episodes or [])],
-        )
-
-    for e in edges:
-        valid_at = e.valid_at
-        invalid_at = e.invalid_at
-
-        if as_of_dt is not None:
-            # Point-in-time query: was this edge valid at as_of?
-            is_valid_at_asof = (
-                (valid_at is None or valid_at <= as_of_dt)
-                and (invalid_at is None or invalid_at > as_of_dt)
-            )
-            if is_valid_at_asof:
-                current.append(to_result(e))
-            elif invalid_at is not None and valid_at is not None and valid_at <= as_of_dt:
-                # Was valid before as_of, got invalidated before as_of
-                superseded.append(to_result(e))
-        else:
-            # No as_of: current = live edges, superseded = invalidated edges
-            if invalid_at is None:
-                current.append(to_result(e))
-            else:
-                superseded.append(to_result(e))
-
+    result = await backend.history(
+        SearchQuery(text=req.query, num_results=req.num_results),
+        as_of=as_of_dt,
+    )
     return HistoryResult(
-        current=current[: req.num_results],
-        superseded=superseded[: req.num_results],
+        current=[_edge_to_result(e) for e in result.current],
+        superseded=[_edge_to_result(e) for e in result.superseded],
     )

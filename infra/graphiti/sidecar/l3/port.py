@@ -142,6 +142,28 @@ class L3Backend(ABC):
         """Write a new episode to the graph. The adapter handles extraction,
         entity resolution, and (where applicable) bitemporal invalidation."""
 
+    async def ingest_episode_bulk(
+        self, episodes: list[Episode]
+    ) -> IngestResult:
+        """Bulk-write multiple episodes. Default loops one-at-a-time —
+        adapters with native batch support should override (GraphitiAdapter
+        delegates to graphiti.add_episode_bulk for shared-context extraction).
+
+        Returns an aggregated IngestResult summing entity / edge counts;
+        episode_uuid is "(bulk)" because there is no single owning episode.
+        """
+        nodes = 0
+        edges = 0
+        for ep in episodes:
+            r = await self.ingest_episode(ep)
+            nodes += r.entities_extracted
+            edges += r.edges_extracted
+        return IngestResult(
+            episode_uuid="(bulk)",
+            entities_extracted=nodes,
+            edges_extracted=edges,
+        )
+
     # ── Read — edges ──
 
     @abstractmethod
