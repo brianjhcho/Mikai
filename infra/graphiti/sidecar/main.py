@@ -39,6 +39,7 @@ from sidecar.client import (
     run_cypher as _run_cypher_on,
 )
 from sidecar.mcp_tools import build_mcp
+from sidecar.recency import apply_recency_decay
 
 logger = logging.getLogger("mikai-graphiti")
 logging.basicConfig(level=logging.INFO)
@@ -139,6 +140,7 @@ class SearchRequest(BaseModel):
     query: str
     group_ids: list[str] | None = None
     num_results: int = 10
+    recency_decay: bool = True
 
 
 class SearchResult(BaseModel):
@@ -199,6 +201,8 @@ async def search(req: SearchRequest):
         group_ids=req.group_ids,
         num_results=req.num_results,
     )
+    if req.recency_decay:
+        edges = apply_recency_decay(edges, reference_time=datetime.now())
 
     return [
         SearchResult(

@@ -24,6 +24,8 @@ from mcp.server.transport_security import TransportSecuritySettings
 from graphiti_core import Graphiti
 from graphiti_core.nodes import EpisodeType
 
+from sidecar.recency import apply_recency_decay
+
 logger = logging.getLogger("mikai-graphiti")
 
 
@@ -66,10 +68,13 @@ def build_mcp(get_graphiti: Callable[[], Graphiti | None]) -> MCPBundle:
         description=(
             "Search MIKAI's knowledge graph. Returns facts (edges) connecting "
             "entities, ranked by relevance via hybrid search (vector + BM25 + "
-            "reciprocal rank fusion)."
+            "reciprocal rank fusion). Pass recency_decay=false to disable "
+            "time-based re-ranking and return Graphiti's raw ordering."
         )
     )
-    async def search(query: str, num_results: int = 10) -> str:
+    async def search(
+        query: str, num_results: int = 10, recency_decay: bool = True
+    ) -> str:
         t0 = time.perf_counter()
         try:
             g = get_graphiti()
@@ -77,6 +82,8 @@ def build_mcp(get_graphiti: Callable[[], Graphiti | None]) -> MCPBundle:
                 return "Graphiti not initialized"
 
             edges = await g.search(query=query, num_results=num_results)
+            if recency_decay:
+                edges = apply_recency_decay(edges, reference_time=datetime.now())
             if not edges:
                 return f"No results for: {query}"
 
@@ -106,11 +113,15 @@ def build_mcp(get_graphiti: Callable[[], Graphiti | None]) -> MCPBundle:
             "Query how the knowledge graph looked at a specific point in time. "
             "Returns current facts and superseded (invalidated) facts separately, "
             "so you can see how beliefs have evolved. Pass as_of as an ISO datetime "
-            "(e.g. '2026-03-15T00:00:00') or omit for the current state."
+            "(e.g. '2026-03-15T00:00:00') or omit for the current state. "
+            "Pass recency_decay=false to disable time-based re-ranking."
         )
     )
     async def get_history(
-        query: str, as_of: str | None = None, num_results: int = 10
+        query: str,
+        as_of: str | None = None,
+        num_results: int = 10,
+        recency_decay: bool = True,
     ) -> str:
         t0 = time.perf_counter()
         try:
@@ -119,6 +130,8 @@ def build_mcp(get_graphiti: Callable[[], Graphiti | None]) -> MCPBundle:
                 return "Graphiti not initialized"
 
             edges = await g.search(query=query, num_results=num_results * 3)
+            if recency_decay:
+                edges = apply_recency_decay(edges, reference_time=datetime.now())
             as_of_dt = datetime.fromisoformat(as_of) if as_of else None
             current: list = []
             superseded: list = []
