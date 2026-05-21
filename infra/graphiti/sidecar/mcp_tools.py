@@ -25,6 +25,7 @@ from graphiti_core import Graphiti
 from graphiti_core.nodes import EpisodeType
 
 from sidecar.recency import apply_recency_decay
+from sidecar.extraction.prompt_negatives import get_custom_extraction_instructions
 
 logger = logging.getLogger("mikai-graphiti")
 
@@ -208,6 +209,7 @@ def build_mcp(get_graphiti: Callable[[], Graphiti | None]) -> MCPBundle:
                 source_description=source_description,
                 reference_time=datetime.now(),
                 group_id="mikai-default",
+                custom_extraction_instructions=get_custom_extraction_instructions(),
             )
 
             episode_id = str(result.episode.uuid) if result and result.episode else "?"

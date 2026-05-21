@@ -57,6 +57,7 @@ from sidecar.client import (
     iso_or_empty as _iso,
     run_cypher as _run_cypher_on,
 )
+from sidecar.extraction.prompt_negatives import get_custom_extraction_instructions
 
 logger = logging.getLogger("mikai-mcp")
 logging.basicConfig(level=logging.INFO)
@@ -304,6 +305,7 @@ async def _tool_add_note(args: dict) -> list[types.TextContent]:
         source_description=source_desc,
         reference_time=datetime.now(),
         group_id="mikai-default",
+        custom_extraction_instructions=get_custom_extraction_instructions(),
     )
 
     episode_id = str(result.episode.uuid) if result and result.episode else "?"
