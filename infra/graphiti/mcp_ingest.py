@@ -31,8 +31,7 @@ import yaml  # pyyaml>=6.0
 # Bring the sidecar package onto sys.path regardless of how this script is run.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from graphiti_core import Graphiti
-from graphiti_core.nodes import EpisodeType
+from sidecar.l3 import Episode, L3Backend, make_backend
 
 # MCP client imports — exact paths depend on installed mcp SDK version.
 # mcp>=1.0 ships these under mcp.client.*
@@ -45,13 +44,11 @@ except ImportError as _e:  # pragma: no cover
         f"Original error: {_e}"
     )
 
-from sidecar.client import init_graphiti as _init_graphiti_client
 from sidecar.ingest import (
     interpolate_tool_args,
     load_state as _load_state_at,
     save_state as _save_state_at,
 )
-from sidecar.rate_limit import bucket_for
 
 logger = logging.getLogger("mikai-mcp-ingest")
 logging.basicConfig(
@@ -70,9 +67,9 @@ STATE_PATH = MIKAI_DIR / "mcp_sync_state.json"
 # ── Graphiti initialization ──────────────────────────────────────────────────
 
 
-async def init_graphiti() -> Graphiti:
+async def init_graphiti():  # legacy name kept; returns the L3Backend now
     """Thin wrapper — delegates to the shared factory."""
-    return await _init_graphiti_client()
+    return await make_backend()
 
 
 # ── Checkpoint state ─────────────────────────────────────────────────────────
@@ -203,7 +200,7 @@ def _utc_now() -> datetime:
 async def poll_source(
     source_name: str,
     source_cfg: dict,
-    graphiti: Graphiti,
+    graphiti: L3Backend,  # name kept for diff-clarity; this is the port now
     state: dict[str, str],
     *,
     session_factory=_default_stdio_session,
@@ -263,23 +260,22 @@ async def poll_source(
         if not text or not text.strip():
             continue
 
-        await bucket_for("deepseek").acquire()
-        await bucket_for("voyage").acquire()
+        # Rate limiting + Stage-6 typed-extraction routing live inside the
+        # adapter's ingest_episode() — this loop just hands over Episodes.
         try:
-            await graphiti.add_episode(
+            await graphiti.ingest_episode(Episode(
                 name=f"{source_name}-{poll_time}",
-                episode_body=text,
-                source=EpisodeType.text,
+                content=text,
                 source_description=source_description,
                 reference_time=now(),
                 group_id=group_id,
-            )
+            ))
             items_ingested += 1
             logger.info(
                 f"[{source_name}] Ingested item {items_ingested}/{items_found}"
             )
         except Exception as e:
-            logger.error(f"[{source_name}] add_episode failed: {e}")
+            logger.error(f"[{source_name}] ingest_episode failed: {e}")
 
         # 2-second delay between add_episode calls to avoid overwhelming Neo4j.
         await sleep(2)
@@ -298,7 +294,7 @@ async def poll_source(
 # ── Scheduler ─────────────────────────────────────────────────────────────────
 
 
-async def run_once(graphiti: Graphiti, sources: dict) -> None:
+async def run_once(graphiti: L3Backend, sources: dict) -> None:
     """Poll every configured source once and exit."""
     state = load_state()
     for source_name, source_cfg in sources.items():
@@ -306,7 +302,7 @@ async def run_once(graphiti: Graphiti, sources: dict) -> None:
     logger.info("--once pass complete.")
 
 
-async def run_continuous(graphiti: Graphiti, sources: dict) -> None:
+async def run_continuous(graphiti: L3Backend, sources: dict) -> None:
     """
     Run each source on its configured schedule_minutes interval, forever.
 

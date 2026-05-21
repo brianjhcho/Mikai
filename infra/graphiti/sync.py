@@ -34,19 +34,14 @@ from typing import Any, Awaitable, Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from graphiti_core import Graphiti
-from graphiti_core.nodes import EpisodeType
-
-from sidecar.client import init_graphiti as _init_graphiti_client
+from sidecar.l3 import Episode, L3Backend, make_backend
 from sidecar.ingest import (
     load_state as _load_state_at,
     save_state as _save_state_at,
 )
-from sidecar.extraction.router import extraction_params_for as _extraction_params_for
 
 import notes_sqlite
 import permissions
-from sidecar.rate_limit import bucket_for
 
 logger = logging.getLogger("mikai-sync")
 logging.basicConfig(
@@ -107,13 +102,12 @@ def _default_jsonl_lister(base: Path) -> list[Path]:
 IngestFn = Callable[..., Awaitable[None]]
 
 
-def _make_default_ingest_fn(graphiti: Graphiti) -> IngestFn:
-    """Bind a real Graphiti instance to an IngestFn-compatible callable.
+def _make_default_ingest_fn(backend: L3Backend) -> IngestFn:
+    """Bind an L3Backend (ARCH-024) to an IngestFn-compatible callable.
 
-    Each call burns one DeepSeek (LLM extraction) and several Voyage
-    (embedding) credits. The rate limiter buckets gate both — first
-    import of a new source can produce thousands of calls in a burst,
-    which previously hit DeepSeek's 429 in minutes (O-041).
+    Rate-limiting (DeepSeek + Voyage buckets) and Stage-6 typed-extraction
+    routing now live inside GraphitiAdapter.ingest_episode — sync.py just
+    hands the backend an Episode and lets the adapter do the rest.
     """
     async def _ingest(
         *, name: str, content: str, source_description: str,
@@ -121,26 +115,21 @@ def _make_default_ingest_fn(graphiti: Graphiti) -> IngestFn:
     ) -> None:
         preview = content[:80].replace("\n", " ")
         logger.info(f"[{source_description}] ingesting: {preview!r}")
-        await bucket_for("deepseek").acquire()
-        await bucket_for("voyage").acquire()
         try:
-            result = await graphiti.add_episode(
-                name=name,
-                episode_body=content,
-                source=EpisodeType.text,
+            result = await backend.ingest_episode(Episode(
+                content=content,
                 source_description=source_description,
                 reference_time=reference_time,
                 group_id=group_id,
-                **_extraction_params_for(source_description),
-            )
-            nodes = len(result.nodes) if result and result.nodes else 0
-            edges = len(result.edges) if result and result.edges else 0
+                name=name,
+            ))
             logger.info(
                 f"[{source_description}] ingested — "
-                f"{nodes} entities, {edges} edges"
+                f"{result.entities_extracted} entities, "
+                f"{result.edges_extracted} edges"
             )
         except Exception as e:
-            logger.error(f"[{source_description}] add_episode failed: {e}")
+            logger.error(f"[{source_description}] ingest_episode failed: {e}")
     return _ingest
 
 
@@ -599,9 +588,9 @@ async def _main_async(args: argparse.Namespace) -> None:
         ingest_fn = _dry_run_ingest
         logger.info("DRY-RUN mode — no episodes will be written to Graphiti.")
     else:
-        logger.info("Initializing Graphiti...")
-        graphiti = await _init_graphiti_client()
-        ingest_fn = _make_default_ingest_fn(graphiti)
+        logger.info("Initializing L3 backend...")
+        backend = await make_backend()
+        ingest_fn = _make_default_ingest_fn(backend)
 
     notes_fetcher: NotesFetcher | None = None
     if args.legacy_applescript:

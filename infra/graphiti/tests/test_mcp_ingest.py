@@ -73,17 +73,33 @@ def make_session_factory(
 
 
 class FakeGraphiti:
-    """Records every add_episode call; can be rigged to fail on specific indexes."""
+    """Records every ingest_episode call; can be rigged to fail on specific indexes.
+
+    Post-ARCH-024 this is a stand-in for an `L3Backend`. We capture the
+    Episode fields into the same dict shape pre-port tests assert against
+    so the existing assertions (`add_calls[0]["episode_body"]`, etc.)
+    keep reading naturally.
+    """
 
     def __init__(self, fail_on: set[int] | None = None):
         self.add_calls: list[dict] = []
         self._fail_on = fail_on or set()
 
-    async def add_episode(self, **kwargs):
+    async def ingest_episode(self, episode):
+        # sidecar.l3.Episode — translate to the legacy add_episode dict shape
+        # so test assertions don't need rewriting.
+        from sidecar.l3 import IngestResult
         idx = len(self.add_calls)
-        self.add_calls.append(kwargs)
+        self.add_calls.append({
+            "name": episode.name or episode.source_description,
+            "episode_body": episode.content,
+            "source_description": episode.source_description,
+            "reference_time": episode.reference_time,
+            "group_id": episode.group_id,
+        })
         if idx in self._fail_on:
             raise RuntimeError(f"simulated failure on call {idx}")
+        return IngestResult(episode_uuid=f"fake-{idx}", entities_extracted=0, edges_extracted=0)
 
 
 async def _noop_sleep(_seconds: float) -> None:
