@@ -2,8 +2,8 @@
 
 > **What this file is:** The volatile state-of-the-world doc. It describes what is actually live on `main` right now — not the long-term vision (`CLAUDE.md`), not the architectural decisions (`docs/DECISIONS.md`), not the intellectual foundations (`docs/EPISTEMIC_*.md`). Update this file as main changes. If it contradicts CLAUDE.md, update CLAUDE.md only if the change is a principle, not a state.
 
-**Last meaningful update:** 2026-04-16 (docs-refactor pass 1)
-**Latest commit on main at writing:** `828c3cc` — ARCH-023 (hybrid ingestion architecture)
+**Last meaningful update:** 2026-05-19 (status refresh — live graph numbers, `get_source` on main)
+**Latest commit on main at writing:** `030525b` — Merge `mcp-layer`: `get_source` tool (D-045)
 
 ---
 
@@ -12,7 +12,7 @@
 ### L3 — Knowledge graph (Graphiti adapter)
 - **Graphiti sidecar** running as FastAPI at `http://localhost:8100` (infra/graphiti/sidecar/)
 - **Neo4j 5.26** via docker-compose (infra/graphiti/docker-compose.yml)
-- **6,990 entities** imported from 1,102 Apple Notes + 87 Claude threads (partial)
+- **9,920 entities / 1,875 episodes** in Neo4j — 1,108 `text` episodes (Apple Notes) + 767 `message` episodes (Claude conversations); 50 communities detected
 - **graphiti-core scaling patch** applied via `scripts/apply_graphiti_patch.py` — caps candidate resolution at 50, strips attributes from prompts (D-042)
 - **Custom `DeepSeekClient`** adapting DeepSeek V3 to Graphiti's JSON-schema expectations
 - **Voyage AI `voyage-3`** for embeddings (1024 dim)
@@ -20,7 +20,9 @@
 ### MCP server
 - **Python MCP server** at `infra/graphiti/sidecar/mcp_server.py` (D-040)
 - Uses graphiti-core **in-process** (no HTTP hop to sidecar for L3 calls)
+- **5 tools:** `search`, `get_history`, `get_stats`, `add_note`, `get_source` — the last returns raw source-episode prose, closing the edges-vs-episodes gap (D-045)
 - Exposes graph primitives only — tension/thread detection deferred to L4 (D-041)
+- Reached by Claude Desktop (direct, `localhost:8100`) and Claude Web/iPhone (public Tailscale Funnel URL); `scripts/preflight.sh` checks the full chain
 
 ### Repo shape
 - `infra/graphiti/` — the only live infrastructure directory on main
@@ -37,6 +39,10 @@
 | `feat/ingestion-automation` | WIP | Mode 1 (filesystem watchers via `watchdog` for Apple Notes, Claude Code) + Mode 3 (drop folder `~/.mikai/imports/`) |
 | `feat/ingestion-mcp-client` | 3 commits ahead of main | Mode 2 (MCP client polling for Gmail, Google Calendar, Google Drive) |
 | `feat/l4-testing` | Needs rework | L4 pipeline originally written against SQLite; needs porting onto `L3Backend` port (ARCH-024) |
+| `feat/stage-4-eval-harness` | WIP, 16 commits ahead | Graph-quality eval tooling: `scripts/eval_nodes.py` (extraction-quality rater), `scripts/eval_queries.py`, baseline scorecard, `scripts/preflight.sh` demo check (OPEN.md O-020) |
+| `feat/stage-5-mcp-oauth` | WIP — code complete, pending live Claude.ai test | Bundled OAuth 2.1 AS in the sidecar (`sidecar/oauth.py`) so Claude.ai web + iPhone can add MIKAI as a Custom Connector (D-048). PKCE + DCR, password-gated consent. 193 sidecar tests pass; verified end-to-end on the public Funnel. |
+
+> Note: the branch landscape has grown past this table (`feat/phase-a/b/c-*`, `feat/stage-2-ingestion-prod`, `fix/sidecar-*`, `refactor/shared-graphiti-client`). CLAUDE.md's branch table and this section both need a reconciliation pass.
 
 ---
 
@@ -46,13 +52,13 @@
 - **`LocalAdapter`** (ARCH-025). Fully on-device adapter. Design input: `legacy/sqlite-local` (v0.3 SQLite implementation at `b8f07ee`). Not started.
 - **L4 engine on main.** `feat/l4-testing` holds prior SQLite-era work; porting and integration pending the port extraction.
 - **Automated ingestion daemon on main.** Lives on the two `feat/ingestion-*` branches; neither has merged yet.
-- **Eval tooling for graph quality.** Open question (OPEN.md O-020).
+- **Eval tooling for graph quality on main.** Built on `feat/stage-4-eval-harness` (extraction + query raters, baseline scorecard) but not yet merged. Addresses OPEN.md O-020.
 
 ---
 
 ## Known issues
 
-- **17.6% orphan entities** in the Neo4j graph — mostly noise fragments ("A bee", "2327 storage number") or substantive-but-isolated nodes. Needs community detection pass.
+- **15.1% entity-isolated** in the Neo4j graph — 1,493 of 9,920 entities have no entity-to-entity `RELATES_TO` edge (down from 17.6% at the 6,990-entity mark). Mostly noise fragments ("A bee", "2327 storage number") or substantive-but-isolated nodes. 50 communities have been detected; isolated entities persist regardless.
 - **Extraction prompt tuned to Brian's reflective writing style** — may not generalize to other users' content (OPEN.md O-025).
 - **L4 state-classification accuracy was 18.5%** on the SQLite-era implementation. Must be re-evaluated once ported onto `L3Backend`.
 

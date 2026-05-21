@@ -37,8 +37,14 @@ services:
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
       - MIKAI_MCP_TOKEN=${MIKAI_MCP_TOKEN:-}
       - MIKAI_DB_PATH=/data/mikai.db
+      # OAuth 2.1 connector auth (D-048). Unset MIKAI_OAUTH_ENABLED = off.
+      - MIKAI_OAUTH_ENABLED=${MIKAI_OAUTH_ENABLED:-}
+      - MIKAI_OAUTH_PASSWORD=${MIKAI_OAUTH_PASSWORD:-}
+      - MIKAI_OAUTH_ISSUER=${MIKAI_OAUTH_ISSUER:-}
+      - MIKAI_OAUTH_STATE=/var/lib/mikai/oauth_state.json
     volumes:
       - ${HOME}/.mikai:/data:ro
+      - oauth_data:/var/lib/mikai
     depends_on:
       neo4j:
         condition: service_healthy
@@ -46,3 +52,4 @@ services:
 volumes:
   neo4j_data:
   neo4j_logs:
+  oauth_data:

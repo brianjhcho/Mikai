@@ -41,6 +41,7 @@ from sidecar.client import (
 from sidecar.mcp_tools import build_mcp
 from sidecar.recency import apply_recency_decay
 from sidecar.extraction.router import extraction_params_for as _extraction_params_for
+from sidecar.oauth import OAuthConfig, OAuthMiddleware, OAuthProvider
 
 logger = logging.getLogger("mikai-graphiti")
 logging.basicConfig(level=logging.INFO)
@@ -75,30 +76,15 @@ app = FastAPI(title="MIKAI Graphiti Sidecar", version="2.0.0", lifespan=lifespan
 app.mount("/mcp", mcp.streamable_http_app())
 
 
-class MCPBearerAuthMiddleware(BaseHTTPMiddleware):
-    """Gate /mcp requests with bearer token auth when MIKAI_MCP_TOKEN is set.
-
-    If MIKAI_MCP_TOKEN is unset, all /mcp requests pass through (localhost-solo mode).
-    REST endpoints (anything not under /mcp) are never touched.
-    """
-
-    async def dispatch(self, request: Request, call_next):
-        path = request.url.path
-        if not (path == "/mcp" or path.startswith("/mcp/")):
-            return await call_next(request)
-
-        token = os.environ.get("MIKAI_MCP_TOKEN")
-        if not token:
-            return await call_next(request)
-
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header == f"Bearer {token}":
-            return await call_next(request)
-
-        return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
-
-
-app.add_middleware(MCPBearerAuthMiddleware)
+# OAuth 2.1 Authorization Server + /mcp token gate (D-048). When
+# MIKAI_OAUTH_ENABLED is unset the sidecar keeps its prior behavior:
+# open, or static MIKAI_MCP_TOKEN bearer auth. OAuth routes are served at
+# the site root (not under the /mcp mount) so discovery works.
+oauth = OAuthProvider(OAuthConfig.from_env())
+if oauth.enabled:
+    app.include_router(oauth.router())
+    logger.info("OAuth 2.1 enabled — /mcp requires a bearer access token")
+app.add_middleware(OAuthMiddleware, provider=oauth)
 
 
 class MCPTrailingSlashMiddleware:
@@ -131,7 +117,12 @@ async def mcp_healthcheck():
         "mcp": "ok",
         "graphiti": graphiti is not None,
         "tools": _mcp_tool_names,
-        "auth_required": bool(os.environ.get("MIKAI_MCP_TOKEN")),
+        "auth_required": oauth.active,
+        "auth_mode": (
+            "oauth" if oauth.enabled
+            else "static-token" if oauth.cfg.static_token
+            else "open"
+        ),
     }
 
 
