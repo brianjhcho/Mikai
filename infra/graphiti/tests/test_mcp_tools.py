@@ -2,11 +2,12 @@
 Tests for the four MCP tool handlers exposed by sidecar/mcp_server.py.
 
 These handlers are the surface Claude Desktop calls into. Bugs here show up
-as malformed tool responses, silent "Graphiti not initialized" answers, or
+as malformed tool responses, silent "L3 backend not initialized" answers, or
 dropped data — all of which are hard to notice without a test.
 
-The real graphiti client requires Neo4j + DeepSeek + Voyage credentials. We
-replace it with a small fake object that records the calls each tool made.
+Post-ARCH-024 the tools call an `L3Backend`, not graphiti-core directly. We
+replace the backend with a small fake that records every call the tools
+made.
 """
 
 from __future__ import annotations
@@ -85,53 +86,128 @@ _install_mcp_stub()
 from sidecar import mcp_server  # noqa: E402  (after stub is installed)
 
 
-# ── Fake Graphiti ────────────────────────────────────────────────────────────
+# ── Fake L3 backend (port-shaped) ────────────────────────────────────────────
 
 
-@dataclass
-class _FakeEdge:
-    """Shape-compatible with what graphiti.search returns inside sidecar."""
-    uuid: str = "edge-1"
-    name: str = "edge-1"
-    fact: str | None = "Brian writes code"
-    source_node_name: str | None = "Brian"
-    target_node_name: str | None = "code"
-    valid_at: datetime | None = None
-    invalid_at: datetime | None = None
-    created_at: datetime | None = None
-    expired_at: datetime | None = None
-    episodes: list = field(default_factory=list)
+from sidecar.l3 import Edge as _PortEdge, GraphStats, HistoryResult, IngestResult
 
 
-@dataclass
-class _FakeEpisode:
-    uuid: str = "episode-1"
-
-
-@dataclass
-class _FakeAddResult:
-    episode: _FakeEpisode = field(default_factory=_FakeEpisode)
-    nodes: list = field(default_factory=list)
-    edges: list = field(default_factory=list)
+def _FakeEdge(
+    *,
+    uuid: str = "edge-1",
+    name: str = "RELATES_TO",
+    fact: str | None = "Brian writes code",
+    source_node_name: str | None = "Brian",  # legacy kwarg name, preserved
+    target_node_name: str | None = "code",
+    valid_at: datetime | None = None,
+    invalid_at: datetime | None = None,
+    created_at: datetime | None = None,
+    expired_at: datetime | None = None,
+    episodes: list | None = None,
+) -> _PortEdge:
+    """Construct a port `Edge`, accepting the legacy `source_node_name` /
+    `target_node_name` kwargs for backward-compat with existing test bodies."""
+    return _PortEdge(
+        uuid=uuid,
+        source_uuid="src",
+        target_uuid="tgt",
+        source_name=source_node_name,
+        target_name=target_node_name,
+        name=name,
+        fact=fact,
+        valid_at=valid_at,
+        invalid_at=invalid_at,
+        expired_at=expired_at,
+        created_at=created_at,
+        episodes=list(episodes or []),
+    )
 
 
 class FakeGraphiti:
-    """Records every call the tool handlers make against graphiti."""
+    """Port-shaped fake of an `L3Backend`. Records every tool-driven call.
 
-    def __init__(self, *, search_edges: list | None = None,
-                 add_result: _FakeAddResult | None = None):
+    Name kept as `FakeGraphiti` to minimise test-body churn during the
+    ARCH-024 refactor — the implementation now satisfies L3Backend, not
+    the graphiti-core interface.
+    """
+
+    def __init__(
+        self,
+        *,
+        search_edges: list | None = None,
+        ingest_result: IngestResult | None = None,
+    ):
         self._search_edges = search_edges or []
-        self._add_result = add_result or _FakeAddResult()
+        self._ingest_result = ingest_result or IngestResult(
+            episode_uuid="episode-1",
+            entities_extracted=0,
+            edges_extracted=0,
+        )
         self.search_calls: list[dict] = []
+        # Maintained for older assertions that look at add_calls[i]["episode_body"]
         self.add_calls: list[dict] = []
+        # New port-shaped record (preferred for new tests)
+        self.ingest_calls: list[dict] = []
 
-    async def search(self, *, query, num_results=10, **_kw):
-        self.search_calls.append({"query": query, "num_results": num_results})
-        return self._search_edges
+    async def search(self, query):
+        self.search_calls.append(
+            {"query": query.text, "num_results": query.num_results}
+        )
+        return list(self._search_edges)
 
-    async def add_episode(self, **kwargs):
-        self.add_calls.append(kwargs)
-        return self._add_result
+    async def history(self, query, as_of=None):
+        edges = list(self._search_edges)
+        current = [e for e in edges if e.invalid_at is None]
+        superseded = [e for e in edges if e.invalid_at is not None]
+        if as_of is not None:
+            current = [
+                e for e in edges
+                if (e.valid_at is None or e.valid_at <= as_of)
+                and (e.invalid_at is None or e.invalid_at > as_of)
+            ]
+            superseded = [
+                e for e in edges
+                if e.invalid_at is not None
+                and (e.valid_at is None or e.valid_at <= as_of)
+                and e.invalid_at <= as_of
+            ]
+        return HistoryResult(
+            current=current[: query.num_results],
+            superseded=superseded[: query.num_results],
+        )
+
+    async def ingest_episode(self, episode):
+        # Record under both the legacy and new shapes for assertion flexibility.
+        self.ingest_calls.append({
+            "name": episode.name,
+            "content": episode.content,
+            "source_description": episode.source_description,
+            "reference_time": episode.reference_time,
+            "group_id": episode.group_id,
+        })
+        self.add_calls.append({
+            "name": episode.name,
+            "episode_body": episode.content,
+            "source_description": episode.source_description,
+            "reference_time": episode.reference_time,
+            "group_id": episode.group_id,
+        })
+        return self._ingest_result
+
+    # Used by mcp_server._tool_get_stats. Override per-test via set_stats().
+    _stats: GraphStats = GraphStats(0, 0, 0, 0, 0)
+
+    def set_stats(self, **kwargs):
+        self._stats = GraphStats(
+            entities=kwargs.get("entities", 0),
+            edges=kwargs.get("edges", 0),
+            episodes=kwargs.get("episodes", 0),
+            communities=kwargs.get("communities", 0),
+            orphans=kwargs.get("orphans", 0),
+        )
+
+    async def stats(self):
+        return self._stats
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -139,9 +215,9 @@ class FakeGraphiti:
 
 @pytest.fixture
 def install_graphiti(monkeypatch):
-    """Swap in a FakeGraphiti as the module-level `graphiti` global."""
+    """Swap in a FakeGraphiti as the module-level `backend` global."""
     def _install(fake: FakeGraphiti) -> FakeGraphiti:
-        monkeypatch.setattr(mcp_server, "graphiti", fake)
+        monkeypatch.setattr(mcp_server, "backend", fake)
         return fake
     return _install
 
@@ -151,7 +227,7 @@ def install_graphiti(monkeypatch):
 
 class TestSearchTool:
     async def test_returns_not_initialized_when_graphiti_is_none(self, monkeypatch):
-        monkeypatch.setattr(mcp_server, "graphiti", None)
+        monkeypatch.setattr(mcp_server, "backend", None)
         result = await mcp_server._tool_search({"query": "anything"})
         assert len(result) == 1
         assert "not initialized" in result[0].text.lower()
@@ -201,7 +277,7 @@ class TestSearchTool:
 
 class TestHistoryTool:
     async def test_no_graphiti_returns_error(self, monkeypatch):
-        monkeypatch.setattr(mcp_server, "graphiti", None)
+        monkeypatch.setattr(mcp_server, "backend", None)
         result = await mcp_server._tool_get_history({"query": "q"})
         assert "not initialized" in result[0].text.lower()
 
@@ -269,12 +345,11 @@ class TestAddNoteTool:
         assert fake.add_calls == []
 
     async def test_persists_content_and_reports_counts(self, install_graphiti):
-        add_result = _FakeAddResult(
-            episode=_FakeEpisode(uuid="ep-abc"),
-            nodes=[object(), object(), object()],
-            edges=[object(), object()],
-        )
-        fake = install_graphiti(FakeGraphiti(add_result=add_result))
+        fake = install_graphiti(FakeGraphiti(ingest_result=IngestResult(
+            episode_uuid="ep-abc",
+            entities_extracted=3,
+            edges_extracted=2,
+        )))
         result = await mcp_server._tool_add_note({
             "content": "Hello, this is a real note.",
             "source_description": "unit-test",
@@ -293,7 +368,7 @@ class TestAddNoteTool:
         assert fake.add_calls[0]["source_description"] == "claude-conversation"
 
     async def test_no_graphiti_returns_error(self, monkeypatch):
-        monkeypatch.setattr(mcp_server, "graphiti", None)
+        monkeypatch.setattr(mcp_server, "backend", None)
         result = await mcp_server._tool_add_note({"content": "anything"})
         assert "not initialized" in result[0].text.lower()
 
@@ -302,21 +377,12 @@ class TestAddNoteTool:
 
 
 class TestStatsTool:
-    async def test_renders_counts_as_markdown_table(self, monkeypatch, install_graphiti):
-        # The stats tool runs a Cypher query via run_cypher(). Stub that out.
-        install_graphiti(FakeGraphiti())  # graphiti non-None
-
-        async def fake_run_cypher(_query, **_kwargs):
-            return [{
-                "entity_count": 6990,
-                "edge_count": 12345,
-                "episode_count": 999,
-                "community_count": 42,
-                "orphan_count": 350,
-            }]
-
-        monkeypatch.setattr(mcp_server, "run_cypher", fake_run_cypher)
-
+    async def test_renders_counts_as_markdown_table(self, install_graphiti):
+        fake = install_graphiti(FakeGraphiti())
+        fake.set_stats(
+            entities=6990, edges=12345, episodes=999,
+            communities=42, orphans=350,
+        )
         result = await mcp_server._tool_get_stats()
         text = result[0].text
         assert "6,990" in text
@@ -326,27 +392,10 @@ class TestStatsTool:
         # Orphan percentage: 350/6990 ≈ 5.0%
         assert "5.0" in text
 
-    async def test_handles_empty_cypher_response(self, monkeypatch, install_graphiti):
+    async def test_handles_zero_entity_edge_case(self, install_graphiti):
+        # Default FakeGraphiti.stats() returns GraphStats(0, 0, 0, 0, 0);
+        # the 0/0 orphan-percent path must not raise.
         install_graphiti(FakeGraphiti())
-
-        async def fake_run_cypher(*_a, **_kw):
-            return []
-
-        monkeypatch.setattr(mcp_server, "run_cypher", fake_run_cypher)
-        result = await mcp_server._tool_get_stats()
-        assert "Could not fetch" in result[0].text
-
-    async def test_handles_zero_entity_edge_case(self, monkeypatch, install_graphiti):
-        install_graphiti(FakeGraphiti())
-
-        async def fake_run_cypher(*_a, **_kw):
-            return [{
-                "entity_count": 0, "edge_count": 0, "episode_count": 0,
-                "community_count": 0, "orphan_count": 0,
-            }]
-
-        monkeypatch.setattr(mcp_server, "run_cypher", fake_run_cypher)
-        # 0/0 must not raise.
         result = await mcp_server._tool_get_stats()
         assert "0" in result[0].text
 

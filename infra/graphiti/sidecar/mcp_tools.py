@@ -1,17 +1,19 @@
 """MIKAI L3 MCP tools — FastMCP wrapper mounted inside the sidecar FastAPI app.
 
-Exposes four L3-only tools backed by the same Graphiti singleton the REST
-sidecar uses:
-  search       — Hybrid search (vec + BM25 + RRF) over the knowledge graph
+Exposes five L3-only tools backed by the L3Backend port (ARCH-024):
+  search       — Hybrid edge search (vec + BM25 + RRF), with recency decay
   get_history  — Bitemporal point-in-time query with current/superseded split
-  add_note     — Save an insight as a Graphiti episode
+  add_note     — Save an insight as a new episode
   get_stats    — Graph quality snapshot (entity/edge/episode/community/orphan)
+  get_source   — Raw source-episode prose for a query (D-045)
 
 No L4 tools (tensions, threads, brief, next_steps) per D-041 — those land on
 the feat/l4-engine branch once product semantics are settled.
 
-The tools read Graphiti via a getter closure passed in at construction. This
-avoids circular imports between main.py (owns the singleton) and this module.
+The tools read the backend via a getter closure passed in at construction.
+This avoids circular imports between main.py (owns the singleton) and this
+module, and keeps mcp_tools agnostic to which adapter is plugged in
+(Graphiti today, LocalAdapter eventually per ARCH-025).
 """
 
 import logging
@@ -21,11 +23,9 @@ from typing import Callable, NamedTuple
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
-from graphiti_core import Graphiti
-from graphiti_core.nodes import EpisodeType
 
+from sidecar.l3 import Episode, L3Backend, SearchQuery
 from sidecar.recency import apply_recency_decay
-from sidecar.extraction.router import extraction_params_for as _extraction_params_for
 
 logger = logging.getLogger("mikai-graphiti")
 
@@ -46,8 +46,8 @@ def _iso(v) -> str:
         return str(v)
 
 
-def build_mcp(get_graphiti: Callable[[], Graphiti | None]) -> MCPBundle:
-    """Construct a FastMCP app bound to the sidecar's Graphiti singleton.
+def build_mcp(get_backend: Callable[[], L3Backend | None]) -> MCPBundle:
+    """Construct a FastMCP app bound to the sidecar's L3Backend singleton.
 
     The returned instance exposes .streamable_http_app() for ASGI mount.
     streamable_http_path is set to "/" so mounting at "/mcp" yields the
@@ -78,11 +78,13 @@ def build_mcp(get_graphiti: Callable[[], Graphiti | None]) -> MCPBundle:
     ) -> str:
         t0 = time.perf_counter()
         try:
-            g = get_graphiti()
-            if not g:
-                return "Graphiti not initialized"
+            backend = get_backend()
+            if not backend:
+                return "L3 backend not initialized"
 
-            edges = await g.search(query=query, num_results=num_results)
+            edges = await backend.search(
+                SearchQuery(text=query, num_results=num_results)
+            )
             if recency_decay:
                 edges = apply_recency_decay(edges, reference_time=datetime.now())
             logger.info(
@@ -94,8 +96,8 @@ def build_mcp(get_graphiti: Callable[[], Graphiti | None]) -> MCPBundle:
 
             lines = [f"## Search results for: {query}\n"]
             for i, e in enumerate(edges, 1):
-                src = getattr(e, "source_node_name", None) or "?"
-                tgt = getattr(e, "target_node_name", None) or "?"
+                src = e.source_name or "?"
+                tgt = e.target_name or "?"
                 fact = e.fact or "(no fact text)"
                 valid = _iso(e.valid_at)
                 lines.append(f"**{i}.** {src} → {tgt}")
@@ -128,49 +130,41 @@ def build_mcp(get_graphiti: Callable[[], Graphiti | None]) -> MCPBundle:
     ) -> str:
         t0 = time.perf_counter()
         try:
-            g = get_graphiti()
-            if not g:
-                return "Graphiti not initialized"
+            backend = get_backend()
+            if not backend:
+                return "L3 backend not initialized"
 
-            edges = await g.search(query=query, num_results=num_results * 3)
-            if recency_decay:
-                edges = apply_recency_decay(edges, reference_time=datetime.now())
             as_of_dt = datetime.fromisoformat(as_of) if as_of else None
-            current: list = []
-            superseded: list = []
-
-            for e in edges:
-                valid_at = e.valid_at
-                invalid_at = e.invalid_at
-
-                if as_of_dt is not None:
-                    is_valid = (valid_at is None or valid_at <= as_of_dt) and (
-                        invalid_at is None or invalid_at > as_of_dt
-                    )
-                    if is_valid:
-                        current.append(e)
-                    elif invalid_at is not None and (
-                        valid_at is None or valid_at <= as_of_dt
-                    ):
-                        superseded.append(e)
-                else:
-                    (current if invalid_at is None else superseded).append(e)
+            history = await backend.history(
+                SearchQuery(text=query, num_results=num_results),
+                as_of=as_of_dt,
+            )
+            if recency_decay:
+                history_current = apply_recency_decay(
+                    history.current, reference_time=datetime.now()
+                )
+                history_superseded = apply_recency_decay(
+                    history.superseded, reference_time=datetime.now()
+                )
+            else:
+                history_current = history.current
+                history_superseded = history.superseded
 
             lines: list[str] = []
             timestamp_label = f" (as of {as_of})" if as_of else ""
 
-            if current[:num_results]:
+            if history_current[:num_results]:
                 lines.append(f"## Current facts{timestamp_label}\n")
-                for e in current[:num_results]:
-                    src = getattr(e, "source_node_name", None) or "?"
-                    tgt = getattr(e, "target_node_name", None) or "?"
+                for e in history_current[:num_results]:
+                    src = e.source_name or "?"
+                    tgt = e.target_name or "?"
                     lines.append(f"- **{src} → {tgt}**: {e.fact or '(no fact)'}")
 
-            if superseded[:num_results]:
+            if history_superseded[:num_results]:
                 lines.append(f"\n## Superseded facts{timestamp_label}\n")
-                for e in superseded[:num_results]:
-                    src = getattr(e, "source_node_name", None) or "?"
-                    tgt = getattr(e, "target_node_name", None) or "?"
+                for e in history_superseded[:num_results]:
+                    src = e.source_name or "?"
+                    tgt = e.target_name or "?"
                     lines.append(
                         f"- ~~{src} → {tgt}: {e.fact or '(no fact)'}~~ "
                         f"_(invalidated {_iso(e.invalid_at)})_"
@@ -197,32 +191,26 @@ def build_mcp(get_graphiti: Callable[[], Graphiti | None]) -> MCPBundle:
     ) -> str:
         t0 = time.perf_counter()
         try:
-            g = get_graphiti()
-            if not g:
-                return "Graphiti not initialized"
+            backend = get_backend()
+            if not backend:
+                return "L3 backend not initialized"
 
             if not content.strip():
                 return "Empty note — nothing saved."
 
-            result = await g.add_episode(
-                name=source_description,
-                episode_body=content,
-                source=EpisodeType.text,
+            result = await backend.ingest_episode(Episode(
+                content=content,
                 source_description=source_description,
                 reference_time=datetime.now(),
                 group_id="mikai-default",
-                **_extraction_params_for(source_description),
-            )
-
-            episode_id = str(result.episode.uuid) if result and result.episode else "?"
-            nodes = len(result.nodes) if result and result.nodes else 0
-            edges = len(result.edges) if result and result.edges else 0
+                name=source_description,
+            ))
 
             output = (
                 f"Saved to knowledge graph.\n"
-                f"- Episode: {episode_id}\n"
-                f"- Entities extracted: {nodes}\n"
-                f"- Relationships created: {edges}"
+                f"- Episode: {result.episode_uuid or '?'}\n"
+                f"- Entities extracted: {result.entities_extracted}\n"
+                f"- Relationships created: {result.edges_extracted}"
             )
             logger.info("mcp_tool=add_note args=[content, source_description] duration_ms=%.1f status=ok", (time.perf_counter() - t0) * 1000)
             return output
@@ -239,54 +227,23 @@ def build_mcp(get_graphiti: Callable[[], Graphiti | None]) -> MCPBundle:
     async def get_stats() -> str:
         t0 = time.perf_counter()
         try:
-            g = get_graphiti()
-            if not g:
-                return "Graphiti not initialized"
+            backend = get_backend()
+            if not backend:
+                return "L3 backend not initialized"
 
-            driver = getattr(g.driver, "driver", g.driver)
-            async with driver.session() as session:
-                result = await session.run("""
-                    CALL {
-                        MATCH (n:Entity) RETURN count(n) AS entity_count
-                    }
-                    CALL {
-                        MATCH ()-[r:RELATES_TO]->() RETURN count(r) AS edge_count
-                    }
-                    CALL {
-                        MATCH (e:Episodic) RETURN count(e) AS episode_count
-                    }
-                    CALL {
-                        MATCH (c:Community) RETURN count(c) AS community_count
-                    }
-                    CALL {
-                        MATCH (n:Entity)
-                        WHERE NOT (n)-[:RELATES_TO]-()
-                        RETURN count(n) AS orphan_count
-                    }
-                    RETURN entity_count, edge_count, episode_count, community_count, orphan_count
-                """)
-                rows = [record.data() async for record in result]
-
-            if not rows:
-                return "Could not fetch graph stats."
-
-            r = rows[0]
-            entities = r.get("entity_count", 0)
-            edge_count = r.get("edge_count", 0)
-            episodes = r.get("episode_count", 0)
-            communities = r.get("community_count", 0)
-            orphans = r.get("orphan_count", 0)
-            orphan_pct = f"{orphans / entities * 100:.1f}" if entities > 0 else "0"
-
+            s = await backend.stats()
+            orphan_pct = (
+                f"{s.orphans / s.entities * 100:.1f}" if s.entities > 0 else "0"
+            )
             output = (
                 f"## MIKAI Knowledge Graph\n\n"
                 f"| Metric | Count |\n"
                 f"|--------|-------|\n"
-                f"| Entities | {entities:,} |\n"
-                f"| Relationships | {edge_count:,} |\n"
-                f"| Episodes | {episodes:,} |\n"
-                f"| Communities | {communities:,} |\n"
-                f"| Orphan entities | {orphans:,} ({orphan_pct}%) |"
+                f"| Entities | {s.entities:,} |\n"
+                f"| Relationships | {s.edges:,} |\n"
+                f"| Episodes | {s.episodes:,} |\n"
+                f"| Communities | {s.communities:,} |\n"
+                f"| Orphan entities | {s.orphans:,} ({orphan_pct}%) |"
             )
             logger.info("mcp_tool=get_stats args=[] duration_ms=%.1f status=ok", (time.perf_counter() - t0) * 1000)
             return output
@@ -308,55 +265,26 @@ def build_mcp(get_graphiti: Callable[[], Graphiti | None]) -> MCPBundle:
     async def get_source(query: str, num_results: int = 5) -> str:
         t0 = time.perf_counter()
         try:
-            g = get_graphiti()
-            if not g:
-                return "Graphiti not initialized"
+            backend = get_backend()
+            if not backend:
+                return "L3 backend not initialized"
 
             if not query.strip():
                 return "Empty query — nothing to retrieve."
 
-            # Neo4j's fulltext query language requires escaping some chars and
-            # accepts boolean operators; passing a raw user query is usually
-            # fine for simple terms. For safety, wrap multi-word queries in
-            # quotes so Lucene treats them as a phrase; fall back to single
-            # token if quoting produces zero results.
-            driver = getattr(g.driver, "driver", g.driver)
-            rows: list[dict] = []
-            async with driver.session() as session:
-                for lucene_q in (query, f'"{query}"', query.replace(" ", " OR ")):
-                    result = await session.run(
-                        """
-                        CALL db.index.fulltext.queryNodes("episode_content", $q)
-                        YIELD node, score
-                        RETURN
-                            node.uuid AS uuid,
-                            node.content AS content,
-                            node.source AS source,
-                            node.source_description AS source_description,
-                            node.valid_at AS reference_time,
-                            score
-                        ORDER BY score DESC
-                        LIMIT $limit
-                        """,
-                        q=lucene_q,
-                        limit=num_results,
-                    )
-                    rows = [record.data() async for record in result]
-                    if rows:
-                        break
-
+            episodes = await backend.get_source(query, num_results=num_results)
             logger.info(
                 "mcp_tool=get_source query=%r num_results=%d results=%d duration_ms=%.1f status=ok",
-                query, num_results, len(rows), (time.perf_counter() - t0) * 1000,
+                query, num_results, len(episodes), (time.perf_counter() - t0) * 1000,
             )
-            if not rows:
+            if not episodes:
                 return f"No source episodes found for: {query}"
 
             lines = [f"## Source episodes for: {query}\n"]
-            for i, r in enumerate(rows, 1):
-                label = r.get("source_description") or r.get("source") or "episode"
-                ref_time = _iso(r.get("reference_time"))
-                content = (r.get("content") or "").strip()
+            for i, ep in enumerate(episodes, 1):
+                label = ep.source_description or ep.source or "episode"
+                ref_time = _iso(ep.valid_at)
+                content = (ep.content or "").strip()
                 lines.append(f"### {i}. {label}")
                 if ref_time:
                     lines.append(f"_{ref_time}_")
