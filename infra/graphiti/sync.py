@@ -42,6 +42,7 @@ from sidecar.ingest import (
     load_state as _load_state_at,
     save_state as _save_state_at,
 )
+from sidecar.extraction.router import extraction_params_for as _extraction_params_for
 
 import notes_sqlite
 import permissions
@@ -130,6 +131,7 @@ def _make_default_ingest_fn(graphiti: Graphiti) -> IngestFn:
                 source_description=source_description,
                 reference_time=reference_time,
                 group_id=group_id,
+                **_extraction_params_for(source_description),
             )
             nodes = len(result.nodes) if result and result.nodes else 0
             edges = len(result.edges) if result and result.edges else 0

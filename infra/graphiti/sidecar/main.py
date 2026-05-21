@@ -40,6 +40,7 @@ from sidecar.client import (
 )
 from sidecar.mcp_tools import build_mcp
 from sidecar.recency import apply_recency_decay
+from sidecar.extraction.router import extraction_params_for as _extraction_params_for
 
 logger = logging.getLogger("mikai-graphiti")
 logging.basicConfig(level=logging.INFO)
@@ -237,6 +238,7 @@ async def add_episode(req: EpisodeRequest):
         source_description=req.source_description,
         reference_time=ref_time,
         group_id=req.group_id,
+        **_extraction_params_for(req.source_description),
     )
 
     return {
@@ -272,9 +274,16 @@ async def add_episode_bulk(req: BulkEpisodeRequest):
 
     logger.info(f"Bulk importing {len(raw_episodes)} episodes...")
 
+    # Derive typed-extraction params from the first episode's source_description.
+    # Bulk imports are typically homogeneous (one source per batch); if a batch
+    # mixes sources the first episode's schema is a reasonable representative and
+    # still produces better extraction than untyped.
+    bulk_source = req.episodes[0].source_description if req.episodes else "mikai-import"
+
     result = await graphiti.add_episode_bulk(
         bulk_episodes=raw_episodes,
         group_id=req.group_id,
+        **_extraction_params_for(bulk_source),
     )
 
     episode_count = len(result.episodes) if result and result.episodes else 0
