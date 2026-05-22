@@ -75,11 +75,16 @@
 
 ---
 
-## Not yet built
+## Active investigations (near-term)
 
-- **`LocalAdapter`** (ARCH-025). Fully on-device adapter. Design input: `legacy/sqlite-local`. Now unblocked by Stage 7's port extraction (D-050) — implements the same `L3Backend` interface, selected via `MIKAI_L3_BACKEND=local`. Not started.
-- **L4 engine on main** (D-041). `feat/l4-testing` holds prior SQLite-era work; needs the port extraction + a real rewrite.
-- **Head-to-head benchmark against Claude.ai's native memory** (carry-over from the MCP eval pending memory). Was attempted 2026-04-18 with 6 MIKAI answers collected; baselines never collected. Re-feasible once typed extraction is verified.
+- **Free-tier cloud-hosted Neo4j.** Investigation kicked off 2026-05-21. Goal: replace the local Docker + Neo4j stack with a managed/cloud Neo4j (Aura Free, or equivalent) so MIKAI doesn't require Docker running on the laptop and survives Mac restarts / TCC issues that have blocked the LaunchAgent install. Trade-offs to investigate: latency hit (currently sub-second on localhost; cloud adds RTT), free-tier limits (Aura Free caps node + storage), and whether the public-internet exposure changes the security posture (OAuth gating still applies, but Neo4j credentials become network-reachable). See OPEN.md O-042.
+- **L4 engine on main** (D-041). `feat/l4-testing` holds prior SQLite-era work; needs a real rewrite onto the new `L3Backend` port. The product layer — task-state classification, thread detection, next-step inference — is where the noonchi moat actually lives. Stage 7 unblocked this work.
+- **Stage 6 quality verification** — label the 200+200 gold set via `eval/label.py`, run `eval/run_l3_eval.py`. Estimated ~30–45 min of keyboard time. Until this lands, the "3.10 → ≥4.3" extraction-quality claim is unverified.
+- **Head-to-head benchmark against Claude.ai's native memory** — carry-over from `mcp_eval_pending` memory. 6 MIKAI answers collected 2026-04-18; Claude.ai baselines never collected. Re-feasible once Stage 6 verification lands.
+
+## Future product directions
+
+- **`LocalAdapter`** (ARCH-025) — a fully on-device sibling of `GraphitiAdapter` selected via `MIKAI_L3_BACKEND=local`. Embedded graph store (SQLite + `sqlite-vec`), local embeddings (Nomic via ONNX), local LLM for extraction (e.g. quantized Llama variant). Stage 7's port extraction (D-050) made this implementable as one new ~400-line file with no product-code changes — but the work is **deferred** until one of three triggers fires: (a) MIKAI ships to other users as a downloadable app, (b) content sensitivity demands content never leaves the device, (c) DeepSeek/Voyage become a hard blocker. Today, none of those apply; the option is preserved in the architecture without committing implementation time.
 
 ---
 

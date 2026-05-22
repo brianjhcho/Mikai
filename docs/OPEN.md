@@ -80,6 +80,19 @@ When does MIKAI decide to surface a stalled item? Too frequent = annoying, erode
 
 ## Medium — architectural, performance, integration
 
+### [O-042] Free-tier cloud-hosted Neo4j instead of local Docker
+**Opened 2026-05-21.** The Graphiti sidecar currently requires Docker + Neo4j running on Brian's laptop. Friction surfaced repeatedly: Docker restarts lose state until containers are brought back, the LaunchAgent ingestion daemon is blocked by macOS TCC because the repo lives under `~/Desktop/`, and a Mac reboot means a manual `docker compose up`. A managed-cloud Neo4j (Aura Free, or equivalent free-tier offering) would survive laptop restarts and TCC restrictions entirely.
+
+**Open questions for the investigation:**
+- **Capacity.** Aura Free historically caps at ~200k nodes / 400k relationships and 1 GB. The graph is at ~9,920 entities + 2,371 episodes today (well within limits) but grows with every ingestion — at what rate does it threaten the free tier?
+- **Latency.** Localhost Neo4j queries are sub-second; a cloud Neo4j adds RTT to every `search` / `get_source` / `expand`. How does that interact with the MCP tool budgets (Claude.ai already times out `get_source` calls occasionally)?
+- **Authentication and exposure.** Neo4j credentials become network-reachable; today they only exist on localhost. The sidecar's OAuth still gates `/mcp`, but the Neo4j Bolt connection itself becomes a second authenticated surface that needs hardening or IP allow-listing.
+- **Migration.** ~2,371 episodes need a one-time export from local Docker Neo4j and import into the cloud instance. Graphiti has its own UUIDs — verify they survive a dump/restore roundtrip.
+- **Cost ceiling.** Free tier first; what's the cost trajectory when it outgrows the free tier? At what graph size does the cloud path become as expensive as the on-device LocalAdapter option?
+- **Reversibility.** Want a clean exit path back to local Docker (or to LocalAdapter) if the cloud option doesn't work. The Stage 7 `L3Backend` port helps — could in principle build a "GraphitiCloudAdapter" subclass that just changes the Neo4j URI, no other product code touched.
+
+**Recommend:** start with read-only Aura Free probe — point an empty cloud instance at a small subset of episodes via the existing `/episode/bulk` REST endpoint with `NEO4J_URI=neo4j+s://...`, measure p95 latency on `search`/`get_source`, decide if the experience is workable before committing to a full migration.
+
 ### [Gap 7] Single-tenant schema (in Supabase era, predates Graphiti)
 No `user_id` column on sources, nodes, edges, segments. All RPCs searched the full database. Graphiti's per-episode isolation partially addresses this but multi-tenancy needs explicit design at the port level. Prevent the most expensive possible future migration.
 
