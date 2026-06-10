@@ -1008,3 +1008,71 @@ After this stage, `grep -r graphiti_core infra/graphiti/sidecar/` outside `l3/gr
 - `LocalAdapter` arrives and exposes a primitive the port doesn't currently surface. Add it with a default-`NotImplementedError` for backends that don't support it.
 - L4 engine work shows the port's 11 verbs are insufficient — likely candidates: temporal range queries, multi-hop traversals beyond single `expand()`, or write-side compensation. L4-driven, not speculative.
 - A second non-Graphiti adapter is built (e.g. an in-memory test double promoted to first-class). At that point consider moving the port to a top-level `mikai/l3/` package outside `infra/graphiti/`.
+
+---
+
+## D-051: Pattern B operational target — laptop-as-home-server via LaunchAgents at `~/Library/Application Support/mikai/launchd/`
+
+**Date:** 2026-06-04
+**Source:** Pattern B bring-up session; resolves O-042 (free-tier cloud-hosted Neo4j).
+
+**Decision:** MIKAI runs Pattern B (always-on home server) on the daily-driver MacBook. The docker-compose stack (Neo4j + sidecar at `Desktop/MIKAI/infra/graphiti/`) is auto-managed by two macOS LaunchAgents:
+
+- `com.mikai.docker-compose` — RunAtLoad. Opens Docker Desktop if needed, waits for the daemon, runs `docker compose up -d`.
+- `com.mikai.health-probe` — `StartInterval=300` plus `WakeUp=true`. Curls `localhost:8100/health`; on failure, logs locally and pushes a Telegram alert if creds are present.
+
+Agents and scripts live at `~/Library/Application Support/mikai/launchd/` — **deliberately outside any TCC-protected directory** — and reference the deployed stack at `~/Desktop/MIKAI/infra/graphiti/`. `launchctl bootstrap gui/$UID` is the install API. Sleep prevention (`sudo pmset -c sleep 0 disksleep 0`) and Docker Desktop auto-start are documented manual one-time steps; install scripts do not run `sudo`.
+
+**Why:**
+
+1. **TCC blocks launchd-spawned bash from `exec`ing scripts under `~/Desktop/`, `~/Documents/`, `~/Downloads/`.** Discovered the hard way during the install on 2026-06-04: the docker-compose plist's `last exit code = 126` with stderr "Operation not permitted". The compose file itself can stay under `~/Desktop/` because *Docker Desktop* has its own TCC grants — the restriction is launchd-spawned shell, not the docker daemon. Scripts move to `~/Library/Application Support/mikai/launchd/`; compose paths stay.
+2. **Pattern B with this laptop as the host is a transitional choice, not the end state.** Costs nothing, ships now. The same docker-compose runs on a future Raspberry Pi or NUC home server without architectural change — only the LaunchAgent paths shift. Migration is mechanical when laptop sleep becomes the binding constraint.
+3. **`launchctl bootstrap`, not `launchctl load`.** On macOS Sonoma+, `load`/`unload` are deprecated for user agents; `bootstrap gui/$UID` is the supported path. Install also `bootout`s the prior label first → idempotent across edits.
+4. **`WakeUp=true` on the health probe.** Pure interval-based probing misses the post-sleep window by up to 5 minutes; WakeUp fires the probe immediately on every wake transition. Combined with Telegram, Brian learns the stack is down within seconds of wake.
+5. **Compose v2 auto-loads `.env` from the project directory regardless of the launchd shell environment.** Empirically confirmed — the stack came up with all OAuth env vars set even though `docker compose up -d` was invoked from a stripped-down launchd context. No `EnvironmentVariables` key in the plist needed, no `env_file:` stanza in compose needed.
+
+**Rejected:**
+
+- **`launchctl load`/`unload` (legacy API).** Still works on Sonoma but logs deprecation warnings; future-breaking.
+- **`sudo` inside `install.sh`.** Blocks non-interactive installs and conflates power-management policy (which the user should consciously opt into) with agent registration. Split out as a documented manual step.
+- **Scripts under the repo at `infra/launchd/`.** The repo lives under `~/Desktop/`, which is TCC-protected. The Stage 2 ingestion-daemon plist template at `infra/graphiti/launchd/` still sits there but is not the canonical install path on this machine — same fix applies when that LaunchAgent is activated.
+- **`EnvironmentVariables` in the plist or `env_file:` in compose.** Compose v2's auto-discovery of `.env` in the project directory does the job; either alternative adds complexity for no behavioural change.
+- **Free-tier cloud-hosted Neo4j (closes O-042).** Aura Free's ~200k-node cap leaves little headroom at MIKAI's growth rate, paid tier is ~$65/mo, and migration moves the JWT signing key + graph onto someone else's infra for no functional gain while the laptop is awake. Reopens only if laptop sleep becomes the actual binding constraint.
+
+**Implementation:**
+
+- `~/Library/Application Support/mikai/launchd/start-stack.sh` — `open -a Docker`, poll `docker info` for up to 5 min, then `cd Desktop/MIKAI/infra/graphiti && docker compose up -d`. `set -e` scoped after the poll so loop failures don't abort.
+- `~/Library/Application Support/mikai/launchd/health-probe.sh` — `curl localhost:8100/health` with 10s timeout; on failure, append to `logs/health-probe.log` + push Telegram if `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` present in colocated `.env`.
+- `~/Library/Application Support/mikai/launchd/com.mikai.{docker-compose,health-probe}.plist` — the two LaunchAgents.
+- `~/Library/Application Support/mikai/launchd/install.sh` — bootout + bootstrap loop, copies plists to `~/Library/LaunchAgents/`. Idempotent.
+
+**Revisit if:**
+
+- Auto-ingestion needs 24/7 uptime (laptop sleep becomes binding) — migrate to a dedicated home server (Pi 5, NUC). Same docker-compose, different host. Or reopen O-042.
+- Multi-device read availability when laptop is in the bag becomes a daily requirement.
+- The Stage 2 ingestion daemon LaunchAgent (still TCC-blocked at `infra/graphiti/launchd/`) needs to be activated — apply the same TCC fix (move scripts to `~/Library/Application Support/mikai/launchd/`).
+- Apple changes the TCC model such that `~/Library/Application Support/` becomes restricted (unlikely).
+
+---
+
+## D-052: Native graphiti extraction is the ingestion default; Stage 6 typed extraction disabled behind a flag
+
+**Date:** 2026-06-09
+**Source:** Ingestion-outage investigation (graph frozen at May 21). Qualifies D-049 (source-conditional typed extraction) and relates to the D-050 L3 port.
+
+**Decision:** Ingestion uses graphiti-core's **native** extraction by default. The single chokepoint `sidecar/extraction/router.py::extraction_params_for()` returns `{}` (no custom `entity_types`/`edge_types`/`edge_type_map`/`custom_extraction_instructions`) unless `MIKAI_TYPED_EXTRACTION=1`. graphiti-core is pinned `==0.28.2`. The Stage 6 typed-extraction modules (`sidecar/extraction/*.py`) are left intact and revivable.
+
+**Why:**
+
+1. **graphiti-core 0.28.2 cannot persist custom type attributes to Neo4j.** It writes custom node/edge attributes as nested Neo4j `Map` values, which Neo4j rejects (`Property values can only be of primitive types`). It also newly reserves `summary` as a protected `EntityNode` field, which the Stage 6 models used pervasively. Both fire on every episode → 0 writes.
+2. **An unpinned dependency caused a silent multi-week outage.** `requirements.txt` had `graphiti-core>=0.5`; a `pip install` floated it to 0.28.2 and froze ingestion at May 21 with no alert. Pinning prevents recurrence; the launchd ingestion daemon (still uninstalled) would have surfaced it sooner.
+3. **The typed layer was barely realized anyway.** In the live graph the epistemic edges were 15 of 15,108 edges (~0.1%); the graph is ~99% native extraction already. Native carries only primitive fields (name/summary/fact), sidesteps the persistence bug, and matches the freeform-graph L4 direction (ARCH-019/021).
+4. **Native is ~4× cheaper.** The 954-turn catch-up cost $1.30 (~$0.0014/turn) vs a $5–9 estimate for typed.
+
+**Rejected:**
+
+- **Downgrade graphiti-core to a pre-0.28 version that persists attributes correctly.** Uncertain which version + the Stage 7 L3 port is written against 0.28.2's API surface; re-applying the in-place `node_operations.py` cap-50 patch adds fragility. Forward-compatible native is cleaner.
+- **Patch 0.28.2's node/edge `save()` to flatten/JSON-serialize attributes.** In-place patch clobbered on reinstall (like the cap-50 patch), and must be applied to both the local venv and the docker image.
+- **Strip only the attribute fields, keep custom types.** Still leaves typed labels but the bug recurs on edge attributes; no net gain over going fully native.
+
+**Revisit if:** L4 needs typed node/edge attributes (e.g. edge confidence/explanation). Reviving Stage 6 first requires a graphiti-core version that persists custom attributes as flat Neo4j properties; set `MIKAI_TYPED_EXTRACTION=1` only once that holds.

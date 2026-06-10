@@ -2,8 +2,8 @@
 
 > **What this file is:** The volatile state-of-the-world doc. It describes what is actually live on `main` right now — not the long-term vision (`CLAUDE.md`), not the architectural decisions (`docs/DECISIONS.md`), not the intellectual foundations (`docs/EPISTEMIC_*.md`). Update this file as main changes. If it contradicts CLAUDE.md, update CLAUDE.md only if the change is a principle, not a state.
 
-**Last meaningful update:** 2026-05-21 (Stage 7 L3Backend port extraction landed)
-**Latest commit on main at writing:** `37a4a15` — D-050: L3Backend port extraction landed
+**Last meaningful update:** 2026-06-10 (ingestion fixed + automated: graphiti-core pinned, native extraction is now the default per D-052, launchd ingestion daemon live; plus D-051 Pattern B)
+**Latest commit on main at writing:** `a19a81c` — fix(ingestion): default to native graphiti extraction; pin graphiti-core
 
 ---
 
@@ -12,8 +12,8 @@
 ### L3 — Knowledge graph (Graphiti adapter)
 - **Graphiti sidecar** running as FastAPI at `http://localhost:8100` (infra/graphiti/sidecar/)
 - **Neo4j 5.26** via docker-compose (infra/graphiti/docker-compose.yml)
-- **~2,371 episodes** in Neo4j as of 2026-05-19 ingestion (1,108 Apple Notes + ~767 Claude conversations + new content from the catch-up daemon run); `mikai-sync` shell function in `~/.zshrc` runs `sync.py --once` on demand
-- **graphiti-core scaling patch** applied via `scripts/apply_graphiti_patch.py` — caps candidate resolution at 50, strips attributes from prompts (D-042)
+- **~3,370 episodes / ~12,640 entities** in Neo4j (2026-06-10), kept current automatically by the launchd ingestion daemon (Apple Notes + Claude threads). Jumped from ~2,379 after the 2026-06-09→10 catch-up of 954 backlogged Claude turns. Manual catch-up still available via `sync.py --once`.
+- **graphiti-core pinned `==0.28.2`** (2026-06-10, D-052) — was unpinned `>=0.5`, floated to 0.28.2, and silently broke ingestion (reserved `summary`, wrote custom attrs as Neo4j Maps). Scaling patch via `scripts/apply_graphiti_patch.py` caps candidate resolution at 50, strips attributes from prompts (D-042)
 - **Custom `DeepSeekClient`** adapting DeepSeek V3 to Graphiti's JSON-schema expectations
 - **Voyage AI `voyage-3`** for embeddings (1024 dim)
 
@@ -23,26 +23,29 @@
 - **Composition root** `sidecar.l3.make_backend()` reads `MIKAI_L3_BACKEND` (default `graphiti`; `local` raises NotImplementedError until ARCH-025 ships)
 - **Product code is port-only.** `grep -r graphiti_core infra/graphiti/sidecar/` outside `l3/graphiti_adapter.py` returns zero hits — the port boundary is enforced by absence.
 
-### Typed extraction (Stage 6, D-049)
+### Typed extraction (Stage 6, D-049) — DISABLED by default (D-052)
+> **Status as of 2026-06-10: OFF by default.** graphiti-core 0.28.2 cannot persist custom node/edge attributes to Neo4j (it writes them as nested Maps Neo4j rejects) and reserves `summary`. Ingestion now uses graphiti **native** extraction. The modules below are intact and revivable behind `MIKAI_TYPED_EXTRACTION=1` — but reviving requires a graphiti-core version that persists custom attributes as flat properties. The chokepoint `extraction/router.py::extraction_params_for()` returns `{}` by default. The live graph is ~99% native edges already (epistemic edges were 15/15,108).
+
 - **Source-conditional Pydantic entity types** at `infra/graphiti/sidecar/extraction/{claude_thread,apple_note,gmail_message,whatsapp_day}.py` plus shared connectors in `common.py` (Person, Place, Project, Concept — identical class objects across sources so Graphiti resolution merges)
 - **Epistemic edge types** in `epistemic_edges.py`: CONTRADICTS, SUPPORTS, DEPENDS_ON, PARTIALLY_ANSWERS, UNRESOLVED_TENSION, EXTENDS — each carrying `confidence: float`
 - **`edge_type_map.py`** — 29 deliberate typed pairings constraining which edges can connect which entity types
 - **Source router** at `extraction/router.py` — wires `entity_types`/`edge_types`/`edge_type_map` into all three `add_episode()` call sites (sync.py, mcp_tools.py add_note, main.py /episode)
 - **Negative-example prompt augmentation** in `extraction/prompt_negatives.py` — 10 negatives sourced from the existing noise cluster ("Hearty simple creative", "folly", "The MacNabs"), threaded via `custom_extraction_instructions`
 - **Query-time recency-decay overlay** at `sidecar/recency.py` — opt-out via `recency_decay=True` flag on search/get_history tools and the `/search` REST endpoint
-- **Status:** code-complete on main; **not yet exercised against the live graph** — the existing ~2,371 episodes were extracted under the old (pre-typing) prompt. Future ingestions use the new pipeline; re-extraction of the corpus is a separately-gated step.
+- **Status:** code-complete but **bypassed** (see banner above). Never successfully exercised against the live graph at scale — the 0.28.2 persistence bug fired on every typed episode. Reviving is gated on a compatible graphiti-core version.
 
 ### Ingestion (Stage 2, ARCH-023 Mode 1)
 - **Filesystem daemon** `infra/graphiti/sync.py` — watchdog-based watcher for Apple Notes (via SQLite or AppleScript fallback) + Claude Code JSONL session tails
 - **Async token-bucket rate limiter** at `sidecar/rate_limit.py` — gates DeepSeek + Voyage calls (default 60 rpm each, per-bucket env override). Prevents the 429-burst that surfaced as O-041.
 - **State checkpoint** at `~/.mikai/sync_state.json` — per-source content-hash dedup (Apple Notes) + byte-offset tail (Claude Code). `--dry-run` is properly dry (regression test in place).
-- **launchd plist template** at `infra/graphiti/launchd/` — not currently installed because the repo lives under `~/Desktop/` which macOS TCC blocks for LaunchAgents. Manual refresh via the `mikai-sync` zsh function instead.
+- **launchd ingestion daemon LIVE (2026-06-10).** `com.mikai.ingestion` installed via the D-051 TCC-safe pattern: runner at `~/Library/Application Support/mikai/launchd/sync-runner.sh` (outside `~/Desktop/`), secrets in `~/.mikai/launchd.env`, logs at `~/.mikai/logs/sync.{out,err}.log`; folded into the App-Support `install.sh`. Runs sync.py in watchdog mode — auto-ingests new Claude threads + Apple Notes the moment session/note files change (confirmed: multi-hour stable uptime, real-time per-turn ingestion). Apple Notes needs a one-time Full Disk Access grant on the Homebrew python binary (`/opt/homebrew/Cellar/python@3.12/.../bin/python3.12`) — granted 2026-06-10. Pause with `launchctl bootout gui/$(id -u)/com.mikai.ingestion`.
 
 ### MCP server + OAuth (Stage 5, D-048)
 - **Python MCP server** at `infra/graphiti/sidecar/mcp_tools.py` (FastMCP, streamable HTTP at `/mcp`) and `mcp_server.py` (stdio transport for Claude Desktop)
 - **5 tools:** `search`, `get_history`, `get_stats`, `add_note`, `get_source` — the last returns raw source-episode prose, closing the edges-vs-episodes gap (D-045)
 - **Bundled OAuth 2.1 Authorization Server** at `sidecar/oauth.py` — PKCE (S256) + Dynamic Client Registration + JWT bearer tokens, password-gated consent page. Activated by `MIKAI_OAUTH_ENABLED=1`. Lets Claude.ai web + iPhone add MIKAI as a Custom Connector. Live and verified — the live OAuth flow is the access boundary that protects the public Tailscale Funnel URL.
 - **Public reachability** via Tailscale Funnel (`brians-macbook-air.tail8e4198.ts.net`); `scripts/preflight.sh --full` checks all 9 surface elements including OAuth discovery and the `/mcp` token gate.
+- **Stack auto-starts at login** via `com.mikai.docker-compose` LaunchAgent + a 5-min health probe with `WakeUp=true` (Telegram alert on failure if creds present). Sources at `~/Library/Application Support/mikai/launchd/`; install via `bash "$HOME/Library/Application Support/mikai/launchd/install.sh"`. See D-051 and `docs/MCP_OPERATOR_GUIDE.md`.
 
 ### Eval harness (Stage 4 + Stage 6)
 - **Stage 4 (intrinsic raters)** — `scripts/eval_nodes.py` (entity extraction quality 1–5) and `scripts/eval_queries.py` (retrieval groundedness). Baseline: `docs/evals/baseline-2026-04-29.md` (entity accuracy 3.10/5 — failing 4.0 threshold; relevance@10 6.4/10 — pass; groundedness 4.2/5 — pass).
@@ -71,13 +74,15 @@
 
 - **Stage 6 quality measurement.** Eval harness exists; needs ~30–45 min of Brian's keyboard time labeling 200 entities + 200 edges via `eval/label.py`. Until then the "3.10 → ≥4.3" claim is unverified.
 - **Re-extraction of the existing corpus under the typed pipeline.** The current ~2,371 episodes were extracted before typing landed. Re-extraction would cost ~$15–25 in DeepSeek/Voyage credits and ~60 min, and is gated on (a) Brian's approval and (b) ideally Stage 6 labels confirming the new pipeline measurably outperforms.
-- **Always-on ingestion daemon as a LaunchAgent.** Plist template is in place. Install blocked by macOS TCC restrictions for repos under `~/Desktop/`. Workarounds (grant Full Disk Access to bash+python, or move the repo to `~/MIKAI/`) are documented. For now, `mikai-sync` runs on demand.
+- **Always-on ingestion daemon as a LaunchAgent.** Plist template is in place. Install was blocked by TCC restrictions for scripts under `~/Desktop/`; the fix (D-051, 2026-06-04) is to relocate the scripts — not the repo — to `~/Library/Application Support/mikai/launchd/`. The docker-compose LaunchAgent already uses this pattern. Migrating the ingestion plist to the same pattern is the unblocking step; `mikai-sync` runs on demand until then.
 
 ---
 
 ## Active investigations (near-term)
 
-- **Free-tier cloud-hosted Neo4j.** Investigation kicked off 2026-05-21. Goal: replace the local Docker + Neo4j stack with a managed/cloud Neo4j (Aura Free, or equivalent) so MIKAI doesn't require Docker running on the laptop and survives Mac restarts / TCC issues that have blocked the LaunchAgent install. Trade-offs to investigate: latency hit (currently sub-second on localhost; cloud adds RTT), free-tier limits (Aura Free caps node + storage), and whether the public-internet exposure changes the security posture (OAuth gating still applies, but Neo4j credentials become network-reachable). See OPEN.md O-042.
+- **Auto-ingestion coverage** — the 2026-04-18 head-to-head eval (`docs/evals/run-20260418-103324.md`) showed MIKAI's graph carries less recent-conversation detail than Claude.ai's native chat memory, because Claude captures everything by default while MIKAI captures only what's `add_note`-ed. The bottleneck is no longer extraction or retrieval (D-049 + D-045 covered those) — it's ingestion coverage. Pattern B (D-051) is the operational substrate any continuous-capture daemon would run on. Hermes-style architecture (raw-episode hot store + deferred LLM review) is the prior art worth studying.
+
+(Cloud-hosted Neo4j investigation, O-042, closed 2026-06-04 in favor of Pattern B. See D-051.)
 - **L4 engine on main** (D-041). `feat/l4-testing` holds prior SQLite-era work; needs a real rewrite onto the new `L3Backend` port. The product layer — task-state classification, thread detection, next-step inference — is where the noonchi moat actually lives. Stage 7 unblocked this work.
 - **Stage 6 quality verification** — label the 200+200 gold set via `eval/label.py`, run `eval/run_l3_eval.py`. Estimated ~30–45 min of keyboard time. Until this lands, the "3.10 → ≥4.3" extraction-quality claim is unverified.
 - **Head-to-head benchmark against Claude.ai's native memory** — carry-over from `mcp_eval_pending` memory. 6 MIKAI answers collected 2026-04-18; Claude.ai baselines never collected. Re-feasible once Stage 6 verification lands.

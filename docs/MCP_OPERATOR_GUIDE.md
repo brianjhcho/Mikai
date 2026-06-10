@@ -1,22 +1,65 @@
 # MCP Operator Guide
 
-## What /mcp is
+> **Updated 2026-06-04.** Tunnel is Tailscale Funnel (not Cloudflare). Mobile + web auth is OAuth 2.1 with PKCE + DCR (not bearer). The whole stack runs under LaunchAgents that live outside `~/Desktop/` to avoid macOS TCC blocking script execution. Pattern B (laptop-as-home-server) is the active deployment target; cloud-hosted Neo4j (O-042) is closed.
 
-MIKAI's MCP endpoint at `/mcp` exposes your Graphiti knowledge graph to Claude Desktop, mobile (iOS/Android), and the Claude.ai browser web app via Streamable HTTP. The endpoint is mounted inside the Graphiti sidecar FastAPI server — same process, same Neo4j connection, single public URL.
+## What `/mcp` is
 
-The MCP server implements five L3 (graph primitives) tools:
+MIKAI's MCP endpoint at `/mcp` exposes the Graphiti L3 backend to three Claude surfaces — Claude Desktop, the Claude.ai web app, and the Claude iOS connector — via Streamable HTTP. The endpoint is mounted inside the same FastAPI sidecar that serves `/health`, `/episode`, and `/search`. Same process, same Neo4j connection, single public URL.
 
-- **`search(query, num_results=10)`** — Hybrid search (semantic + BM25 + reciprocal rank fusion) across the graph. Returns edges (relationships) and adjacent nodes ranked by relevance. Start here for queries like "what am I contradicting?" or "what depends on X?"
-- **`get_history(query, as_of?, num_results=10)`** — Bitemporal point-in-time search. Returns current facts and superseded (invalidated) facts separately, so you can see how beliefs have evolved. Pass an ISO datetime in `as_of` (e.g. `2026-03-15T00:00:00`) to see the graph as it looked on that date.
-- **`add_note(content, source_description="claude-conversation")`** — Write a new insight into the knowledge graph as a Graphiti episode. Graphiti extracts entities and relationships automatically from the content.
-- **`get_stats()`** — Graph quality snapshot: total entities, relationships, episodes, communities, and orphan count (entities with no relationships).
-- **`get_source(query, num_results=5)`** — Retrieve the raw source prose for the top-K matching episodes. Use this when the user asks "what have I written about X" or wants their own words back rather than compressed edge facts. Complements `search` — `search` returns claims, `get_source` returns the text those claims were extracted from.
+Five L3 tools exposed (per D-040, D-045):
 
-Reference the decision log (docs/DECISIONS.md D-040, D-041, D-043, D-045) for the architectural rationale. The sidecar exposes REST endpoints for ingestion and admin; `/mcp` is the only surface exposed to Claude clients.
+- **`search(query, num_results=10)`** — Hybrid (vector + BM25 + RRF) edge search.
+- **`get_history(query, as_of?, num_results=10)`** — Bitemporal point-in-time edge filter. `as_of` must be a **timezone-aware** ISO datetime (e.g. `2026-03-15T00:00:00+00:00`); naive datetimes raise.
+- **`add_note(content, source_description=...)`** — Write a new episode; Graphiti extracts entities + edges via the Stage 6 typed pipeline (D-049).
+- **`get_stats()`** — Entity / edge / episode / community / orphan counts.
+- **`get_source(query, num_results=5)`** — Returns raw source-episode prose (D-045). Complements `search`: edge claims vs. the prose they came from.
+
+No L4 tools (tensions, threads, state classification) — those land later on the L4 branch (D-041).
 
 ---
 
-## Claude Desktop setup
+## Public surface
+
+The public URL is **`https://brians-macbook-air.tail8e4198.ts.net`**, served via Tailscale Funnel proxying `127.0.0.1:8100`.
+
+```bash
+tailscale serve status      # see current ingress
+tailscale funnel status     # confirm Funnel is on
+```
+
+Why Tailscale Funnel and not Cloudflare Tunnel (which earlier versions of this guide described): no domain to manage, no DNS step, the `*.ts.net` hostname is free with any Tailscale account, and the daemon is already required for any other tailnet device access. Cloudflare Tunnel works equivalently — it's just an extra moving part we don't need.
+
+---
+
+## Auth — OAuth 2.1 (mobile/web) + bearer (Desktop)
+
+The sidecar runs both auth paths simultaneously, gated by env vars:
+
+| Surface | Auth mode | Why |
+|---|---|---|
+| Claude Desktop via `mcp-remote` | Bearer (`MIKAI_MCP_TOKEN`, optional on loopback) | `mcp-remote` shim supports bearer; no OAuth flow needed |
+| Claude.ai web Custom Connector | OAuth 2.1 | Claude.ai's connector form has no bearer field — only OAuth |
+| Claude iOS Custom Connector | OAuth 2.1 | Same — connector UI is OAuth-only |
+
+OAuth 2.1 layer lives at `sidecar/oauth.py` (D-048):
+
+- **Dynamic Client Registration** at `/oauth/register` — Claude auto-registers a `client_id` on first connect; no manual setup.
+- **Authorization code + PKCE (S256)** — `/oauth/authorize` issues codes after a password-gated consent page.
+- **JWT access tokens (1h) + refresh tokens (30d)** — `/oauth/token` exchanges codes; refresh tokens persist across sidecar restarts.
+- **State at `/var/lib/mikai/oauth_state.json`** inside the container, mapped to the `oauth_data` named Docker volume. Survives `docker compose down`; **wiped only by `docker compose down -v`**. The JWT signing secret lives in that file — destroy it and every existing token becomes invalid, forcing every connector to re-authorize.
+
+Activated by `MIKAI_OAUTH_ENABLED=1`. Operator password for the consent page is `MIKAI_OAUTH_PASSWORD`. Both in `infra/graphiti/.env`.
+
+Discovery endpoints (Claude's connector form probes these automatically):
+
+- `GET /.well-known/oauth-authorization-server` — server metadata (issuer, endpoints, supported flows)
+- `GET /.well-known/oauth-protected-resource` — points at `/mcp` as the protected resource
+
+---
+
+## Setup
+
+### Claude Desktop (bearer / `mcp-remote`)
 
 Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
@@ -31,151 +74,110 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
 }
 ```
 
-Then restart Claude Desktop. You should see "mikai" in the Tools pane.
+Restart Claude Desktop. On loopback the bearer token is optional; for the public URL, add `--header "Authorization: Bearer ${MIKAI_MCP_TOKEN}"` to `args`.
 
-**Why the `mcp-remote` indirection?** Claude Desktop's config syntax only accepts stdio servers. The `mcp-remote` package is a community shim that bridges the gap: it translates Claude's stdio MCP requests into HTTP calls to your local Streamable HTTP endpoint, then streams responses back as stdio. This lets Desktop reach the same `/mcp` endpoint that mobile and browser use, without MIKAI having to implement two separate transport layers (stdio + HTTP). The shim is well-maintained and adds negligible latency on localhost.
+### Claude.ai web (OAuth)
 
----
-
-## Claude mobile (iOS/Android) setup
-
-Open Claude on your phone or tablet. Tap **Settings > Tools & Integrations > Add Custom Connector**.
-
-Fill in:
+Settings → Tools & Integrations → Add Custom Connector. Fill in:
 
 | Field | Value |
-|-------|-------|
-| **Name** | MIKAI |
-| **Description** | Knowledge graph memory |
-| **URL** | `https://<your-tunnel-domain>/mcp` (see Cloudflare Tunnel section below) |
-| **Authentication** | Bearer Token |
-| **Token** | (your MIKAI_MCP_TOKEN value from step 6) |
+|---|---|
+| Name | MIKAI |
+| URL | `https://brians-macbook-air.tail8e4198.ts.net/mcp` |
+| Auth | OAuth (Claude auto-discovers endpoints from the metadata above) |
 
-Tap **Save**. The connector will appear in the Tools pane once it's live. Test by asking Claude to search for something in your knowledge graph.
+Click **Connect** → consent page opens → enter `MIKAI_OAUTH_PASSWORD`. Connector appears in the Tools pane.
 
----
+### Claude iOS (OAuth)
 
-## Claude.ai browser setup
+Settings → Tools & Integrations → Add Custom Connector. Same fields as web; same OAuth flow.
 
-In the Claude.ai web app, click your **profile > Settings > Tools & Integrations > Add Custom Connector**.
-
-Same fields as mobile:
-
-| Field | Value |
-|-------|-------|
-| **Name** | MIKAI |
-| **Description** | Knowledge graph memory |
-| **URL** | `https://<your-tunnel-domain>/mcp` |
-| **Authentication** | Bearer Token |
-| **Token** | (your MIKAI_MCP_TOKEN value) |
-
-Save and refresh the page. The connector will be available in the Tools menu.
+If you ever see Claude attempting a manual OAuth dance via bash ("paste the code back to me"), MIKAI is not registered as a Custom Connector in that surface — re-add it.
 
 ---
 
-## Cloudflare Tunnel quickstart
+## Running the stack — Pattern B (laptop-as-home-server)
 
-To expose your local `/mcp` endpoint to mobile and browser, use Cloudflare Tunnel (no open ports, no firewall config, free tier covers personal use).
+The stack is `docker compose` in `/Users/briancho/Desktop/MIKAI/infra/graphiti/`. Pattern B means it auto-starts at login and a probe alerts when it goes down. See D-051 for the architectural rationale.
 
-**1. Install cloudflared:**
+### LaunchAgents
 
-```bash
-brew install cloudflare/cloudflare/cloudflared
-```
+Two LaunchAgents installed at `~/Library/LaunchAgents/`:
 
-**2. Authenticate:**
+| Agent | Trigger | What it does |
+|---|---|---|
+| `com.mikai.docker-compose` | RunAtLoad (login) | `open -a Docker`, polls `docker info` until ready, then `docker compose up -d` against `Desktop/MIKAI/infra/graphiti/`. Idempotent. |
+| `com.mikai.health-probe` | Every 300s + WakeUp | `curl localhost:8100/health` (10s timeout). On failure: logs locally and pushes a Telegram alert if creds present. |
 
-```bash
-cloudflared tunnel login
-```
+Scripts and plist sources live at **`~/Library/Application Support/mikai/launchd/`** — deliberately outside `~/Desktop/`, because **macOS TCC blocks launchd-spawned bash from `exec`ing scripts under Desktop/Documents/Downloads** (silent `Operation not permitted`, exit code 126). The scripts can still reference Desktop paths (`docker compose` itself reads the compose file fine — Docker Desktop has its own TCC grants); the restriction is on launchd-spawned shell, not the docker daemon.
 
-Your browser opens; approve the domain authorization.
-
-**3. Create a tunnel:**
+To install or refresh:
 
 ```bash
-cloudflared tunnel create mikai
+bash "$HOME/Library/Application Support/mikai/launchd/install.sh"
 ```
 
-Prints your tunnel UUID and credentials location.
+Uses `launchctl bootstrap gui/$UID` (modern API on Sonoma+), not deprecated `load`. Idempotent — bootouts the existing label before bootstrapping the new plist.
 
-**4. Create `infra/graphiti/config.yml`:**
+### Manual one-time setup
 
-```yaml
-tunnel: <your-tunnel-uuid>
-credentials-file: ~/.cloudflared/<tunnel-uuid>.json
-
-ingress:
-  - hostname: mikai.<your-cloudflare-domain>
-    service: http://localhost:8100
-  - service: http_status:404
-```
-
-Replace `<your-tunnel-uuid>` with the output from step 3. Replace `<your-cloudflare-domain>` with your Cloudflare-managed domain (e.g., `example.com` if you added that to Cloudflare DNS).
-
-**5. Create DNS record:**
-
-In your Cloudflare dashboard, add a CNAME: `mikai` → `<tunnel-uuid>.cfargotunnel.com`.
-
-**6. Run the tunnel:**
-
-```bash
-cd infra/graphiti
-cloudflared tunnel run mikai
-```
-
-Tunnel is now live. Test: `curl https://mikai.<your-domain>/health` should return `{"status":"ok"}`.
-
-**Important:** This exposes the entire sidecar (`/search`, `/episode`, `/stats`, etc.) to the internet. Currently no endpoint-level ACL exists. Future work: add a middleware that whitelists only `/mcp` for public requests and requires authentication for admin endpoints. For now, rely on bearer-token authentication (step 6) as your security boundary.
+1. **Prevent sleep on AC:** `sudo pmset -c sleep 0 disksleep 0`. Without this, lid-closed = stack-down regardless of LaunchAgents.
+2. **Docker Desktop autostart:** Docker Desktop → Settings → General → "Start Docker Desktop when you sign in". The start-stack script handles the cold case, but pre-launching cuts ~10s.
+3. **Telegram alerts (optional):** create `~/Library/Application Support/mikai/launchd/.env` with:
+   ```
+   TELEGRAM_BOT_TOKEN=...
+   TELEGRAM_CHAT_ID=...
+   ```
 
 ---
 
-## Bearer-token auth setup
+## Verification
 
-Set the token in the sidecar environment. Edit `infra/graphiti/docker-compose.yml`:
-
-```yaml
-services:
-  mikai-graphiti:
-    environment:
-      MIKAI_MCP_TOKEN: "your-secret-token-here"
-      # ... other vars
-```
-
-Or set it at runtime:
+End-to-end sweep:
 
 ```bash
-export MIKAI_MCP_TOKEN="your-secret-token-here"
-docker-compose up -d
+# Local sidecar
+curl -s localhost:8100/health
+# → {"status":"ok","backend":"graphiti-deepseek","neo4j":true}
+
+# Local OAuth discovery
+curl -s localhost:8100/.well-known/oauth-authorization-server | head -c 200
+
+# Public via Funnel
+curl -s -o /dev/null -w "%{http_code} in %{time_total}s\n" \
+  https://brians-macbook-air.tail8e4198.ts.net/health
+
+# LaunchAgent state
+launchctl print "gui/$(id -u)/com.mikai.docker-compose" | grep -E "last exit|state|runs"
+launchctl print "gui/$(id -u)/com.mikai.health-probe"    | grep -E "last exit|state|runs"
 ```
 
-**If unset:** `/mcp` is unauthenticated (safe for `localhost:8100` when Desktop hits it via `mcp-remote`; **NOT safe** for a public tunnel).
-
-**For mobile/browser connectors:** Paste the token value in the Custom Connector's "Token" field. The client will automatically send it as:
-
-```
-Authorization: Bearer your-secret-token-here
-```
-
-The sidecar validates the token before handling any MCP request.
+Healthy: HTTP 200 on both, agents `last exit code = 0`.
 
 ---
 
 ## Troubleshooting
 
-| Error | Cause | Fix |
-|-------|-------|-----|
-| **401 Unauthorized** | Token mismatch or missing | Check `MIKAI_MCP_TOKEN` env var matches the token in your Claude client config. Restart sidecar after changing env. |
-| **404 on /mcp** | Sidecar not running or mount failed | `curl http://localhost:8100/health` — should return `{"status":"ok"}`. If 404, check `docker logs mikai-graphiti` for startup errors. |
-| **500 Internal Error** | Graphiti or Neo4j crash | Check `docker logs mikai-graphiti` and `docker logs mikai-neo4j` for stack traces. Common: Neo4j OOM (increase Docker memory) or Graphiti patch not applied. |
-| **mcp-remote silent hang** | Port 8100 unreachable | Verify sidecar is running: `docker ps \| grep mikai-graphiti`. If not running, check `docker-compose up -d` output. If running but unreachable, check Docker network: `docker network ls` and `docker inspect <network> \| grep -A 10 mikai-graphiti`. |
-| **Custom Connector setup fails on mobile** | Tunnel URL must be HTTPS | Check that your tunnel URL starts with `https://` (not `http://`). Cloudflare Tunnel always uses HTTPS. |
-| **Sidecar starts but /mcp returns 404** | FastMCP mount may have failed | Check `docker logs mikai-graphiti` for lines like "Mounting FastMCP" or "ASGI app setup". If missing, the mcp_tools.py or main.py changes may not be in the image. Rebuild: `docker-compose down && docker-compose up -d --build`. |
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| Public URL returns 502 | Sidecar down, Funnel proxying to nothing | `docker ps`; if missing, `cd Desktop/MIKAI/infra/graphiti && docker compose up -d` |
+| `docker info` hangs | Docker Desktop not running | `open -a Docker`; wait ~10s. Enable Docker Desktop autostart for next time. |
+| LaunchAgent `last exit code = 126` + stderr "Operation not permitted" | TCC blocking script execution | Confirm scripts are at `~/Library/Application Support/mikai/launchd/`, not under `~/Desktop/`. Re-run `install.sh`. |
+| Mobile/web shows OAuth dance via bash ("paste the code") | MIKAI not registered as a Custom Connector on that surface | Re-add via Tools & Integrations using the OAuth flow above |
+| Connector reaches server but `/mcp` returns 401 after OAuth | `oauth_data` volume wiped (`docker compose down -v`) → signing secret rotated → existing refresh tokens invalid | Re-authorize from the Custom Connector — Claude redoes DCR + consent |
+| `get_history` errors "can't compare offset-naive and offset-aware datetimes" | Naive ISO datetime passed | Use timezone-aware: `2026-03-15T00:00:00+00:00` |
+| `mcp-remote` silent hang on Desktop | Port 8100 unreachable | `curl localhost:8100/health`; if it fails, sidecar is down. `docker logs mikai-graphiti`. |
+| Funnel public URL stops after reboot | Rare; Tailscale serve config dropped | `tailscale funnel --bg --https=443 http://127.0.0.1:8100` |
 
 ---
 
 ## Next steps
 
-Once all three surfaces are working, you have validated the transport and auth layer. The L4 (product semantics) layer — tension detection, thread detection, state classification — is designed separately on the `feat/l4-engine` branch. For now, L3 primitives (`search`, `add_note`, etc.) are the shipped interface.
+The L3 surface is operationally settled. The remaining frontiers:
 
-Read docs/DECISIONS.md D-034, D-041, and D-043 for the rationale behind surface coverage, L3/L4 separation, and the Streamable HTTP transport choice.
+1. **L4 product layer** (D-041) — task-state awareness, thread detection, next-step inference. The actual product, still unbuilt. Rewrite of `feat/l4-testing` onto the new `L3Backend` port (D-050) is the unblocked path.
+2. **Auto-ingestion coverage** — the 2026-04-18 eval (`docs/evals/run-20260418-103324.md`) showed Claude.ai's native chat memory retained higher-fidelity detail than MIKAI's graph because Claude captures everything by default. Closing this is the Hermes-style continuous-capture problem. Pattern B is the operational substrate any auto-ingestion daemon would run on.
+3. **Stage 6 quality verification** — 200+200 hand-labeling via `eval/label.py`.
+4. **Migrate the ingestion daemon's LaunchAgent** out of `infra/graphiti/launchd/` (still TCC-blocked) to the same `~/Library/Application Support/mikai/launchd/` location. Same workaround applies.
+
+See `docs/DECISIONS.md` D-040, D-041, D-043, D-045, D-048, D-051 for the architectural rationale.

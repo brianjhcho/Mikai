@@ -44,6 +44,8 @@ If reasoning-state transitions are detectable from temporal activity patterns + 
 ## High — affects extraction quality, privacy, generalization
 
 ### [Gap 6 / O-023] Epistemic edges barely read; node lifecycle management deferred
+**Update 2026-06-10 (D-052):** the typed/epistemic edges are now **DISABLED by default** — graphiti-core 0.28.2 cannot persist custom edge attributes (writes them as Neo4j Maps it rejects), so ingestion runs native extraction. This moat is parked until either a graphiti-core version that persists custom attributes is adopted, or L4 is designed against native freeform edges instead. The note below describes the typed design as it stood before being switched off.
+
 Edge types (`supports`, `contradicts`, `unresolved_tension`, `partially_answers`, `depends_on`, `extends`) are stored but only used for sort ordering. They do not influence retrieval scoring (a `contradicts` edge should boost relevance more than `supports`), do not trigger automatic tension detection when a query touches an unresolved edge, do not track belief revision chains, and are not used by segment search at all. The claimed competitive moat is an asset that is barely read. Also: nodes accumulate indefinitely; stale immediate-desire nodes (resolved purchases, past appointments) degrade retrieval over time. Needs a lifecycle policy (active → resolved → decayed → compacted) derived from behavioral data accumulated in Phases 2–3.
 
 ### [Gap 3] Pure vector retrieval — no keyword or temporal fusion
@@ -79,19 +81,6 @@ When does MIKAI decide to surface a stalled item? Too frequent = annoying, erode
 ---
 
 ## Medium — architectural, performance, integration
-
-### [O-042] Free-tier cloud-hosted Neo4j instead of local Docker
-**Opened 2026-05-21.** The Graphiti sidecar currently requires Docker + Neo4j running on Brian's laptop. Friction surfaced repeatedly: Docker restarts lose state until containers are brought back, the LaunchAgent ingestion daemon is blocked by macOS TCC because the repo lives under `~/Desktop/`, and a Mac reboot means a manual `docker compose up`. A managed-cloud Neo4j (Aura Free, or equivalent free-tier offering) would survive laptop restarts and TCC restrictions entirely.
-
-**Open questions for the investigation:**
-- **Capacity.** Aura Free historically caps at ~200k nodes / 400k relationships and 1 GB. The graph is at ~9,920 entities + 2,371 episodes today (well within limits) but grows with every ingestion — at what rate does it threaten the free tier?
-- **Latency.** Localhost Neo4j queries are sub-second; a cloud Neo4j adds RTT to every `search` / `get_source` / `expand`. How does that interact with the MCP tool budgets (Claude.ai already times out `get_source` calls occasionally)?
-- **Authentication and exposure.** Neo4j credentials become network-reachable; today they only exist on localhost. The sidecar's OAuth still gates `/mcp`, but the Neo4j Bolt connection itself becomes a second authenticated surface that needs hardening or IP allow-listing.
-- **Migration.** ~2,371 episodes need a one-time export from local Docker Neo4j and import into the cloud instance. Graphiti has its own UUIDs — verify they survive a dump/restore roundtrip.
-- **Cost ceiling.** Free tier first; what's the cost trajectory when it outgrows the free tier? At what graph size does the cloud path become as expensive as the on-device LocalAdapter option?
-- **Reversibility.** Want a clean exit path back to local Docker (or to LocalAdapter) if the cloud option doesn't work. The Stage 7 `L3Backend` port helps — could in principle build a "GraphitiCloudAdapter" subclass that just changes the Neo4j URI, no other product code touched.
-
-**Recommend:** start with read-only Aura Free probe — point an empty cloud instance at a small subset of episodes via the existing `/episode/bulk` REST endpoint with `NEO4J_URI=neo4j+s://...`, measure p95 latency on `search`/`get_source`, decide if the experience is workable before committing to a full migration.
 
 ### [Gap 7] Single-tenant schema (in Supabase era, predates Graphiti)
 No `user_id` column on sources, nodes, edges, segments. All RPCs searched the full database. Graphiti's per-episode isolation partially addresses this but multi-tenancy needs explicit design at the port level. Prevent the most expensive possible future migration.
@@ -176,8 +165,9 @@ If beta users come for memory and stay for memory, the noonchi thesis needs re-e
 
 - **[O-001]** Which surface first? — **Resolved 2026-03-14** via D-019. V1: WhatsApp bot. Final destination: Siri integration.
 - **[O-039]** Daemon-restart dedup — **Resolved 2026-04-29** on `feat/stage-2-ingestion-prod`. Per-source content-hash checkpoint shipped: `sync.py` keys Apple Notes by ZIDENTIFIER (UUID) and Claude Code by JSONL byte offset; `mcp_ingest.py` keys cloud sources by ISO poll-time. State persists to `~/.mikai/sync_state.json` after every pass.
-- **[O-040]** Daemon lifecycle / supervisor — **Resolved 2026-04-29** via launchd. `infra/graphiti/launchd/` ships a plist template + wrapper script + install README; `KeepAlive` + 30s `ThrottleInterval` handle crash recovery, `RunAtLoad` handles boot. macOS-native — no Docker dependency for the user-data ingestion path.
+- **[O-040]** Daemon lifecycle / supervisor — **Actually activated 2026-06-10.** The 2026-04-29 "resolution" shipped only the template; the install was TCC-blocked (repo under `~/Desktop/`) and never ran. Now genuinely live as `com.mikai.ingestion` via the D-051 TCC-safe pattern: runner at `~/Library/Application Support/mikai/launchd/sync-runner.sh`, secrets in `~/.mikai/launchd.env`, `KeepAlive` + 30s `ThrottleInterval` for crash recovery, `RunAtLoad` for boot. Full Disk Access granted on the Homebrew python so Apple Notes ingest works. Confirmed multi-hour stable uptime + real-time watchdog ingestion. Repo-side `infra/graphiti/launchd/` template still describes the old `~/Desktop/` path and should be reconciled to the App-Support reality.
 - **[O-041]** Burst-import API rate limits — **Resolved 2026-04-29** on `feat/stage-2-ingestion-prod`. Async token bucket (`sidecar/rate_limit.py`) wired ahead of every direct `graphiti.add_episode` call in `sync.py` and `mcp_ingest.py`. Defaults: 60 rpm each for DeepSeek and Voyage; per-bucket overrides via `MIKAI_RATELIMIT_<NAME>_RPM` env vars.
+- **[O-042]** Free-tier cloud-hosted Neo4j instead of local Docker — **Resolved 2026-06-04** via D-051. Pattern B (laptop-as-home-server) chosen over Aura Free / paid cloud — Aura Free's ~200k-node cap leaves little growth headroom, paid tier (~$65/mo) is not justified vs. a $0 laptop, and migration would move the JWT signing key + graph onto someone else's infra for no functional gain while the laptop is awake. Stack now auto-starts via LaunchAgents at `~/Library/Application Support/mikai/launchd/`; the TCC blocker that previously prevented launchd installs on the repo (which lives under `~/Desktop/`) is solved by relocating scripts outside the TCC-protected subtree. Reopen if laptop sleep becomes the binding constraint.
 
 ---
 
