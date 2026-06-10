@@ -31,6 +31,7 @@ custom_extraction_instructions assembled in prompt_negatives.py.
 """
 
 import logging
+import os
 from typing import Any
 
 from sidecar.extraction import EDGE_TYPE_MAP, EDGE_TYPES, ENTITY_TYPES_BY_SOURCE
@@ -93,7 +94,20 @@ def extraction_params_for(source_description: str) -> dict[str, Any]:
       custom_extraction_instructions — negative-example prompt augmentation
 
     All keys are accepted by graphiti_core.Graphiti.add_episode() ≥ 0.7.
+
+    Default is graphiti-core NATIVE extraction (returns {} — no custom kwargs).
+    The Stage 6 typed extraction (custom entity_types + epistemic edge_types) is
+    incompatible with graphiti-core 0.28.2's attribute persistence: 0.28.2 writes
+    custom node/edge attributes as nested Neo4j Maps, which Neo4j rejects with
+    `Property values can only be of primitive types`. Native extraction carries
+    only primitive fields (name, summary, fact) and matches the freeform-graph
+    L4 direction. Set MIKAI_TYPED_EXTRACTION=1 to revive Stage 6 (requires a
+    graphiti-core version that persists custom attributes correctly).
     """
+    if os.environ.get("MIKAI_TYPED_EXTRACTION", "").strip().lower() not in (
+        "1", "true", "yes", "on"
+    ):
+        return {}
     key = _resolve_key(source_description)
     entity_types = ENTITY_TYPES_BY_SOURCE[key]
     return {

@@ -1,4 +1,4 @@
-graphiti-core[anthropic,voyageai]>=0.5
+graphiti-core[anthropic,voyageai]==0.28.2
 fastapi>=0.115
 uvicorn>=0.34
 pydantic>=2.0
