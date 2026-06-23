@@ -39,6 +39,21 @@ Current prompt produces reasoning maps (tensions, beliefs, edges) from the EPIST
 ### [O-036] Can thread-state classification be done with zero LLM?
 If reasoning-state transitions are detectable from temporal activity patterns + simple heuristics, cost stays near zero — only next-step inference needs LLM synthesis. Prototype state classification rules against Brian's data. Measure accuracy against manually labeled thread states. If rule-based > 80%, LLM stays single-call per thread. Critical for L4 cost structure. Related: D-026, FOUNDATIONS.md §3.
 
+### [O-043] What is MIKAI's core noun?
+**Surfaced 2026-06-23.** The strategic-research thread surfaced four candidate cores: inbox / RSS curation, context-matched re-surfacing (the "tennis video bookmarked → re-surface at tennis court" example), control layer / memory substrate for agents (Jensen Huang's framing), task-state engine (existing noonchi framing). Each implies a different product, surface, and permission scope. Until one is chosen as load-bearing, every feature decision is taste-based. Resolve before resuming L4 port work or committing to a new surface. Related: O-018, O-044, O-045, O-046, O-047, `docs/research/strategic-research-2026-06.md`.
+
+### [O-044] Noticer or executor — does MIKAI take actions?
+**Surfaced 2026-06-23.** MIKAI today is a noticer (observes, infers, surfaces — doesn't do). Jensen's control-layer framing requires execution (tools + permissions imply actions). Crossing the line changes L4 design (action authorization), trust calibration (failure cost of wrong action >> wrong inference), and threat model (executor agents have larger blast radius). The wind is at the executor's back (Hermes, ChatGPT, Claude, Apple Intelligence all moving that way), but every executor today struggles with trust calibration. Related: O-043, FOUNDATIONS.md §3, `docs/research/strategic-research-2026-06.md`.
+
+### [O-045] Vertical product or horizontal substrate?
+**Surfaced 2026-06-23.** Today MIKAI is incoherent on this spectrum: L3Backend port suggests parts (swappable backend), L4 inference suggests holistic (vertically integrated noonchi product), MCP surface suggests parts (others consume MIKAI), LocalAdapter ambition suggests holistic (all-on-device). The control-layer framing pushes toward parts; the noonchi framing pushes toward holistic. Can't be both without diluting both. Resolution determines whether MIKAI invests in distribution-as-product or distribution-as-developer-API. Related: O-043, O-027, O-034, `docs/research/strategic-research-2026-06.md`.
+
+### [O-046] Who is MIKAI for, and how do they discover it?
+**Surfaced 2026-06-23.** Candidate users imply different products: Brian only (research project, ambitious scope, no PMF pressure) / "founders who write a lot" (current beta hypothesis, O-027) / general consumer (requires radical simplification + trust capital) / developers building on MIKAI (control-layer framing, MIKAI is plumbing) / other AI products (substrate play, MIKAI is sold as memory infrastructure). Each implies different defaults, trust models, distribution paths, monetization shapes. Cannot be answered independently of O-043. Related: O-027, O-038, `docs/research/strategic-research-2026-06.md`.
+
+### [O-047] What's the moat 18 months out when the substrate commoditizes?
+**Surfaced 2026-06-23.** Apple Intelligence is shipping notification triage. ChatGPT memory is rolling out long-context personal recall. Hermes is at 135K stars. Cognee benchmarks better than Graphiti on multi-hop reasoning and uses auto-generated ontologies (no hand-crafted epistemic vocabulary needed). If all of these are 12 months behind MIKAI today, what does MIKAI have when they catch up? The L3 substrate gets commoditized. The L4 inference gets copied. The epistemic edge vocabulary was deprecated as a moat claim in the same research. What stays durable? Candidate answers to weigh: cross-source ingestion breadth, intent-matched delivery (intervention-timing literature gap), corpus-grown switching cost, user-owned memory portability. Related: O-008, O-037, VISION.md §2, `docs/research/strategic-research-2026-06.md`.
+
 ---
 
 ## High — affects extraction quality, privacy, generalization

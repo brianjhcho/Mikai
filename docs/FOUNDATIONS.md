@@ -149,6 +149,10 @@ A good extraction from a personal reflection should produce:
 
 L4 is MIKAI's product layer: thread detection, state classification, next-step inference, intention-behavior gap detection. It sits above the `L3Backend` port (D-041). This section is the research-to-build bridge.
 
+### Terminology
+
+The published technical term for the L4 delivery gate is **"intervention timing"** (CHI 2025; replicated in arXiv:2601.10253, Jan 2026). Earlier drafts of this doc used "Sumimasen" as a codename inspired by the Japanese for polite intrusion. Sumimasen remains fine in internal/team contexts but is not a published term and won't be understood outside MIKAI; use "intervention timing" or "intervention timing gate" in code, docs, and external communications. Related concept terms that are also valid in the literature: "considerate computing" (Horvitz 2005, whole-system framing), "attentive delivery" (Vertegaal CACM 2003), "calm technology" (Weiser & Brown 1995). Background and full lineage: `docs/research/strategic-research-2026-06.md` §3.
+
 ### The five papers and what they solve
 
 Each paper solves one component of the L4 pipeline. None builds the complete system. MIKAI's job is to assemble them.
@@ -191,6 +195,22 @@ If state transitions (exploring → evaluating → decided → acting → stalle
 - Behavioral confirmation (booking email, merge commit) → completed
 
 This is O-036. Target: if rule-based accuracy > 80%, keep LLM to a single call per thread for next-step inference only.
+
+### Task-boundary intervention — the load-bearing delivery principle
+
+Of everything in the proactive-AI literature, one empirical result has the highest signal-to-cost ratio for product decisions: **interrupting at task boundaries vs. random moments reduces cost-of-interruption by ~30% and halves errors and negative affect** (Iqbal & Bailey 2006). The Jan 2026 field study arXiv:2601.10253 (229 interventions over 5 days with professional developers) replicates the finding in the LLM context: post-commit suggestions are accepted more readily than mid-task interventions.
+
+**Design implication:** if the intervention-timing gate implements only one signal, it should be task-boundary detection. Boundaries detectable from existing MIKAI ingestion signals:
+
+- Apple Notes save event
+- Gmail outgoing send
+- Claude Code session close (JSONL tail)
+- Calendar meeting-end event
+- Phone unlock after >5 min idle (Shortcuts can detect)
+- App switch with no immediate re-engagement
+- Long idle followed by deliberate action
+
+The delivery layer doesn't need new sensors — it needs to use the existing event stream as a boundary detector, not just as content for extraction. Full lineage and supporting research: `docs/research/strategic-research-2026-06.md` §4.
 
 ### Build priority
 
