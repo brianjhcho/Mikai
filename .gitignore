@@ -77,3 +77,6 @@ tsconfig.tsbuildinfo
 sources/local-files/export/perplexity/
 client_secret_*.json
 package-lock.json
+
+# Worktree parent artifact
+.superset/
