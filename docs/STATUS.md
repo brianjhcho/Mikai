@@ -53,9 +53,18 @@
 
 ### Repo shape
 - `infra/graphiti/` — sidecar, daemon, OAuth, extraction schemas, 341-test suite
+- `infra/decider/` — L4 notification decider (D-053). Single Python script + 3 source adapters (iMessage SQLite, Calendar SQLite, Gmail IMAP), validates Claude's send/silent decision, dispatches via ntfy.sh, logs to local SQLite for the dismiss/act feedback loop
 - `eval/` — Stage 6 harness + labeling CLI
 - `docs/` — architecture, decisions, status, research, stage briefs, eval scorecards
 - `scripts/` — patch automation, eval raters, preflight, dev utilities
+
+### L4 notification decider (D-053) — early operational
+- **`infra/decider/mikai_decide.py`** — single-script LLM-only notification decider. Per tick: pulls candidate signals from the L3 graph (5 semantic lenses + a Cypher recency lens for last-24h edges) plus live cross-source events from iMessage/Calendar/Gmail adapters, asks Claude (via headless `claude -p`, Max-legitimate) whether to send a notification, validates the decision's evidence citations against the prompt context, enforces a cooldown window, and dispatches via ntfy.sh on send.
+- **`adapters/imessage.py`** — read-only SQLite query against `~/Library/Messages/chat.db`; requires Full Disk Access (granted).
+- **`adapters/calendar.py`** — direct SQLite read of `~/Library/Calendars/Calendar.sqlitedb`. iCloud Calendars sync verified working.
+- **`adapters/gmail.py`** — IMAP via Google app password (env vars in `.env.local`). Pulls unread + 24h windowed inbox.
+- **Decision log** at `~/.mikai/notification_log.db` — one row per tick (sent or silent), captures prompt hash, decision JSON, reasoning, user response.
+- **Verification status:** end-to-end dry-run confirmed cross-source reasoning over real data. ntfy → iPhone dispatch verified via `--test-ntfy`. Real organic notifications gated on (a) more diverse live signal (claude-thread=0 gap — see O-048), and (b) cron-style scheduling (still manual `--force` invocation).
 
 ---
 
@@ -86,6 +95,8 @@
 - **L4 engine on main** (D-041). `feat/l4-testing` holds prior SQLite-era work; needs a real rewrite onto the new `L3Backend` port. The product layer — task-state classification, thread detection, next-step inference — is where the noonchi moat actually lives. Stage 7 unblocked this work.
 - **Stage 6 quality verification** — label the 200+200 gold set via `eval/label.py`, run `eval/run_l3_eval.py`. Estimated ~30–45 min of keyboard time. Until this lands, the "3.10 → ≥4.3" extraction-quality claim is unverified.
 - **Head-to-head benchmark against Claude.ai's native memory** — carry-over from `mcp_eval_pending` memory. 6 MIKAI answers collected 2026-04-18; Claude.ai baselines never collected. Re-feasible once Stage 6 verification lands.
+- **Claude-thread ingestion gap (O-048).** As of 2026-06-26 the graph has 0 `claude-thread` episodes — the daily Claude.ai web/desktop ingestion never landed (or stopped after 2026-05-21). 1,642 `claude-code` episodes from terminal sessions, and 62 `apple-notes` episodes are healthy. Brian is fixing on a separate branch (cookie-decrypt + internal API, 7-day window). Once landed, the notification decider's fresh-lens will see Claude.ai conversation content directly instead of just meta-references to it.
+- **L4 decider calibration (D-053).** First ticks ran silent — correctly, given the available signal was mostly newsletters + meta-references. Real validation of "the LLM is the right brain" requires (a) richer signal (the claude-thread fix above), (b) actual dismiss/act data accumulating in `notification_log.db`, and (c) scheduling via Routines or local cron. Plan: re-run dry-runs after the claude-thread fix lands; instrument dismiss/act response capture; promote to scheduled execution.
 
 ## Future product directions
 
