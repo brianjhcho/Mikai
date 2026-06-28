@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MIKAI Runtime — Capture · Substrate · Dream · Projection</title>
+<style>
+  :root{
+    --bg:#0b0e12; --surface:#141a21; --surface-2:#1b2330; --line:#2a3441;
+    --ink:#e6edf3; --muted:#8b97a6; --dim:#5c6675;
+    --new:#3fd4a0; --new-glow:rgba(63,212,160,.16);
+    --accent:#6ea8fe; --warn:#e0a458;
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:radial-gradient(1200px 700px at 70% -10%,#121a24 0%,var(--bg) 55%);
+    color:var(--ink);font-family:var(--sans);line-height:1.5;-webkit-font-smoothing:antialiased;}
+  .wrap{max-width:1180px;margin:0 auto;padding:40px 28px 64px;}
+  header{display:flex;justify-content:space-between;align-items:flex-end;gap:24px;flex-wrap:wrap;
+    border-bottom:1px solid var(--line);padding-bottom:22px;margin-bottom:30px;}
+  h1{font-size:26px;margin:0 0 6px;letter-spacing:-.02em;font-weight:650;}
+  h1 .k{color:var(--new);}
+  .sub{color:var(--muted);font-size:14px;max-width:560px;}
+  .legend{display:flex;gap:18px;font-size:12.5px;color:var(--muted);}
+  .legend span{display:inline-flex;align-items:center;gap:7px;}
+  .dot{width:10px;height:10px;border-radius:3px;}
+  .dot.ex{background:var(--surface-2);border:1px solid var(--line);}
+  .dot.nw{background:var(--new);box-shadow:0 0 10px var(--new-glow);}
+
+  .grid{display:grid;grid-template-columns:1fr 280px;gap:28px;align-items:start;}
+  @media(max-width:880px){.grid{grid-template-columns:1fr}}
+
+  .stage{position:relative;}
+  .stage-label{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;
+    color:var(--dim);margin:0 0 10px 2px;}
+  .row{display:flex;gap:14px;flex-wrap:wrap;}
+  .card{flex:1 1 210px;background:var(--surface);border:1px solid var(--line);border-radius:12px;
+    padding:14px 16px;min-width:0;}
+  .card.new{border-color:rgba(63,212,160,.4);background:linear-gradient(180deg,var(--new-glow),transparent 60%),var(--surface);
+    box-shadow:0 0 0 1px rgba(63,212,160,.12),0 8px 30px -18px var(--new);}
+  .card h3{margin:0 0 3px;font-size:14.5px;display:flex;align-items:center;gap:8px;}
+  .tag{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;padding:2px 6px;border-radius:5px;
+    background:var(--new);color:#04130d;font-weight:700;text-transform:uppercase;}
+  .tag.sched{background:var(--surface-2);color:var(--accent);border:1px solid var(--line);font-weight:600;}
+  .card .file{font-family:var(--mono);font-size:11.5px;color:var(--new);}
+  .card.ex .file{color:var(--accent);}
+  .card p{margin:7px 0 0;font-size:12.5px;color:var(--muted);}
+  .card .meta{margin-top:8px;font-family:var(--mono);font-size:10.5px;color:var(--dim);}
+
+  .flow{display:flex;align-items:center;justify-content:center;gap:10px;color:var(--dim);
+    font-family:var(--mono);font-size:11px;margin:13px 0;}
+  .flow::before,.flow::after{content:"";height:1px;flex:0 0 60px;background:linear-gradient(90deg,transparent,var(--line),transparent);}
+  .flow .arrow{color:var(--new);font-size:13px;}
+
+  /* right rail */
+  .rail{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:18px 18px 8px;
+    position:sticky;top:24px;}
+  .rail h2{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:0 0 4px;}
+  .rail .pb{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:14px;}
+  .job{display:flex;align-items:flex-start;gap:11px;padding:11px 0;border-top:1px solid var(--line);}
+  .job .when{font-family:var(--mono);font-size:10px;color:var(--dim);flex:0 0 52px;padding-top:2px;text-align:right;}
+  .job .body strong{font-family:var(--mono);font-size:12px;font-weight:600;}
+  .job .body small{display:block;color:var(--muted);font-size:11.5px;margin-top:1px;}
+  .job.new .body strong{color:var(--new);}
+  .pulse{width:7px;height:7px;border-radius:50%;background:var(--new);margin-top:6px;flex:0 0 7px;
+    box-shadow:0 0 0 0 var(--new);animation:p 2.4s infinite;}
+  .pulse.ex{background:var(--dim);animation:none;}
+  @keyframes p{0%{box-shadow:0 0 0 0 var(--new-glow)}70%{box-shadow:0 0 0 7px transparent}100%{box-shadow:0 0 0 0 transparent}}
+
+  .invariant{margin-top:32px;border:1px dashed var(--line);border-radius:12px;padding:16px 20px;
+    background:var(--surface);font-size:13px;color:var(--muted);}
+  .invariant b{color:var(--ink);font-weight:600;}
+  .invariant .lede{font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--new);margin-bottom:8px;}
+  footer{margin-top:26px;color:var(--dim);font-size:11.5px;font-family:var(--mono);}
+  footer a{color:var(--accent);text-decoration:none;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>MIKAI <span class="k">·</span> Runtime</h1>
+      <div class="sub">Capture → Substrate → <b style="color:var(--new)">Dream</b> → Projection. The graph is the immutable record; the wiki is a self-maintaining model of the user, re-derived nightly.</div>
+    </div>
+    <div class="legend">
+      <span><i class="dot ex"></i>existing</span>
+      <span><i class="dot nw"></i>new (2026-06-28)</span>
+    </div>
+  </header>
+
+  <div class="grid">
+    <!-- PIPELINE -->
+    <div>
+      <div class="stage">
+        <p class="stage-label">① Sources</p>
+        <div class="row">
+          <div class="card new"><h3>Claude.ai threads <span class="tag">new</span></h3><div class="file">web + desktop conversations</div><p>Content lives only in Anthropic's cloud — pulled via the claude.ai internal API.</p></div>
+          <div class="card ex"><h3>Claude Code</h3><div class="file">~/.claude/projects/*.jsonl</div><p>Session transcripts, tailed by byte offset.</p></div>
+          <div class="card ex"><h3>Apple Notes</h3><div class="file">group.com.apple.notes</div><p>SQLite read, content-hash dedup.</p></div>
+        </div>
+      </div>
+
+      <div class="flow"><span>capture daemons</span></div>
+
+      <div class="stage">
+        <p class="stage-label">② Capture</p>
+        <div class="row">
+          <div class="card new"><h3>claude_threads.py <span class="tag sched">05:15 daily</span></h3><div class="file">cookie-decrypt → claude.ai API</div><p>Decrypts the live <span style="font-family:var(--mono)">sessionKey</span> via the stable Safe-Storage key (no monthly re-paste). One episode per message, watermarked.</p><div class="meta">group_id = claude-thread</div></div>
+          <div class="card ex"><h3>sync.py <span class="tag sched">watchdog</span></h3><div class="file">continuous filesystem watcher</div><p>Real-time ingest of Claude Code + Apple Notes on file change.</p></div>
+        </div>
+      </div>
+
+      <div class="flow"><span>ingest_episode()</span><span class="arrow">▼</span><span>L3Backend port</span></div>
+
+      <div class="stage">
+        <p class="stage-label">③ L3 Substrate — immutable record</p>
+        <div class="row">
+          <div class="card ex"><h3>Graphiti + Neo4j</h3><div class="file">bitemporal entity graph</div><p>~12.6k entities. Never deleted, only superseded. The single source of truth.</p><div class="meta">DeepSeek V3 extract · Voyage embed</div></div>
+        </div>
+      </div>
+
+      <div class="flow"><span>read last 7 days of episodes</span><span class="arrow">▼</span></div>
+
+      <div class="stage">
+        <p class="stage-label">④ Dream — reflection</p>
+        <div class="row">
+          <div class="card new"><h3>dream.py <span class="tag sched">06:00 nightly</span></h3><div class="file">one DeepSeek synthesis call</div>
+            <p>Reflects the recent memory stream + current wiki into an updated model of what the user wants, values, is doing, and is conflicted about.</p>
+            <div class="meta">rules: surface&nbsp;tensions · weight&nbsp;depth · mark&nbsp;movement · ground<br>lineage: Karpathy&nbsp;wiki + GA&nbsp;reflection + MIKAI&nbsp;tension-surfacing</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="flow"><span>rewrite (graph untouched)</span><span class="arrow">▼</span></div>
+
+      <div class="stage">
+        <p class="stage-label">⑤ Wiki — projection, read whole</p>
+        <div class="row">
+          <div class="card new"><h3>wiki.md <span class="tag">new</span></h3><div class="file">~/.mikai/wiki/wiki.md</div><p>## Who · ## Now (state) · ## Tensions (held, never collapsed) · ## Wants</p><div class="meta">disposable · re-derivable from the graph</div></div>
+          <div class="card new"><h3>log.md <span class="tag">new</span></h3><div class="file">~/.mikai/wiki/log.md</div><p>Append-only per-dream delta — the revision record / trajectory.</p></div>
+        </div>
+      </div>
+
+      <div class="flow"><span>read whole · /search</span><span class="arrow">▼</span></div>
+
+      <div class="stage">
+        <p class="stage-label">⑥ Surfaces</p>
+        <div class="row">
+          <div class="card ex"><h3>MCP sidecar</h3><div class="file">localhost:8100 · OAuth</div><p>search · get_history · get_source — the Claude.ai custom connector.</p></div>
+          <div class="card ex"><h3>Wiki → any LLM</h3><div class="file">priming context</div><p>The model an assistant reads whole to know the user.</p></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ORCHESTRATION RAIL -->
+    <aside class="rail">
+      <h2>Orchestration</h2>
+      <div class="pb">launchd · Pattern B (laptop-as-home-server)</div>
+      <div class="job"><span class="when">login</span><span class="pulse ex"></span><div class="body"><strong>docker-compose</strong><small>Neo4j + sidecar up</small></div></div>
+      <div class="job"><span class="when">5 min</span><span class="pulse ex"></span><div class="body"><strong>health-probe</strong><small>stack health + on wake</small></div></div>
+      <div class="job"><span class="when">cont.</span><span class="pulse ex"></span><div class="body"><strong>ingestion</strong><small>sync.py — Notes + Code</small></div></div>
+      <div class="job new"><span class="when">05:15</span><span class="pulse"></span><div class="body"><strong>claude-threads</strong><small>Claude.ai → graph</small></div></div>
+      <div class="job new"><span class="when">06:00</span><span class="pulse"></span><div class="body"><strong>dream</strong><small>graph → wiki.md</small></div></div>
+    </aside>
+  </div>
+
+  <div class="invariant">
+    <div class="lede">load-bearing invariant</div>
+    The graph is the <b>immutable substrate</b> and is <b>read-only to the dream</b>. The wiki is a <b>disposable projection</b>, rebuilt every night — anything it forgets is re-derivable. And the dream <b>holds tensions, never resolves them</b>: unresolved thinking is the highest-value signal, so it is surfaced, not tidied away.
+  </div>
+
+  <footer>
+    Built 2026-06-28 · code on <b>main</b> (<a>infra/graphiti/{claude_threads,dream}.py</a>) · design on <b>navy-windshield</b> (MEMORY_ARCHITECTURE.md, Parts A–H) · ops in <a>docs/DREAM_WIKI_RUNTIME.md</a>
+  </footer>
+</div>
+</body>
+</html>

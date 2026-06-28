@@ -2,7 +2,7 @@
 
 > **What this file is:** The volatile state-of-the-world doc. It describes what is actually live on `main` right now — not the long-term vision (`CLAUDE.md`), not the architectural decisions (`docs/DECISIONS.md`), not the intellectual foundations (`docs/EPISTEMIC_*.md`). Update this file as main changes. If it contradicts CLAUDE.md, update CLAUDE.md only if the change is a principle, not a state.
 
-**Last meaningful update:** 2026-06-10 (ingestion fixed + automated: graphiti-core pinned, native extraction is now the default per D-052, launchd ingestion daemon live; plus D-051 Pattern B)
+**Last meaningful update:** 2026-06-28 (Claude.ai thread capture + Dream/Wiki runtime live — two new nightly daemons; see new subsection below and `docs/DREAM_WIKI_RUNTIME.md`). Prior: 2026-06-10 (ingestion fixed + automated, graphiti-core pinned per D-052, launchd ingestion live, D-051 Pattern B)
 **Latest commit on main at writing:** `a19a81c` — fix(ingestion): default to native graphiti extraction; pin graphiti-core
 
 ---
@@ -39,6 +39,12 @@
 - **Async token-bucket rate limiter** at `sidecar/rate_limit.py` — gates DeepSeek + Voyage calls (default 60 rpm each, per-bucket env override). Prevents the 429-burst that surfaced as O-041.
 - **State checkpoint** at `~/.mikai/sync_state.json` — per-source content-hash dedup (Apple Notes) + byte-offset tail (Claude Code). `--dry-run` is properly dry (regression test in place).
 - **launchd ingestion daemon LIVE (2026-06-10).** `com.mikai.ingestion` installed via the D-051 TCC-safe pattern: runner at `~/Library/Application Support/mikai/launchd/sync-runner.sh` (outside `~/Desktop/`), secrets in `~/.mikai/launchd.env`, logs at `~/.mikai/logs/sync.{out,err}.log`; folded into the App-Support `install.sh`. Runs sync.py in watchdog mode — auto-ingests new Claude threads + Apple Notes the moment session/note files change (confirmed: multi-hour stable uptime, real-time per-turn ingestion). Apple Notes needs a one-time Full Disk Access grant on the Homebrew python binary (`/opt/homebrew/Cellar/python@3.12/.../bin/python3.12`) — granted 2026-06-10. Pause with `launchctl bootout gui/$(id -u)/com.mikai.ingestion`.
+
+### Claude.ai thread capture + Dream/Wiki runtime (new 2026-06-28)
+Two new nightly daemons turn the graph into a self-maintaining model of the user. Full operational reference: `docs/DREAM_WIKI_RUNTIME.md`. Design + contradiction resolution: `MEMORY_ARCHITECTURE.md` (navy-windshield, Parts A–H).
+- **`com.mikai.claude-threads` (daily 05:15)** — `infra/graphiti/claude_threads.py` ingests Claude.ai web/desktop conversations (`group_id="claude-thread"`), closing the long-standing claude-thread=0 gap. Auth = the desktop app's `sessionKey` cookie, decrypted with the *stable* `Claude Safe Storage` key cached as `CLAUDE_SAFE_STORAGE_PW` in `launchd.env` (avoids the keychain-hangs-under-launchd trap). Per-conversation watermark in `~/.mikai/claude_threads_state.json`. Backfill: `claude_threads.py --once --all`.
+- **`com.mikai.dream` (nightly 06:00)** — `infra/graphiti/dream.py` is one DeepSeek call: reflect the last 7 days of episodes into `~/.mikai/wiki/wiki.md` (`## Who / Now / Tensions / Wants`) + append a revision delta to `log.md`. Karpathy LLM-Wiki + Generative-Agents reflection + MIKAI tension-surfacing. **Graph is read-only to the dream**; the wiki is a disposable, re-derivable projection. No numeric scoring in the prototype (deferred, O-052). First run: 138 episodes → 7.3 KB wiki, 6 live tensions surfaced.
+- **Decisions proposed, not yet in `DECISIONS.md`:** ARCH-026 (dual-store), ARCH-027 (dreaming), D-053/054, O-048–052.
 
 ### MCP server + OAuth (Stage 5, D-048)
 - **Python MCP server** at `infra/graphiti/sidecar/mcp_tools.py` (FastMCP, streamable HTTP at `/mcp`) and `mcp_server.py` (stdio transport for Claude Desktop)
