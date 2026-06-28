@@ -1077,19 +1077,21 @@ Agents and scripts live at `~/Library/Application Support/mikai/launchd/` — **
 
 ---
 
-## D-053: LLM-only notification decider is the L4 prototype shape (not rules engine + bandit)
+## D-053: FIGS — LLM-only notification interface (not rules engine + bandit)
 
-**Date:** 2026-06-26
-**Source:** L4 notification-decider build session (`infra/decider/`); supersedes the hybrid rules-engine-plus-bandit direction proposed in the predictive-layer-spec exploratory thread.
+**Date:** 2026-06-26 (naming clarified 2026-06-27)
+**Source:** FIGS V0 build session (`infra/decider/`); supersedes the hybrid rules-engine-plus-bandit direction proposed in the predictive-layer-spec exploratory thread.
 
-**Decision:** L4's first shippable surface is a single Python script (`infra/decider/mikai_decide.py`) that on each tick:
-1. Pulls candidate signals from the L3 graph via Cypher recency lens (last 24h `RELATES_TO` edges) + 5 semantic-search lenses (active threads, contradictions, recurring patterns, urgent/time-sensitive, personal life)
-2. Pulls live cross-source events via per-source adapters (`adapters/imessage.py` via SQLite, `adapters/calendar.py` via Calendar.sqlitedb direct read, `adapters/gmail.py` via IMAP + app password)
-3. Asks Claude (via headless `claude -p`, first-party OAuth — no API credits burned) "send a notification right now? if yes, what and at what interruption level?"
+**Naming convention (companion decision, 2026-06-27):** **MIKAI** is the backend (L3 graph + L4 reasoning). **FIGS** is the notification interface that consumes MIKAI. Every notification/push/interrupt surface is FIGS; every storage/extraction/reasoning surface is MIKAI. Code currently lives at `infra/decider/` for historical reasons; FIGS is the canonical doc name.
+
+**Decision:** FIGS V0 is a single Python script (`infra/decider/mikai_decide.py`) that on each tick:
+1. Pulls candidate signals from MIKAI (L3 graph) via Cypher recency lens (last 24h `RELATES_TO` edges) + 5 semantic-search lenses (active threads, contradictions, recurring patterns, urgent/time-sensitive, personal life)
+2. Pulls live cross-source events via FIGS's own per-source adapters (`adapters/imessage.py` via SQLite, `adapters/calendar.py` via Calendar.sqlitedb direct read, `adapters/gmail.py` via IMAP + app password)
+3. Invokes MIKAI's L4 reasoning by asking Claude (via headless `claude -p`, first-party OAuth — no API credits burned) "send a notification right now? if yes, what and at what interruption level?"
 4. Validates evidence citations against the prompt context (no hallucinated UUIDs), enforces a cooldown window (default 2h), and dispatches via ntfy.sh on send
 5. Logs every decision (sent + silent) to local SQLite at `~/.mikai/notification_log.db` for the dismiss/act feedback loop
 
-The brain is the LLM. There is no rules engine, no priority queue, no LightGBM ranker, no contextual bandit, no notification-graph engineering. Default is silence; the bar for "send" is structurally high (evidence-citation requirement + cooldown + explicit "default silent" instruction in the prompt).
+The brain is MIKAI's L4 reasoning (the LLM). There is no rules engine, no priority queue, no LightGBM ranker, no contextual bandit, no notification-graph engineering inside FIGS itself. Default is silence; the bar for "send" is structurally high (evidence-citation requirement + cooldown + explicit "default silent" instruction in the prompt).
 
 **Why:**
 
