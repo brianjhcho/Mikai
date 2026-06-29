@@ -41,6 +41,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib import request as urlreq
@@ -97,12 +98,26 @@ CREATE INDEX IF NOT EXISTS idx_notification_log_tick ON notification_log(tick_ts
 CREATE INDEX IF NOT EXISTS idx_notification_log_sent ON notification_log(sent);
 """
 
+# Columns added after the initial schema landed. SQLite doesn't support
+# ADD COLUMN IF NOT EXISTS, so we attempt + swallow OperationalError per col.
+EXTRA_COLUMNS = [
+    ("decision_point", "TEXT"),
+    ("slate_index", "INTEGER"),
+    ("slate_size", "INTEGER"),
+]
+
 
 def db_connect() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    for col, decl in EXTRA_COLUMNS:
+        try:
+            conn.execute(f"ALTER TABLE notification_log ADD COLUMN {col} {decl}")
+        except sqlite3.OperationalError:
+            pass  # already added
+    conn.commit()
     return conn
 
 
@@ -533,7 +548,7 @@ def in_cooldown(conn: sqlite3.Connection, hours: float = COOLDOWN_HOURS) -> bool
 # ── Prompt build ───────────────────────────────────────────────────────
 
 DECIDE_PROMPT = """\
-You are MIKAI, Brian's notification decider. Your single job: decide whether to send Brian a notification right now, and if so what to say.
+You are MIKAI, Brian's notification decider. Your job this tick: surface 2 to 5 distinct notifications, each picking up a real thread of Brian's life at the exact decision point he last paused on. NOT 0, NOT 1, NOT 6. If you can only justify 1, pick a second-best from the needs registry — Brian curated it; every item there is worth a nudge.
 
 CURRENT TIME: {now} (UTC), {weekday}, hour {hour} UTC
 
@@ -607,26 +622,57 @@ RULES YOU MUST FOLLOW:
 
 3. **Wiki supersedes raw edges (SOFT GATE).** If a raw graph edge says "X" but the wiki ## Who or ## Now says "Y" (different detail, different state, different location/decision), trust the wiki. Example: a raw edge says "Denver proposal spots" but the wiki says "planning a proposal trip with Germaine — Atacama or Ladakh are leading candidates" — DO NOT surface Denver; that's stale. The proposal thread isn't even in ## Now (it's at the ## Who level), suggesting it's background, not currently-being-acted-on.
 
-4. **Default to silence FOR NOISE.** Newsletters, marketing emails, parking auto-receipts, meta-references about MIKAI itself, system messages — silent.
+4. **Default to silence FOR NOISE.** Newsletters, marketing emails, parking auto-receipts, meta-references about MIKAI itself, system messages — silent (i.e., don't include them in the output array). But the FLOOR for the output array is 2: if you're tempted to silence everything, you're misreading the needs registry — re-rank.
 
-5. **High-value send pattern.** A wiki ## Now thread in state "acting" with high tension_pressure AND a recent raw-event signal (calendar event tomorrow, message about it, deadline-language) = clear send candidate.
+5. **Pick up the conversation. Don't open a new one.** This is the single most important rule for body content. For every notification, you must:
+   (a) identify the **decision point** Brian last paused at on this thread — the unresolved question, the half-made choice, the blocker he hit, the next concrete move he was weighing;
+   (b) write the body so it RESUMES from that point, not from the topic in general.
+   - BAD: "Denver proposal spots — still open?" (vague, reopens a closed thread, no pickup)
+   - BAD: "Have you thought about your MSP?" (no decision point, no movement)
+   - GOOD: "MSP doc hunt: BC residence proof is the blocker. Pull BC license + utility bill tonight, slot the ServiceBC visit." (states the exact unresolved beat + the smallest next move)
+   - GOOD: "Atacama vs Ladakh — last beat: cost vs altitude. Atacama is 15h on a plane; Ladakh needs Oct timing. Pick one this week so we can book the venue." (resumes from the actual last decision-fork, not the topic)
+   The needs registry's `next_step` and `last_movement` fields are your ground truth for the decision point. The wiki ## Now thread state (acting/stalled/decided) tells you what kind of pickup is needed. If you can't identify a concrete decision point for an item, you do NOT have enough signal to surface it — skip it.
 
-6. **Time-of-day matters.** UTC hour {hour}; Brian is typically Pacific. Late night = quieter. Morning = brief active. Workday = passive unless urgent.
+6. **Diversify the slate.** The 2-5 items must come from at least 2 different domains (e.g., not 3 finance items in a row). Mix: needs registry items + 1 wiki thread + at most 1 live event from iMessage/Calendar/Gmail if highly relevant. Hard-cap: at most 1 notification per `wiki_thread_slug` and at most 1 per needs `slug` per tick.
 
-7. **Voice:** brief, Brian-voiced, second-person. Example: "Crypto scammer's pushing the test transfer move. Same playbook as last time." NOT: "There is an outstanding response required for the Kenya thread."
+7. **High-value send pattern.** A wiki ## Now thread in state "acting" with high tension_pressure AND a recent raw-event signal (calendar event tomorrow, message about it, deadline-language) = clear send candidate.
 
-8. **Citation:** if you cite specific raw edge UUIDs, they MUST be visible in the candidates section. You may also cite wiki thread slugs (the [slug] before the title in ## Now) — those are always valid because they came from the wiki you read.
+8. **Time-of-day matters.** UTC hour {hour}; Brian is typically Pacific. Late night = quieter (still send 2, never 5). Morning brief = up to 5. Workday tick = 2-3.
+
+9. **Voice:** brief, Brian-voiced, second-person, present-tense. Example: "Crypto scammer's pushing the test transfer move. Same playbook as last time." NOT: "There is an outstanding response required for the Kenya thread."
+
+10. **Citation:** if you cite specific raw edge UUIDs, they MUST be visible in the candidates section. You may also cite wiki thread slugs (the [slug] before the title in ## Now) or needs registry slugs — those are always valid because they came from the curated lists above.
 
 OUTPUT FORMAT: Return STRICTLY valid JSON, no markdown code fence, no commentary, no preamble. Just the JSON object.
 
-If silent:
-{{"send": false, "reasoning": "<one-sentence why silent>"}}
+Shape (notifications is an array of 2-5 items, OR 0 only if everything is genuine noise/dismissed-cooldown):
 
-If sending:
-{{"send": true, "title": "<<= 55 chars>", "body": "<<= 160 chars>", "priority": "passive|active|timeSensitive", "evidence_edge_uuids": ["<uuid or 8-char short form or wiki slug>", ...], "wiki_thread_slug": "<slug from ## Now if applicable, else null>", "reasoning": "<one-sentence why now, ideally naming the 4 factors>"}}
+{{
+  "notifications": [
+    {{
+      "title": "<<= 55 chars; topic + state, not a question>",
+      "body": "<<= 220 chars; (a) last beat in 4-10 words, then (b) concrete pickup move in 8-20 words. Read rule 5.>",
+      "priority": "passive|active|timeSensitive",
+      "decision_point": "<one sentence stating the EXACT unresolved question or choice Brian last paused at. Required.>",
+      "evidence_edge_uuids": ["<uuid or 8-char short form or wiki slug or needs slug>", ...],
+      "wiki_thread_slug": "<slug from ## Now if applicable, else null>",
+      "needs_slug": "<slug from needs registry if applicable, else null>",
+      "reasoning": "<one sentence: why this item, why now, naming the 4 factors>"
+    }},
+    ...
+  ],
+  "silent_reason": null,
+  "considered": [
+    {{"slug": "...", "rank": 1, "source": "needs|wiki|graph", "selected": true|false, "note": "..."}},
+    ...
+  ]
+}}
 
-REQUIRED also: include a "considered" field listing ALL needs registry slugs AND wiki ## Now thread slugs you ranked, in your priority order, with a 1-line note on each. This shows your work:
-{{"considered": [{{"slug": "...", "rank": 1, "source": "needs|wiki|graph", "note": "..."}}, ...]}}
+If — and ONLY if — every candidate is genuine noise/cooldown and you cannot find 2 items worth surfacing (this should be extremely rare given the curated needs registry), return:
+
+{{"notifications": [], "silent_reason": "<one-sentence why all-silent is justified>", "considered": [ ... ]}}
+
+REQUIRED: the "considered" field lists ALL needs registry slugs AND wiki ## Now thread slugs you ranked (selected or not), in priority order, with a 1-line note on each. This shows your work and is how FIGS audits coverage.
 """
 
 
@@ -868,51 +914,113 @@ def parse_decision(raw: str) -> dict | None:
 
 VALID_PRIORITIES = {"passive", "active", "timeSensitive", "critical"}
 
+SLATE_MIN = 2
+SLATE_MAX = 5
+
+
+def normalize_decision(decision: dict | None) -> dict | None:
+    """Coerce legacy single-shape output into the new list-shape so dispatch
+    has one path. Returns the normalized dict or None if the input is junk.
+
+    Legacy single shape: {"send": bool, "title": ..., "body": ..., ...}
+    New shape:           {"notifications": [...], "silent_reason": ..., "considered": [...]}
+    """
+    if not isinstance(decision, dict):
+        return None
+
+    if "notifications" in decision:
+        if not isinstance(decision["notifications"], list):
+            return None
+        return decision
+
+    # Legacy fallback — wrap a single send/silent into the new shape.
+    if decision.get("send") is True:
+        single = {k: decision.get(k) for k in (
+            "title", "body", "priority", "decision_point",
+            "evidence_edge_uuids", "wiki_thread_slug", "needs_slug", "reasoning",
+        )}
+        return {
+            "notifications": [single],
+            "silent_reason": None,
+            "considered": decision.get("considered", []),
+        }
+    if decision.get("send") is False:
+        return {
+            "notifications": [],
+            "silent_reason": decision.get("reasoning") or "legacy silent",
+            "considered": decision.get("considered", []),
+        }
+    return None
+
+
+def _evidence_pool(context: dict) -> set:
+    seen = set()
+    for key in ("threads", "contradictions", "recurring",
+                "urgent", "personal", "personal_life", "fresh"):
+        for edge in context.get(key, []):
+            uuid = edge.get("uuid")
+            if uuid:
+                seen.add(uuid)
+                seen.add(uuid[:8])
+    for t in context.get("wiki_threads_ranked", []) or []:
+        if t.get("slug"):
+            seen.add(t["slug"])
+    for n in context.get("needs_ranked", []) or []:
+        if n.get("slug"):
+            seen.add(n["slug"])
+    return seen
+
 
 def validate_decision(decision: dict | None, context: dict) -> tuple[bool, str]:
     if not isinstance(decision, dict):
         return False, "decision is not a dict"
-    if not isinstance(decision.get("send"), bool):
-        return False, "'send' must be a boolean"
-    if not decision["send"]:
+    if "notifications" not in decision:
+        return False, "missing 'notifications' field (post-normalization)"
+    notifs = decision["notifications"]
+    if not isinstance(notifs, list):
+        return False, "'notifications' must be a list"
+
+    if len(notifs) == 0:
+        if not decision.get("silent_reason"):
+            return False, "empty notifications requires silent_reason"
         return True, "silent ok"
 
-    for field in ("title", "body", "priority"):
-        if not decision.get(field):
-            return False, f"missing required field: {field}"
+    if len(notifs) > SLATE_MAX:
+        return False, f"too many notifications ({len(notifs)} > {SLATE_MAX})"
 
-    if decision["priority"] not in VALID_PRIORITIES:
-        return False, f"invalid priority: {decision['priority']}"
+    pool = _evidence_pool(context)
+    wiki_slugs = set()
+    needs_slugs = set()
 
-    if len(decision["title"]) > 80:
-        return False, f"title too long ({len(decision['title'])} chars > 80)"
-    if len(decision["body"]) > 300:
-        return False, f"body too long ({len(decision['body'])} chars > 300)"
+    for i, n in enumerate(notifs):
+        if not isinstance(n, dict):
+            return False, f"notification[{i}] is not a dict"
+        for field in ("title", "body", "priority", "decision_point"):
+            if not n.get(field):
+                return False, f"notification[{i}] missing required field: {field}"
+        if n["priority"] not in VALID_PRIORITIES:
+            return False, f"notification[{i}] invalid priority: {n['priority']}"
+        if len(n["title"]) > 80:
+            return False, f"notification[{i}] title too long ({len(n['title'])} > 80)"
+        if len(n["body"]) > 300:
+            return False, f"notification[{i}] body too long ({len(n['body'])} > 300)"
 
-    # Evidence: every cited UUID must be in the context we provided.
-    # NEEDS registry slugs are also acceptable citations.
-    cited = decision.get("evidence_edge_uuids", []) or []
-    if cited:
-        seen = set()
-        # Graph edge UUIDs
-        for key in ("threads", "contradictions", "recurring",
-                    "urgent", "personal", "personal_life", "fresh"):
-            for edge in context.get(key, []):
-                uuid = edge.get("uuid")
-                if uuid:
-                    seen.add(uuid)
-                    seen.add(uuid[:8])
-        # Wiki thread slugs
-        for t in context.get("wiki_threads_ranked", []) or []:
-            if t.get("slug"):
-                seen.add(t["slug"])
-        # Needs registry slugs
-        for n in context.get("needs_ranked", []) or []:
-            if n.get("slug"):
-                seen.add(n["slug"])
-        for c in cited:
-            if c not in seen and c[:8] not in seen:
-                return False, f"cited evidence UUID '{c}' not present in context"
+        # Dedup: at most one per wiki_thread_slug, at most one per needs_slug.
+        ws = n.get("wiki_thread_slug")
+        if ws:
+            if ws in wiki_slugs:
+                return False, f"notification[{i}] duplicate wiki_thread_slug '{ws}'"
+            wiki_slugs.add(ws)
+        ns = n.get("needs_slug")
+        if ns:
+            if ns in needs_slugs:
+                return False, f"notification[{i}] duplicate needs_slug '{ns}'"
+            needs_slugs.add(ns)
+
+        # Citation check
+        for c in (n.get("evidence_edge_uuids", []) or []):
+            if c not in pool and c[:8] not in pool:
+                return False, f"notification[{i}] cited evidence '{c}' not in context"
 
     return True, "ok"
 
@@ -982,23 +1090,28 @@ def log_silent(conn: sqlite3.Connection, tick_ts: str, prompt: str,
     conn.commit()
 
 
-def log_sent(conn: sqlite3.Connection, tick_ts: str, prompt: str, decision: dict) -> None:
+def log_sent(conn: sqlite3.Connection, tick_ts: str, prompt: str,
+             notif: dict, slate_index: int, slate_size: int) -> None:
     conn.execute(
         """
         INSERT INTO notification_log
             (tick_ts, prompt_hash, decision_json, sent, title, body, priority,
-             evidence_edge_uuids, reasoning)
-        VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)
+             evidence_edge_uuids, reasoning, decision_point,
+             slate_index, slate_size)
+        VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             tick_ts,
             hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:16],
-            json.dumps(decision),
-            decision["title"],
-            decision["body"],
-            decision["priority"],
-            json.dumps(decision.get("evidence_edge_uuids", []) or []),
-            decision.get("reasoning", ""),
+            json.dumps(notif),
+            notif["title"],
+            notif["body"],
+            notif["priority"],
+            json.dumps(notif.get("evidence_edge_uuids", []) or []),
+            notif.get("reasoning", ""),
+            notif.get("decision_point", ""),
+            slate_index,
+            slate_size,
         ),
     )
     conn.commit()
@@ -1150,6 +1263,13 @@ def main() -> int:
             log_silent(conn, now_ts, prompt, {"raw": raw[:500]}, "parse_failed")
         return 1
 
+    decision = normalize_decision(decision)
+    if decision is None:
+        print("FAILED: Could not normalize decision into slate shape", file=sys.stderr)
+        if not args.dry_run:
+            log_silent(conn, now_ts, prompt, {"raw": raw[:500]}, "normalize_failed")
+        return 1
+
     print(f"DECISION:\n{json.dumps(decision, indent=2)}")
 
     # Validate
@@ -1160,31 +1280,52 @@ def main() -> int:
             log_silent(conn, now_ts, prompt, decision, f"validation_failed: {msg}")
         return 1
 
-    if not decision["send"]:
+    notifs = decision["notifications"]
+
+    if not notifs:
         if not args.dry_run:
-            log_silent(conn, now_ts, prompt, decision, "llm_chose_silent")
-        print(f"SILENT: {decision.get('reasoning', '(no reasoning)')}")
+            log_silent(conn, now_ts, prompt, decision,
+                       f"llm_chose_silent: {decision.get('silent_reason', '')}")
+        print(f"SILENT (all): {decision.get('silent_reason', '(no reason)')}")
         return 0
 
-    # Dispatch
+    if len(notifs) < SLATE_MIN:
+        # Soft floor — the prompt asks for 2-5. If the LLM came back with 1,
+        # we send it but log a warning so we can grade it later.
+        print(f"WARN: slate undersized ({len(notifs)} < {SLATE_MIN}); proceeding",
+              file=sys.stderr)
+
     if args.dry_run:
-        print(f"DRY-RUN: would send title='{decision['title']}', "
-              f"body='{decision['body']}', priority={decision['priority']}")
+        for i, n in enumerate(notifs):
+            print(f"DRY-RUN [{i+1}/{len(notifs)}]: title='{n['title']}', "
+                  f"body='{n['body']}', priority={n['priority']}")
+            print(f"                decision_point: {n.get('decision_point', '')}")
         return 0
 
-    print(f"Dispatching via ntfy ('{NTFY_TOPIC}')…")
-    sent_ok, dispatch_msg = dispatch_via_ntfy(
-        decision["title"], decision["body"], decision["priority"]
-    )
+    print(f"Dispatching {len(notifs)} notification(s) via ntfy ('{NTFY_TOPIC}')…")
+    slate_size = len(notifs)
+    fail_count = 0
 
-    if sent_ok:
-        log_sent(conn, now_ts, prompt, decision)
-        print(f"✓ SENT: {decision['title']}")
-        return 0
-    else:
-        log_silent(conn, now_ts, prompt, decision, f"dispatch_failed: {dispatch_msg}")
-        print(f"✗ DISPATCH FAILED: {dispatch_msg}", file=sys.stderr)
+    for i, n in enumerate(notifs):
+        sent_ok, dispatch_msg = dispatch_via_ntfy(n["title"], n["body"], n["priority"])
+        if sent_ok:
+            log_sent(conn, now_ts, prompt, n, slate_index=i, slate_size=slate_size)
+            print(f"  ✓ [{i+1}/{slate_size}] SENT: {n['title']}")
+        else:
+            log_silent(conn, now_ts, prompt, n, f"dispatch_failed: {dispatch_msg}")
+            print(f"  ✗ [{i+1}/{slate_size}] FAILED: {dispatch_msg}", file=sys.stderr)
+            fail_count += 1
+        # iOS bundles APNs alerts that arrive in the same window. A small gap
+        # keeps each notification visually distinct in Notification Center.
+        if i < slate_size - 1:
+            time.sleep(1.5)
+
+    if fail_count == slate_size:
+        print("✗ ALL DISPATCHES FAILED", file=sys.stderr)
         return 1
+    if fail_count:
+        print(f"⚠  {fail_count}/{slate_size} dispatches failed", file=sys.stderr)
+    return 0
 
 
 if __name__ == "__main__":
