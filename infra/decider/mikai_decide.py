@@ -35,7 +35,9 @@ import argparse
 import base64
 import hashlib
 import json
+import math
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -46,6 +48,9 @@ from urllib import request as urlreq
 # Make sibling `adapters/` importable regardless of CWD
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from adapters import imessage, calendar as cal_adapter, gmail  # noqa: E402
+import wiki_parser  # noqa: E402
+import needs_lens  # noqa: E402
+import dispatch_calendar  # noqa: E402
 
 # ── Config ─────────────────────────────────────────────────────────────
 
@@ -166,31 +171,225 @@ def neo4j_query(cypher: str, params: dict | None = None) -> list[dict]:
     return [dict(zip(cols, r["row"])) for r in rows]
 
 
-def graphiti_recent_edges(hours: int = 24, limit: int = 25) -> list[dict]:
-    """Return the most-recently-created edges in the graph.
+# ── Multi-window candidate ranking ─────────────────────────────────────
+#
+# FIGS pulls candidates from layered time windows (24h / 7d / 30d) and
+# ranks them by `recency × importance`. The wider windows give un-acted-on
+# items (like a proposal-spot research thread started 5 days ago) a chance
+# to surface alongside fresh content.
+#
+# Today: importance is a stub returning 1.0 — ranking is dominated by
+# recency. This is the fix for the "24h window misses load-bearing
+# older threads" problem.
+#
+# Tomorrow (O-049, wiki/dreaming consolidation): `importance_signal()`
+# becomes a real function sourced from the consolidated user wiki and
+# dreaming-curated memory. An edge connecting concepts the user has
+# acted on, written about repeatedly, or that show up as wiki pages
+# gets a high score. An edge between noise entities gets a low score.
+# Fixed time windows go away — FIGS asks for "top-K candidates ranked
+# by importance" and the curator decides what fits.
+#
+# When that lands, the swap point is `importance_signal()` and the
+# weights in `_combined_score()`. Nothing else in FIGS changes.
 
-    This is the 'what's new' lens. Semantic search can't answer it because
-    embeddings don't encode time. We query Neo4j directly by `created_at`.
-    Returns dicts shaped to match what format_edges() expects.
+RECENCY_WINDOWS = [
+    # (label, lower_h, upper_h, limit) — DELTA ranges so each window
+    # contributes distinct candidates. Without delta ranges, last_7d
+    # would entirely overlap last_24h's top-N and add nothing after dedup.
+    ("last_24h",  0,  24, 20),    # 0-24h ago: what just happened
+    ("last_7d",   24, 168, 20),   # 1-7d ago: in flight, may be stalled
+    ("last_30d",  168, 720, 10),  # 7-30d ago: still relevant background
+]
+
+
+def importance_signal(edge: dict) -> float:
+    """STUB. Today returns 1.0 for everything.
+
+    Future (O-049): reads from consolidated wiki / dreaming-curated
+    memory. Returns 0.0–1.0 reflecting how load-bearing this edge is
+    in the user's life. See module-level comment block above for the
+    full migration plan.
     """
-    cypher = """
+    return 1.0
+
+
+def _recency_score(created_at_iso: str, now: datetime) -> float:
+    """Logarithmic decay: 1h ago ≈ 1.0, 24h ≈ 0.65, 7d ≈ 0.30, 30d ≈ 0.0."""
+    try:
+        created = datetime.fromisoformat(created_at_iso.replace("Z", "+00:00"))
+    except (ValueError, AttributeError, TypeError):
+        return 0.0
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+
+    age_hours = max(1.0, (now - created).total_seconds() / 3600.0)
+    # log10(720) ≈ 2.857; anything older than 30d clamps to 0
+    decay = math.log10(age_hours) / math.log10(720.0)
+    return max(0.0, min(1.0, 1.0 - decay))
+
+
+def _combined_score(edge: dict, now: datetime) -> float:
+    """Combine recency + importance.
+
+    Today's weights (recency-dominant because importance is a stub):
+        score = 0.7 × recency + 0.3 × importance
+
+    When `importance_signal()` returns real values, these weights
+    rebalance — possibly inverting so older-but-important beats
+    newer-but-trivial. The weights are tuneable here, not deep in
+    the LLM prompt logic.
+    """
+    recency = _recency_score(edge.get("created_at", ""), now)
+    importance = importance_signal(edge)
+    return 0.7 * recency + 0.3 * importance
+
+
+def graphiti_ranked_candidates(total_limit: int = 30) -> list[dict]:
+    """Return ranked candidates from layered time windows.
+
+    For each window: query Neo4j for edges created within that span,
+    take top-N by created_at, dedupe by uuid across windows (a candidate
+    that appears in last_24h also appears in last_7d — keep one copy
+    with the closer window label).
+
+    Then score every candidate by `_combined_score()` and sort. Return
+    the top `total_limit`.
+
+    This replaces the old single-window `graphiti_recent_edges(hours=24)`
+    that buried older-but-still-relevant threads (proposal-spots research
+    from 5 days ago, for example).
+    """
+    all_edges: dict[str, dict] = {}
+
+    for window_label, lower_h, upper_h, limit in RECENCY_WINDOWS:
+        cypher = """
+            MATCH ()-[r:RELATES_TO]->()
+            WHERE r.created_at >  datetime() - duration({hours: $upper})
+              AND r.created_at <= datetime() - duration({hours: $lower})
+            RETURN r.uuid AS uuid,
+                   r.fact AS fact,
+                   toString(r.created_at) AS created_at,
+                   toString(r.valid_at) AS valid_at
+            ORDER BY r.created_at DESC
+            LIMIT $limit
+        """
+        rows = neo4j_query(cypher, {"lower": lower_h, "upper": upper_h, "limit": limit})
+        for r in rows:
+            uuid = r.get("uuid")
+            if not uuid or uuid in all_edges:
+                continue  # dedupe — should not happen with delta ranges, defensive
+            all_edges[uuid] = {
+                "uuid": uuid,
+                "fact": r.get("fact") or "",
+                "created_at": r.get("created_at") or "",
+                "valid_at": r.get("valid_at") or r.get("created_at") or "",
+                "_window": window_label,
+            }
+
+    now = datetime.now(timezone.utc)
+    scored = []
+    for edge in all_edges.values():
+        edge["_score"] = _combined_score(edge, now)
+        scored.append(edge)
+
+    scored.sort(key=lambda e: e.get("_score", 0.0), reverse=True)
+    return scored[:total_limit]
+
+
+PERSONAL_LIFE_KEYWORDS = [
+    # Engagement / proposal / wedding
+    "proposal spot", "propose to", "engagement ring", "ring shopping",
+    "wedding venue", "married", "marry her", "marry him",
+    # Travel
+    "flight to", "flight from", "trip to", "hotel in", "book a flight",
+    "vacation", "travel to",
+    # Health
+    "doctor appointment", "surgery", "diagnosis", "specialist",
+    # Major life decisions
+    "job offer", "deadline", "interview at",
+    # Specific places that anchor personal threads
+    "denver", "red rocks",
+]
+
+
+# Exclude phrases — drop any candidate whose fact text contains any of these
+# (case-insensitive). Catches MIKAI-internal noise that survives the keyword
+# filter (e.g. "decision IDs ARCH-026", "FIGS depends on MIKAI").
+PERSONAL_LIFE_EXCLUDES = [
+    "mikai", "figs", "graphiti", "claude.ai", "claude-thread", "ingest",
+    "decision id", "arch-", "d-05", "o-05", "o-04",
+    "branch", "main's decisions", "node_operations", "neo4j",
+    "uses decision", "memory architecture", "consolidation",
+]
+
+
+def graphiti_personal_life_edges(days: int = 30, limit: int = 15) -> list[dict]:
+    """Pull edges containing personal-life keywords from the last N days.
+
+    This is a TARGETED retrieval lens. The recency lens treats all edges equally,
+    so dense recent conversation noise (architecture discussions, meta-edges)
+    can crowd out a 44h-old proposal edge. This lens specifically searches for
+    personal-life signal regardless of recency-window crowding.
+
+    When wiki/dreaming (O-049) lands, this becomes redundant — the importance
+    signal will surface these naturally. Until then, an explicit keyword filter
+    keeps the high-value personal threads in front of the LLM.
+    """
+    # Build a Cypher OR clause over all keywords. Case-insensitive.
+    keyword_clauses = " OR ".join([
+        f"toLower(r.fact) CONTAINS '{kw}'"
+        for kw in PERSONAL_LIFE_KEYWORDS
+    ])
+    # Cypher does pre-filtering; Python does final exclude pass + ranking.
+    cypher = f"""
         MATCH ()-[r:RELATES_TO]->()
-        WHERE r.created_at > datetime() - duration({hours: $hours})
+        WHERE r.created_at > datetime() - duration({{days: $days}})
+          AND ({keyword_clauses})
         RETURN r.uuid AS uuid,
                r.fact AS fact,
                toString(r.created_at) AS created_at,
                toString(r.valid_at) AS valid_at
         ORDER BY r.created_at DESC
-        LIMIT $limit
+        LIMIT 200
     """
-    rows = neo4j_query(cypher, {"hours": hours, "limit": limit})
+    rows = neo4j_query(cypher, {"days": days})
+
+    # Apply exclude filter
+    filtered = []
+    for r in rows:
+        fact_lower = (r.get("fact") or "").lower()
+        if any(exc in fact_lower for exc in PERSONAL_LIFE_EXCLUDES):
+            continue
+        filtered.append(r)
+
+    # Rank by score-of-the-evidence: dense personal-content edges first
+    # rather than newest-first. The 44h-old "Denver has places suitable for
+    # proposals" should outrank a 2h-old "user is considering a maroon
+    # Alocasia stalk" because the former is anchor-event-like.
+    PRIORITY_PHRASES = [
+        "denver", "red rocks", "proposal spot", "propose",
+        "engagement ring", "wedding venue",
+        "flight to", "trip to", "hotel in",
+    ]
+
+    def _rank_key(r):
+        fact_lower = (r.get("fact") or "").lower()
+        # Higher priority match -> earlier in list
+        for i, phrase in enumerate(PRIORITY_PHRASES):
+            if phrase in fact_lower:
+                return (0, i, r.get("created_at") or "")
+        return (1, 0, r.get("created_at") or "")
+
+    filtered.sort(key=_rank_key)
+
     return [
         {
             "uuid": r.get("uuid") or "",
             "fact": r.get("fact") or "",
             "valid_at": r.get("valid_at") or r.get("created_at") or "",
         }
-        for r in rows
+        for r in filtered[:limit]
     ]
 
 
@@ -220,10 +419,52 @@ def gather_context() -> dict:
         "personal life relationship family travel proposal engagement event milestone",
         num_results=10,
     )
-    # Time-based lens — what's newly ingested. Semantic queries can't answer
-    # this because embeddings don't encode recency. This is the single most
-    # important lens for "right now" decisions.
-    fresh = graphiti_recent_edges(hours=24, limit=25)
+    # Time-based ranked lens — pulls candidates from layered windows
+    # (24h / 7d / 30d) and ranks by recency × importance. Today importance
+    # is a stub so recency wins; when wiki/dreaming consolidation lands
+    # (O-049), this lens automatically surfaces older-but-still-load-bearing
+    # threads without any FIGS code change. See `graphiti_ranked_candidates`
+    # docstring.
+    fresh = graphiti_ranked_candidates(total_limit=30)
+    # Targeted personal-life lens — kept for fallback when wiki is unavailable.
+    personal_life = graphiti_personal_life_edges(days=30, limit=15)
+    # PRIMARY ranking surface: parse the nightly Dream-generated wiki.
+    # This is the formal user-identity synthesis (dream.py output). When
+    # available, FIGS ranks wiki threads (not raw graph edges) and asks
+    # Claude to choose among those structured candidates. Soft supersession:
+    # if the wiki contradicts a raw edge, the wiki wins because it's the
+    # most recent synthesis.
+    wiki = wiki_parser.parse_wiki()
+    wiki_threads_ranked: list[dict] = []
+    if wiki.available:
+        scored = [(wiki_parser.score_thread(t, wiki), t) for t in wiki.threads]
+        scored.sort(key=lambda x: x[0], reverse=True)
+        for score, t in scored:
+            wiki_threads_ranked.append({
+                "slug": t.slug,
+                "title": t.title,
+                "state": t.state,
+                "score": score,
+                "tension_membership": t.tension_membership,
+                "detail": t.detail,
+            })
+
+    # PRIORITY NEEDS — Brian-curated registry. Highest-priority lens.
+    needs_registry = needs_lens.parse_registry()
+    needs_ranked: list[dict] = []
+    if needs_registry.available:
+        for score, n in needs_lens.ranked_needs(needs_registry):
+            needs_ranked.append({
+                "slug": n.slug,
+                "title": n.title,
+                "state": n.state,
+                "urgency": n.urgency,
+                "domain": n.domain,
+                "next_step": n.next_step,
+                "blockers": n.blockers,
+                "last_movement": n.last_movement,
+                "score": score,
+            })
 
     # Live events from Mac/cloud sources. Each adapter degrades gracefully:
     # on failure, returns a one-item list with an `error` key that gets
@@ -249,8 +490,13 @@ def gather_context() -> dict:
         "recurring": recurring,
         "urgent": urgent,
         "personal": personal,
+        "personal_life": personal_life,
         "fresh": fresh,
         "realtime": realtime,
+        "wiki": wiki,
+        "wiki_threads_ranked": wiki_threads_ranked,
+        "needs_registry": needs_registry,
+        "needs_ranked": needs_ranked,
     }
 
 
@@ -291,6 +537,31 @@ You are MIKAI, Brian's notification decider. Your single job: decide whether to 
 
 CURRENT TIME: {now} (UTC), {weekday}, hour {hour} UTC
 
+== HIGHEST PRIORITY — Brian-curated PRIORITY NEEDS ==
+The NEEDS REGISTRY below was hand-curated by Brian. These are load-bearing life needs that may not surface in his conversations (financial admin, health admin, career decisions). FIGS should treat these as the FIRST candidates for surfacing, ranked by their score. The wiki and graph evidence below are SUPPORTING context — if a need's `next_step` aligns with recent fresh activity, surface that need.
+
+NEEDS REGISTRY (ranked by state × urgency × tension × detail):
+{needs_summary}
+
+== PRIMARY SYNTHESIS ==
+The WIKI below was synthesized last night by MIKAI's `dream.py` from the previous 7 days of Brian's activity. It is the most current and authoritative model of what Brian is actually doing, deciding, and conflicted about. Trust it over individual raw graph edges; raw edges may be stale or superseded by what the wiki now says. The needs registry above OUTRANKS the wiki because Brian curated it explicitly.
+
+WIKI ## Who (stable self-model):
+{wiki_who}
+
+WIKI ## Now (active threads, ranked by surface_priority — state × tension_pressure × detail_quality):
+{wiki_threads_summary}
+
+WIKI ## Tensions (held contradictions — these are MIKAI's priority-0 signal):
+{wiki_tensions_summary}
+
+WIKI ## Wants (inferred goals, certainty in words):
+{wiki_wants_summary}
+
+WIKI last_dream_at: {wiki_last_dream}
+
+== SUPPORTING SUBSTRATE (raw graph edges + live sources) ==
+
 GRAPH STATE:
 - Entities: {entity_count}
 - Edges: {edge_count}
@@ -311,8 +582,12 @@ URGENT / TIME-SENSITIVE (deadlines, bookings, upcoming things):
 PERSONAL LIFE (relationships, family, travel, milestones):
 {personal_summary}
 
-FRESHLY INGESTED IN LAST 24h (what just landed in the graph — use this as your primary "right now" signal):
+RANKED CANDIDATES from MIKAI graph (layered windows: last_24h / last_7d / last_30d, scored by recency × importance):
+NOTE: The ranking is recency-dominant today because the importance signal is a stub. Older items (last_7d, last_30d windows) can still appear here if they have a high score — they are NOT noise; they are threads MIKAI thinks may still need attention. Treat them as "you may have started this and never followed through."
 {fresh_summary}
+
+PINNED PERSONAL-LIFE CANDIDATES (keyword-targeted, last 30 days, excluding MIKAI-internal architecture noise — these are high-signal personal threads Brian started recently. Evaluate each as a candidate for the "stalled personal-life thread" pattern in rule 2):
+{personal_life_summary}
 
 LIVE EVENTS FROM SOURCES (iMessage / Calendar / Gmail, last 24-72h):
 {realtime_summary}
@@ -321,13 +596,26 @@ BRIAN'S RECENT NOTIFICATIONS AND HIS RESPONSES (newest first):
 {recent_decisions_summary}
 
 RULES YOU MUST FOLLOW:
-1. Default to silence. The bar for "send" is high — silence is almost always the right answer.
-2. Only send if there is a specific, concrete thread genuinely worth interrupting Brian about right now. Vague "you should think about X" notifications are forbidden.
-3. Patterns Brian dismissed recently: do NOT repeat those patterns.
-4. Patterns Brian acted on recently: similar candidates are stronger.
-5. Time-of-day matters. UTC hour {hour}; convert to Brian's local time if known (he's typically Pacific or East Africa). Late night = quieter. Morning = brief active. Workday = passive unless urgent.
-6. If you cite specific evidence, the edge UUIDs you cite MUST be visible in the threads/contradictions/recurring section above. Don't invent UUIDs. Use the [8-char] short form if that's all you have.
-7. Voice: brief, Brian-voiced, second-person. Example: "Martin's been waiting on the Kenya cultivar question. 12 days." NOT: "There is an outstanding response required for the Kenya thread."
+
+1. **Rank the NEEDS REGISTRY FIRST.** Every entry in the Brian-curated needs registry is a candidate. A need that aligns with fresh raw activity (calendar event, message, email, graph edge) has high delivery_value. A need that has had no recent movement AND no contradicting wiki/graph evidence is a stalled-thread candidate (the canonical MIKAI use case). THEN consider wiki ## Now threads.
+
+2. **The 4-factor metric.** surface_priority = thread_state × tension_pressure × delivery_value × delivery_cost⁻¹
+   - thread_state: acting > stalled > decided > exploring
+   - tension_pressure: threads listed in ## Tensions get a boost (priority-0 signal per MIKAI's design)
+   - delivery_value: would surfacing this CHANGE what Brian does today? A stalled thread where a nudge could unblock action = high. An acting thread with active momentum = low (he doesn't need a reminder; he's on it).
+   - delivery_cost⁻¹: time-of-day (workday = higher bar), recent dismiss patterns (don't repeat dismissed topics)
+
+3. **Wiki supersedes raw edges (SOFT GATE).** If a raw graph edge says "X" but the wiki ## Who or ## Now says "Y" (different detail, different state, different location/decision), trust the wiki. Example: a raw edge says "Denver proposal spots" but the wiki says "planning a proposal trip with Germaine — Atacama or Ladakh are leading candidates" — DO NOT surface Denver; that's stale. The proposal thread isn't even in ## Now (it's at the ## Who level), suggesting it's background, not currently-being-acted-on.
+
+4. **Default to silence FOR NOISE.** Newsletters, marketing emails, parking auto-receipts, meta-references about MIKAI itself, system messages — silent.
+
+5. **High-value send pattern.** A wiki ## Now thread in state "acting" with high tension_pressure AND a recent raw-event signal (calendar event tomorrow, message about it, deadline-language) = clear send candidate.
+
+6. **Time-of-day matters.** UTC hour {hour}; Brian is typically Pacific. Late night = quieter. Morning = brief active. Workday = passive unless urgent.
+
+7. **Voice:** brief, Brian-voiced, second-person. Example: "Crypto scammer's pushing the test transfer move. Same playbook as last time." NOT: "There is an outstanding response required for the Kenya thread."
+
+8. **Citation:** if you cite specific raw edge UUIDs, they MUST be visible in the candidates section. You may also cite wiki thread slugs (the [slug] before the title in ## Now) — those are always valid because they came from the wiki you read.
 
 OUTPUT FORMAT: Return STRICTLY valid JSON, no markdown code fence, no commentary, no preamble. Just the JSON object.
 
@@ -335,12 +623,16 @@ If silent:
 {{"send": false, "reasoning": "<one-sentence why silent>"}}
 
 If sending:
-{{"send": true, "title": "<<= 55 chars>", "body": "<<= 160 chars>", "priority": "passive|active|timeSensitive", "evidence_edge_uuids": ["<uuid or 8-char short form>", ...], "reasoning": "<one-sentence why now>"}}
+{{"send": true, "title": "<<= 55 chars>", "body": "<<= 160 chars>", "priority": "passive|active|timeSensitive", "evidence_edge_uuids": ["<uuid or 8-char short form or wiki slug>", ...], "wiki_thread_slug": "<slug from ## Now if applicable, else null>", "reasoning": "<one-sentence why now, ideally naming the 4 factors>"}}
+
+REQUIRED also: include a "considered" field listing ALL needs registry slugs AND wiki ## Now thread slugs you ranked, in your priority order, with a 1-line note on each. This shows your work:
+{{"considered": [{{"slug": "...", "rank": 1, "source": "needs|wiki|graph", "note": "..."}}, ...]}}
 """
 
 
 def build_prompt(context: dict, recent_decisions: list[dict]) -> str:
     now = datetime.now(timezone.utc)
+    wiki = context.get("wiki")
     return DECIDE_PROMPT.format(
         now=now.isoformat(timespec="minutes"),
         weekday=now.strftime("%A"),
@@ -353,10 +645,84 @@ def build_prompt(context: dict, recent_decisions: list[dict]) -> str:
         recurring_summary=format_edges(context["recurring"]),
         urgent_summary=format_edges(context.get("urgent", [])),
         personal_summary=format_edges(context.get("personal", [])),
+        personal_life_summary=format_edges(context.get("personal_life", [])),
         fresh_summary=format_edges(context.get("fresh", [])),
         realtime_summary=format_realtime(context.get("realtime", [])),
         recent_decisions_summary=format_decisions(recent_decisions),
+        wiki_who=format_wiki_who(wiki),
+        wiki_threads_summary=format_wiki_threads(context.get("wiki_threads_ranked", []), wiki),
+        wiki_tensions_summary=format_wiki_tensions(wiki),
+        wiki_wants_summary=format_wiki_wants(wiki),
+        wiki_last_dream=(wiki.last_dream_at if wiki and wiki.available else "WIKI UNAVAILABLE"),
+        needs_summary=format_needs(context.get("needs_ranked", []), context.get("needs_registry")),
     )
+
+
+def format_needs(ranked: list[dict], registry) -> str:
+    if not registry or not getattr(registry, "available", False):
+        return "(needs registry not available — docs/USER_NEEDS_REGISTRY.md missing or unparsable)"
+    if not ranked:
+        return "(no live needs — all marked done?)"
+    lines = []
+    for n in ranked:
+        lines.append(
+            f"- [{n['slug']}] state={n['state']} urgency={n['urgency']} "
+            f"domain={n['domain']} score={n['score']:.2f}: {n['title']}"
+        )
+        if n.get("next_step"):
+            lines.append(f"     next_step: {n['next_step'][:240]}")
+        if n.get("blockers"):
+            blockers = " ".join(n["blockers"].split())
+            lines.append(f"     blockers: {blockers[:240]}")
+        if n.get("last_movement"):
+            lines.append(f"     last_movement: {n['last_movement']}")
+    return "\n".join(lines)
+
+
+def format_wiki_who(wiki) -> str:
+    if not wiki or not wiki.available:
+        return "(wiki not yet generated — fall back to raw graph evidence)"
+    who = wiki.who.strip()
+    return who[:1200] if who else "(empty)"
+
+
+def format_wiki_threads(ranked: list[dict], wiki) -> str:
+    if not wiki or not wiki.available or not ranked:
+        return "(wiki has no threads — fall back to raw graph evidence)"
+    lines = []
+    for t in ranked:
+        tension_tag = f" ⚠tensions={t['tension_membership']}" if t.get("tension_membership") else ""
+        lines.append(
+            f"- [{t['slug']}] state={t['state']} score={t['score']:.2f}{tension_tag}: {t['title']}"
+        )
+        detail = (t.get("detail") or "").strip()
+        # Show the body after the title prefix, trimmed.
+        body = detail
+        # Strip leading "**Title** — State." chunk so we only see the meaningful content
+        body = re.sub(r"^\*\*[^*]+\*\*\s*[—\-–]\s*\w+\.?\s*", "", body)
+        body_short = (body or "")[:280].strip()
+        if body_short:
+            lines.append(f"     {body_short}")
+    return "\n".join(lines)
+
+
+def format_wiki_tensions(wiki) -> str:
+    if not wiki or not wiki.available or not wiki.tensions:
+        return "(none)"
+    lines = []
+    for tension in wiki.tensions:
+        related = f" [related: {','.join(tension.related_thread_slugs)}]" if tension.related_thread_slugs else ""
+        lines.append(f"  #{tension.index}: {tension.title}{related}")
+    return "\n".join(lines)
+
+
+def format_wiki_wants(wiki) -> str:
+    if not wiki or not wiki.available or not wiki.wants:
+        return "(none)"
+    lines = []
+    for w in wiki.wants[:8]:
+        lines.append(f"  - ({w.certainty}) {w.text[:200]}")
+    return "\n".join(lines)
 
 
 def format_realtime(events: list[dict]) -> str:
@@ -412,8 +778,15 @@ def format_edges(edges: list[dict]) -> str:
         fact = (e.get("fact") or "").strip()
         uuid = e.get("uuid") or ""
         uuid_short = uuid[:8] if uuid else "????????"
-        valid_at = e.get("valid_at") or ""
-        lines.append(f"- [{uuid_short}] {fact} (valid_at={valid_at})")
+        # Ranked candidates carry _window + _score; render them; fall back
+        # to valid_at for plain edges.
+        window = e.get("_window")
+        score = e.get("_score")
+        if window is not None and score is not None:
+            tag = f"{window} s={score:.2f}"
+        else:
+            tag = f"valid_at={e.get('valid_at') or ''}"
+        lines.append(f"- [{uuid_short}] {fact} ({tag})")
     return "\n".join(lines) if lines else "(empty after format)"
 
 
@@ -517,15 +890,26 @@ def validate_decision(decision: dict | None, context: dict) -> tuple[bool, str]:
         return False, f"body too long ({len(decision['body'])} chars > 300)"
 
     # Evidence: every cited UUID must be in the context we provided.
+    # NEEDS registry slugs are also acceptable citations.
     cited = decision.get("evidence_edge_uuids", []) or []
     if cited:
         seen = set()
-        for edges_list in (context["threads"], context["contradictions"], context["recurring"]):
-            for edge in edges_list:
+        # Graph edge UUIDs
+        for key in ("threads", "contradictions", "recurring",
+                    "urgent", "personal", "personal_life", "fresh"):
+            for edge in context.get(key, []):
                 uuid = edge.get("uuid")
                 if uuid:
                     seen.add(uuid)
                     seen.add(uuid[:8])
+        # Wiki thread slugs
+        for t in context.get("wiki_threads_ranked", []) or []:
+            if t.get("slug"):
+                seen.add(t["slug"])
+        # Needs registry slugs
+        for n in context.get("needs_ranked", []) or []:
+            if n.get("slug"):
+                seen.add(n["slug"])
         for c in cited:
             if c not in seen and c[:8] not in seen:
                 return False, f"cited evidence UUID '{c}' not present in context"
@@ -634,6 +1018,10 @@ def main() -> int:
                         help="Ignore cooldown")
     parser.add_argument("--show-prompt", action="store_true",
                         help="Print the full prompt before invoking Claude")
+    parser.add_argument("--show-slate", action="store_true",
+                        help="Print the candidate slate (needs + wiki + lenses) WITHOUT invoking Claude. Pure diagnostic.")
+    parser.add_argument("--write-brief", action="store_true",
+                        help="Write today's MIKAI brief into macOS Calendar with the top 3 candidates")
     args = parser.parse_args()
 
     conn = db_connect()
@@ -658,6 +1046,65 @@ def main() -> int:
         else:
             print(f"✗ Failed: {msg}", file=sys.stderr)
             return 1
+
+    if args.show_slate:
+        # Pure diagnostic — show the full candidate slate without invoking Claude.
+        print("=== FIGS candidate slate ===")
+        print(f"  (date: {datetime.now(timezone.utc).isoformat(timespec='minutes')})")
+        print()
+        context = gather_context()
+        print(f"Graph: {context['stats'].get('entity_count','?')} entities, "
+              f"{context['stats'].get('episode_count','?')} episodes")
+        print()
+        print(f"--- Needs Registry ({len(context.get('needs_ranked', []))}) ---")
+        for n in context.get("needs_ranked", []):
+            print(f"  {n['score']:.2f} [{n['state']:<10}/{n['urgency']:<8}] {n['title']}")
+            if n.get("next_step"):
+                print(f"        next: {n['next_step'][:120]}")
+        print()
+        print(f"--- Wiki Threads ({len(context.get('wiki_threads_ranked', []))}) ---")
+        for t in context.get("wiki_threads_ranked", []):
+            print(f"  {t['score']:.2f} [{t['state']:<10}] {t['title']}")
+        print()
+        print(f"--- Live events (iMessage/Calendar/Gmail): {len(context.get('realtime', []))} items ---")
+        for src in ("imessage", "calendar", "gmail"):
+            items = [e for e in context.get("realtime", []) if e.get("source") == src]
+            print(f"  {src}: {len(items)} items")
+        print()
+        recent = gather_recent_decisions(conn, n=10)
+        print(f"--- Recent decisions (last {len(recent)}) ---")
+        for d in recent:
+            status = "SENT" if d.get("sent") else "silent"
+            resp = d.get("user_response") or "—"
+            print(f"  {(d.get('tick_ts') or '')[:16]} {status:<6} {resp:<8} {(d.get('title') or '—')[:60]}")
+        return 0
+
+    if args.write_brief:
+        print("=== Writing MIKAI brief to macOS Calendar ===")
+        context = gather_context()
+        # Build top-3 from needs (highest priority) then fill from wiki if needed
+        top3 = []
+        for n in context.get("needs_ranked", [])[:3]:
+            top3.append({
+                "title": n["title"],
+                "next_step": n.get("next_step", ""),
+                "source": "need",
+            })
+        if len(top3) < 3:
+            for t in context.get("wiki_threads_ranked", []):
+                if len(top3) >= 3:
+                    break
+                top3.append({
+                    "title": t["title"],
+                    "next_step": (t.get("detail") or "")[:200],
+                    "source": "wiki",
+                })
+        if not top3:
+            print("(no candidates to brief)")
+            return 1
+        ok, msg = dispatch_calendar.write_daily_brief(top3)
+        print(f"{'✓' if ok else '✗'} {msg}")
+        return 0 if ok else 1
 
     now_ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
