@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.mikai.figs-decide</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/briancho/Library/Application Support/mikai/launchd/figs-decide-runner.sh</string>
+    </array>
+
+    <!-- Three ticks per day at 07:00, 12:00, 18:00 local. Cooldown in
+         mikai_decide.py (default 2h) prevents back-to-back sends if the
+         system clock drifts or a tick runs late. -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Hour</key>
+            <integer>7</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>12</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>18</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+    </array>
+
+    <key>ThrottleInterval</key>
+    <integer>300</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/briancho/.mikai/logs/figs-decide.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/briancho/.mikai/logs/figs-decide.err.log</string>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/briancho/Library/Application Support/mikai/launchd</string>
+</dict>
+</plist>
