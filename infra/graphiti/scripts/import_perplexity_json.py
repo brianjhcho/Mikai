@@ -279,6 +279,9 @@ async def main() -> int:
                         help="Graphiti group_id for these episodes (default: perplexity).")
     parser.add_argument("--limit", type=int, default=None,
                         help="Cap on number of JSON FILES to process (not episodes).")
+    parser.add_argument("--offset", type=int, default=0,
+                        help="Skip the first N files (sorted by name). Combine "
+                             "with --limit to run parallel workers over disjoint slices.")
     parser.add_argument("--delay", type=float, default=1.0,
                         help="Seconds between add_episode calls (rate limit safety).")
     parser.add_argument("--max-answer-chars", type=int, default=DEFAULT_MAX_ANSWER_CHARS,
@@ -304,7 +307,12 @@ async def main() -> int:
         return 2
 
     files = sorted(glob.glob(str(json_dir / "*.json")))
-    print(f"Found {len(files)} JSON files in {json_dir}", flush=True)
+    total_on_disk = len(files)
+    if args.offset:
+        files = files[args.offset:]
+    print(f"Found {total_on_disk} JSON files in {json_dir}"
+          f"{f' (skipping first {args.offset} via --offset)' if args.offset else ''}",
+          flush=True)
 
     if args.skip_existing:
         seen_sagas = fetch_already_imported_sagas(args.group_id)
