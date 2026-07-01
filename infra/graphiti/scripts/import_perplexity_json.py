@@ -127,9 +127,22 @@ def parse_perplexity_json_file(
     *,
     max_query_chars: int,
     max_answer_chars: int,
+    per_saga: bool = False,
+    max_saga_chars: int = 100_000,
 ) -> list[dict]:
-    """Parse one Perplexity export JSON into 0-N episode dicts (query+answer
-    pairs across each assistant turn). Returns [] if nothing usable."""
+    """Parse one Perplexity export JSON into episode dicts.
+
+    Default (per_saga=False): emits 2-N episodes per saga (query + answer per
+    turn), matching import_sequential.py behavior.
+
+    per_saga=True: emits ONE episode per saga, concatenating all turns into a
+    single body. For Perplexity threads this is preferable because they're
+    batched research documents, not real-time conversations — the temporal
+    turn structure carries little independent signal, and Graphiti's per-
+    episode extraction overhead is much larger than the per-turn LLM cost.
+    Batching cuts total episode count ~5.5× (measured on Brian's corpus).
+    max_saga_chars is a safety cap for absurd outliers (e.g. the one
+    290K-char thread); default 100K is generous."""
     try:
         with open(path, encoding="utf-8") as fp:
             doc = json.load(fp)
@@ -142,8 +155,8 @@ def parse_perplexity_json_file(
     exported_at = doc.get("exported_at") or "2026-01-01T00:00:00Z"
     saga_name = f"perplexity: {title[:80]}"
 
-    episodes: list[dict] = []
-    turn = 0
+    # Collect (query, answer) pairs first — both modes reuse this.
+    pairs: list[tuple[str | None, str | None]] = []
     for msg in doc.get("chat_messages") or []:
         if not isinstance(msg, dict):
             continue
@@ -152,25 +165,66 @@ def parse_perplexity_json_file(
         text = msg.get("text") or ""
         if not isinstance(text, str) or not text:
             continue
+        q, a = extract_qa(text)
+        pairs.append((q, a))
 
-        query, answer = extract_qa(text)
+    # Filter to substantive pairs (query ≥ MIN_QUERY_CHARS OR answer ≥ MIN_ANSWER_CHARS).
+    good_pairs = [
+        (q, a) for (q, a) in pairs
+        if (q and len(q) >= MIN_QUERY_CHARS) or (a and len(a) >= MIN_ANSWER_CHARS)
+    ]
+    if not good_pairs:
+        return []
 
-        if query and len(query) >= MIN_QUERY_CHARS:
+    if per_saga:
+        # One episode per saga: concatenate all turns into a single body.
+        # This is preferable for Perplexity content — see docstring.
+        turn_texts = []
+        for i, (q, a) in enumerate(good_pairs, start=1):
+            turn_body = []
+            if q and len(q) >= MIN_QUERY_CHARS:
+                turn_body.append(f"user: {q[:max_query_chars]}")
+            if a and len(a) >= MIN_ANSWER_CHARS:
+                turn_body.append(f"assistant: {a[:max_answer_chars]}")
+            if not turn_body:
+                continue
+            if len(good_pairs) > 1:
+                turn_texts.append(f"— Turn {i} —\n" + "\n".join(turn_body))
+            else:
+                turn_texts.append("\n".join(turn_body))
+        body = "\n\n".join(turn_texts)
+        if len(body) > max_saga_chars:
+            body = body[:max_saga_chars] + "\n[…truncated at saga cap]"
+        return [{
+            "saga": saga_name,
+            "name": title[:100],
+            "body": body,
+            "date": exported_at,
+            "turn_index": 0,
+            "source_type": "perplexity",
+            "source_url": url,
+        }]
+
+    # Default mode: one episode per turn (query and answer separately).
+    episodes: list[dict] = []
+    turn = 0
+    for q, a in good_pairs:
+        if q and len(q) >= MIN_QUERY_CHARS:
             episodes.append({
                 "saga": saga_name,
                 "name": "Query" if turn == 0 else f"Query (turn {turn + 1})",
-                "body": f"user: {query[:max_query_chars]}",
+                "body": f"user: {q[:max_query_chars]}",
                 "date": exported_at,
                 "turn_index": turn,
                 "source_type": "perplexity",
                 "source_url": url,
             })
             turn += 1
-        if answer and len(answer) >= MIN_ANSWER_CHARS:
+        if a and len(a) >= MIN_ANSWER_CHARS:
             episodes.append({
                 "saga": saga_name,
                 "name": "Answer" if turn == 1 else f"Answer (turn {turn + 1})",
-                "body": f"assistant: {answer[:max_answer_chars]}",
+                "body": f"assistant: {a[:max_answer_chars]}",
                 "date": exported_at,
                 "turn_index": turn,
                 "source_type": "perplexity",
@@ -233,6 +287,13 @@ async def main() -> int:
                         help=f"Cap on per-query body length (default {DEFAULT_MAX_QUERY_CHARS}).")
     parser.add_argument("--skip-existing", action="store_true",
                         help="Skip JSON files whose saga (title-derived) is already in the graph.")
+    parser.add_argument("--per-saga", action="store_true",
+                        help="Concatenate all turns of each thread into ONE episode. "
+                             "5.5× fewer episodes, ~5× lower cost. Recommended for Perplexity "
+                             "(batched research, not real-time conversation).")
+    parser.add_argument("--max-saga-chars", type=int, default=100_000,
+                        help="Safety cap on per-saga body when --per-saga is set "
+                             "(default 100000 — only trims the ~1 outlier at ~290K).")
     parser.add_argument("--dry-run", action="store_true",
                         help="Parse + print first 10 would-be episodes; don't write to graph.")
     args = parser.parse_args()
@@ -262,6 +323,8 @@ async def main() -> int:
             f,
             max_query_chars=args.max_query_chars,
             max_answer_chars=args.max_answer_chars,
+            per_saga=args.per_saga,
+            max_saga_chars=args.max_saga_chars,
         )
         if not eps:
             files_empty += 1
