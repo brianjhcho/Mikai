@@ -390,6 +390,8 @@ Prior art surfaced in this pass that is **not** in the thesis's competitor map:
 | **Cline / Roo Memory Bank** — markdown hierarchy | Production validation of the three-retention split (H2): `activeContext.md` (current state) vs `progress.md` (trajectory); `projectbrief.md` = never-overwritten source of truth = the pinned profile (H3). |
 | **Memsearch** (Zilliz) | Markdown source-of-truth + rebuildable vector *shadow* index — the "wiki + disposable index" pattern (validates A.2 + future hybrid retrieval). |
 | **Memobase** | User-profile-keyed long-term memory — the profile store as a first-class object. |
+| **Palantir Foundry / Gotham** (MDM discipline) | Golden-record ontology, human-in-loop for uncertain matches, undo/audit as first-class, deterministic + probabilistic hybrid resolution. **Future consideration** (see PART I): treats entity resolution as its own discipline with its own state and its own operators — not a bolt-on to synthesis. MIKAI's current cluster-detection approach (PART I) is a lighter, LLM-verified version of the same pattern; the elegant long-term version imports Palantir's audit trail, confidence bands, and human-checkpoint queue. |
+| **Neo4j GDS** (community detection) | Direct source for the cluster-detection approach in PART I. Uses graph structure itself (embedding-neighborhood density) to find likely-duplicate clusters, rather than exhaustive pairwise comparison. |
 
 **New open decision (extends Part C):**
 
@@ -479,3 +481,154 @@ expressed wants in words not numbers. Thesis validated at prototype scale.
 decay/tiers/Ebbinghaus (H2/H3 formal), index.md, promote-to-graph (O-049), hybrid
 retrieval, importance-triggered cadence, and the information-metabolism /
 loss-function profile-learning model. These remain genuine open questions.
+
+---
+
+## PART I — Node consolidation as the dream's second job (added 2026-07-02)
+
+The dream, as built in Part H, has one job: synthesize the wiki. But the graph
+underneath the wiki degrades in a specific way that the wiki alone cannot fix:
+**entity resolution decays across time and sources.** Graphiti's inline
+resolution (D-042, capped at 50 candidates) is good for same-thread merges but
+misses cross-corpus duplicates — especially when a concept appears with
+different spellings, capitalizations, or specificity levels across sources
+ingested months apart.
+
+### I.1 The concrete case (2026-07-02)
+
+After Perplexity backfill landed (1,582 episodes on 2026-07-01), the concept
+**ocean farming** exists on **five distinct entity nodes** in the graph:
+
+| node | degree | source | span |
+|---|---|---|---|
+| `ocean farming` | 19 | claude-code + meta-mentions | this week |
+| `3D ocean farming` | 15 | perplexity | 2026-03-19 |
+| `Ocean farming` | 2 | apple-notes | 2026-06 |
+| `Ocean farming bots` | 1 | mikai-default | 2025-05 → 2025-11 |
+| `Ocean farming bots` | 0 | claude-code (meta) | today |
+
+The **linking substrate the user wanted** — Apple Notes + Perplexity + older
+strategic thinking, all bridged through one concept — is structurally present
+in the graph but broken into five islands. Any downstream reasoning (Echoes,
+tension detection, next-step inference) that walks RELATES_TO from a current-
+week anchor cannot reach the older material, because the required bridge node
+does not exist as a single entity.
+
+### I.2 The design position
+
+**Consolidation is a dream responsibility, not a manual maintenance task.**
+This is a first-principle stance:
+
+- Manual Cypher merges (via APOC `mergeNodes`) work but are hacks. Every run
+  requires a human deciding "these N look like duplicates." That does not
+  scale and mixes maintenance operator context with the user's mental model.
+- A separate "consolidator" service running on its own cadence would work but
+  fragments the memory-maintenance surface. The user then has to reason about
+  *when* consolidation runs vs when synthesis runs, and whether Echoes sees
+  pre- or post-consolidation state.
+- The dream ALREADY exists as the nightly maintenance routine over the graph.
+  Consolidation is a maintenance task. It belongs where maintenance already
+  runs. **One nightly script, expanded scope: synthesis + Echoes + dedup.**
+
+### I.3 Rejected approach: pairwise LLM verification
+
+The obvious first design is: for each pair of entities above a similarity
+threshold, one LLM call to decide "same or distinct." This is what most
+LangChain/LlamaIndex tutorials do today. It is **wrong at scale**:
+
+- Pairwise scales O(n²) in candidate count. Ocean farming (5 duplicates) is
+  10 pairwise comparisons; a 500-duplicate cluster is 124,750.
+- Loses the information that helps: the LLM should see the whole cluster at
+  once to judge "all of these are the same," not five pairwise "A=B?" calls
+  that may vote inconsistently.
+- Duplicates cost real money: at ~$0.005/call, 10K pairwise resolutions per
+  dream = $50/night. Prohibitive.
+
+### I.4 Chosen approach: cluster detection (Neo4j GDS insight)
+
+**Detect clusters first via graph-structural + embedding signals; verify
+whole clusters with one LLM call each.**
+
+Concrete algorithm (nightly, after Echoes, before wiki write):
+
+1. **Candidate generation** — bucket entities by a normalized name key
+   (lowercase, strip articles/plurals/leading modifiers). Within each bucket,
+   compute pairwise cosine similarity of node embeddings (already present in
+   Graphiti). Nodes with similarity ≥ θ_hi form a candidate cluster;
+   θ_lo < similarity < θ_hi go to a review queue.
+2. **Cluster verification** — one LLM call per cluster with all N names +
+   summaries: "are these N nodes the same concept? If yes, which is the
+   canonical name? If some are distinct sub-concepts, which subset merges?"
+3. **Merge execution** — for confirmed clusters, pick the merge target by a
+   canonicality score (oldest UUID + highest degree + richest summary +
+   most-diverse source coverage). Merge via APOC `mergeNodes`, preserving
+   the target's UUID, re-pointing all RELATES_TO and MENTIONS edges, and
+   coalescing summaries under a `merged_from: [uuid...]` attribute.
+4. **Audit log** — every merge decision written to `~/.mikai/wiki/log.md`
+   under a `## Consolidation` heading in that dream's changelog entry.
+   Format: `merged {names} → {canonical} · reason: {llm quote}`.
+5. **Review queue** — clusters in the θ_lo < s < θ_hi band land in a
+   `## Pending consolidations` section of the wiki. The user resolves
+   them during their next read; the dream honors those decisions on
+   the following pass.
+
+### I.5 Why this is more elegant than pairwise
+
+- Cost: one call per cluster, not per pair. 100 clusters of avg size 3 = 100
+  calls at ~$0.02 each = $2/night. Affordable.
+- Semantics: the LLM sees the full cluster and produces a coherent decision.
+  No transitivity contradictions ("A=B, B=C, A≠C").
+- Handles sub-cluster splits: the LLM can say "1,2,3 are the same but 4,5
+  are a different concept." Pairwise cannot express this in one round.
+- Aligns with graph-structural reality: real duplicates live in dense
+  embedding neighborhoods. Cluster detection uses that structure directly
+  rather than blindly comparing all pairs.
+
+### I.6 Rejected alternatives
+
+- **Aliases-as-first-class (Palantir MDM lite).** More elegant long-term: keep
+  duplicate nodes physically, but have the query layer treat them as aliases
+  of a canonical entity. Trivially reversible. Rejected for now because it
+  requires modifying every downstream consumer (Echoes, tension detection,
+  L4 primitives) to be alias-aware. Costs the initial-build velocity we need.
+  **Deferred to a future iteration** — see PART F's Palantir MDM row.
+- **Structural prevention at ingest.** Add "always lowercase, singular form,
+  strip articles" as extraction constraints in the Graphiti system prompt.
+  Prevents the split from being created in the first place. Cheap and worth
+  doing — but does not address the existing 8K-entity backlog of legacy
+  duplicates. Combine with I.4 rather than replace.
+- **External canonical IDs (Wikidata Q-IDs).** Elegant for public entities
+  (companies, cities, well-known concepts). Rejected as *primary* mechanism
+  because most of MIKAI's entities are private (friends, personal projects,
+  half-formed ideas) with no Wikidata anchor. Worth adding as an *auxiliary*
+  layer: when an entity plausibly maps to a Wikidata ID, record it and use
+  it as tiebreaker in cluster resolution.
+
+### I.7 New open decision
+
+- **O-053 — Consolidation as PART B phase 5.** Ratify the dream's four
+  phases (in B.2) into **five phases**: (1) read episodes → (2) reflect →
+  (3) resolve/hold → (4) synthesize wiki → (**5) consolidate the graph**
+  (per PART I). Update B.1's trigger/cadence to note the added ~10–30 min
+  cost. Log the audit trail to `log.md` as first-class.
+
+### I.8 Palantir MDM as future consideration
+
+The **Palantir MDM discipline** (row added to Part F) is the more disciplined
+version of what PART I begins. If MIKAI grows to the point where the current
+approach's failure modes bite (rare but costly bad merges, no undo, LLM
+overconfidence on ambiguous clusters), the migration path is:
+
+1. Introduce aliases as first-class (as sketched in I.6). Every current
+   merge becomes an alias set, physically reversible.
+2. Add confidence bands to every consolidation decision (high / medium /
+   low). Only high auto-merges; medium goes to the review queue; low
+   stays split.
+3. Build the human-checkpoint queue as a weekly wiki section: "these 12
+   consolidations are pending your Sunday review." The dream honors the
+   verdicts on the following pass.
+4. Add audit / undo as full graph operations, not just log entries.
+
+This is Palantir's model of entity resolution: **its own pipeline, with
+its own state, its own operators, its own recovery.** The elegant long-term
+target for MIKAI once the immediate consolidation pass in I.4 proves out.
