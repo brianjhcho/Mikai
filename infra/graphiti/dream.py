@@ -39,6 +39,8 @@ from pathlib import Path
 from neo4j import GraphDatabase
 from openai import OpenAI
 
+import consolidation
+
 MIKAI_DIR = Path.home() / ".mikai"
 WIKI_DIR = MIKAI_DIR / "wiki"
 WIKI_PATH = WIKI_DIR / "wiki.md"
@@ -524,6 +526,8 @@ def run_dream(
     do_echoes: bool = True,
     dormancy_days: int = DEFAULT_DORMANCY_DAYS,
     max_echoes: int = DEFAULT_MAX_ECHOES,
+    do_consolidation: bool = True,
+    consolidation_max_calls: int = consolidation.MAX_LLM_CALLS,
 ) -> int:
     rows = fetch_recent_episodes(groups=groups, days=days)
     if not rows:
@@ -562,6 +566,10 @@ def run_dream(
     new_wiki = new_wiki.strip() + "\n"
     changelog = changelog.strip()
 
+    # Pass 3 (defined below) is graph consolidation — runs even in dry-run
+    # (needs the dry_run flag propagated so it doesn't touch the graph).
+    consolidation_result: dict | None = None
+
     # Pass 2: Echoes. Graph traversal back to dormant connected entities.
     # Best-effort: a failure here must not break the standard dream output.
     if do_echoes:
@@ -590,6 +598,36 @@ def run_dream(
         except Exception as e:
             print(f"WARN: Echoes pass failed (non-fatal): {e}", file=sys.stderr)
 
+    # Pass 3: Consolidation. Cluster-detect duplicate entities, verify with
+    # LLM, merge the confirmed ones. See MEMORY_ARCHITECTURE.md PART I.
+    # Best-effort: failures here must not break the standard dream output.
+    if do_consolidation:
+        try:
+            print("Consolidation pass starting…", file=sys.stderr)
+            consolidation_result = consolidation.run_consolidation(
+                model=model,
+                client=client,
+                dry_run=dry_run,
+                max_llm_calls=consolidation_max_calls,
+            )
+            print(
+                f"Consolidation: {consolidation_result['clusters_detected']} clusters, "
+                f"{consolidation_result['merges_executed']} merges, "
+                f"{consolidation_result['entities_merged']} entities collapsed, "
+                f"{consolidation_result['review_queue_size']} review pairs",
+                file=sys.stderr,
+            )
+            # Append review queue section (if any) to the wiki so the user
+            # can see pending consolidations on their next read.
+            review_section = consolidation.format_review_queue_section(
+                consolidation_result
+            )
+            if review_section:
+                new_wiki = new_wiki.rstrip() + "\n\n" + review_section
+        except Exception as e:
+            print(f"WARN: Consolidation pass failed (non-fatal): {e}",
+                  file=sys.stderr)
+
     if dry_run:
         print("\n" + "=" * 72)
         print("PROPOSED wiki.md (DRY RUN — nothing written)")
@@ -606,6 +644,9 @@ def run_dream(
     stamp = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M")
     with LOG_PATH.open("a") as f:
         f.write(f"\n## Dream {stamp}  ·  {len(rows)} episodes, last {days}d\n{changelog}\n")
+    # Consolidation audit trail — separate section, self-timestamped.
+    if consolidation_result:
+        consolidation.append_audit_entry(consolidation_result)
     print(f"Wrote {WIKI_PATH} and appended to {LOG_PATH}.", file=sys.stderr)
     return 0
 
@@ -628,6 +669,12 @@ def main() -> None:
     parser.add_argument("--max-echoes", type=int, default=DEFAULT_MAX_ECHOES,
                         help=f"Max number of echoes to surface "
                              f"(default {DEFAULT_MAX_ECHOES}).")
+    parser.add_argument("--no-consolidation", action="store_true",
+                        help="Skip the consolidation pass (see MEMORY_ARCHITECTURE.md PART I).")
+    parser.add_argument("--consolidation-max-calls", type=int,
+                        default=consolidation.MAX_LLM_CALLS,
+                        help=f"Cap on cluster-verification LLM calls per run "
+                             f"(default {consolidation.MAX_LLM_CALLS}). Bounds nightly cost.")
     args = parser.parse_args()
 
     load_env()
@@ -637,6 +684,8 @@ def main() -> None:
         do_echoes=not args.no_echoes,
         dormancy_days=args.dormancy_days,
         max_echoes=args.max_echoes,
+        do_consolidation=not args.no_consolidation,
+        consolidation_max_calls=args.consolidation_max_calls,
     ))
 
 
