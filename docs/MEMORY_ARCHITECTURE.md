@@ -632,3 +632,87 @@ overconfidence on ambiguous clusters), the migration path is:
 This is Palantir's model of entity resolution: **its own pipeline, with
 its own state, its own operators, its own recovery.** The elegant long-term
 target for MIKAI once the immediate consolidation pass in I.4 proves out.
+
+---
+
+## PART J — Model economics & the LLM policy layer (added 2026-07-02)
+
+MIKAI touches an LLM in four distinct call classes, each with different
+volume, quality, and cost characteristics. Treating them as one class ("we
+use DeepSeek") smears the design. Making the policy layer explicit is a
+prerequisite for evolving each independently.
+
+### J.1 The four call classes
+
+| Class | Frequency | Volume/day | Quality bar | Current backend |
+|---|---|---|---|---|
+| **Interactive query** — user asks MIKAI something in Claude | ad-hoc | 0–20 | high (user-facing reasoning) | Claude Max via MCP tool (D-040) |
+| **Real-time decision** — FIGS deciding what to surface | scheduled 3×/day | ~10 calls | high (single-user-facing output) | Claude via `claude -p` (Max first-party OAuth) |
+| **Background synthesis** — nightly dream, echoes composition | 1×/day | ~5 calls | medium (structured output, no reasoning ceiling) | DeepSeek V3 today; consolidation adds ~60 more |
+| **High-volume extraction** — Graphiti entity/edge extraction per episode | per-ingest | 100s | low-medium (JSON output only) | DeepSeek V3 via patched adapter |
+
+Different call classes deserve different backends. The elegant version is
+a **policy layer** at the sidecar boundary that routes each class to its
+current best backend without leaking the choice into product code.
+
+### J.2 The cloud-vs-local axis
+
+**Cloud (current):** DeepSeek V3 for background + high-volume. Cheap
+(~$1.20/night for consolidation, ~$0.005/episode for Graphiti). No local
+resource cost. Requires internet + a paid balance.
+
+**Local (blocked):** A 32B-class open-weight model (Qwen 2.5 32B,
+DeepSeek R1 distills) running via Ollama, exposed as an OpenAI-compatible
+endpoint at localhost:11434. Zero API cost, no rate limits, data never
+leaves the machine. Requires ~24 GB RAM for Q4-quantized 32B.
+
+**Current constraint:** 8 GB Mac (as of 2026-07-02). Docker Desktop +
+Neo4j + graphiti sidecar + macOS baseline already consume ~5–6 GB;
+loading even a 3B model on top pushes into swap. **Local is deferred
+until hardware upgrade to a 32 GB+ M-series machine.**
+
+Design principle: **local-LLM readiness is architectural, not present.**
+The sidecar's LLM client interface should already be swappable — a
+`LlmBackend` protocol with implementations for DeepSeek, Ollama, Gemini,
+Claude-via-`claude-p` etc. All swaps are policy-file edits, not code
+changes.
+
+### J.3 Cost floor per class
+
+- **Interactive query** → Claude Max subscription — zero marginal cost;
+  already paid. Constraint: rate limits shared with the user's own
+  chat quota. Not usable for background batch.
+- **Real-time decision (FIGS)** → Claude Max via `claude -p` — same
+  subscription pool. At 3 daily ticks × 3–5 LLM invocations per tick,
+  well within limits.
+- **Background synthesis** → cheapest capable cloud model.
+  DeepSeek V3 today; **Gemini 2.0 Flash Lite is 7× cheaper** at
+  $0.038/M input vs DeepSeek's $0.27/M and passes the JSON-schema
+  bar. Swap is a base_url edit.
+- **High-volume extraction** → same as synthesis; unify these two on
+  the same backend to simplify the policy layer.
+
+### J.4 The rule-first design (extends PART I)
+
+The direct implication for consolidation (PART I): **do not treat LLM as
+the default verification path.** Rules — normalized-name buckets +
+embedding cosine threshold — resolve the vast majority of duplicates at
+zero cost. LLM enters only for the medium-similarity band as an optional
+safety net (`--llm-verify` flag), and only until hardware supports local.
+After hardware upgrade, LLM verification becomes free and gains ubiquity.
+
+The same pattern generalizes: **rules for high-confidence common cases;
+cloud LLM as the escape hatch for ambiguity; local LLM once available.**
+
+### J.5 O-054 (open)
+
+**Consolidate the sidecar's LLM client into a formal `LlmBackend` protocol.**
+Ship implementations for DeepSeek (current), Gemini Flash Lite (upgrade
+path), Ollama (deferred), and Claude via `claude -p` (FIGS's current
+pattern, generalized). Add an env-var-driven backend selection so per-run
+routing (e.g., `MIKAI_LLM_BACKEND=gemini`) is possible without code
+changes.
+
+*Cross-reference: MCP eval memo (2026-04-20) which validated
+Claude Max + MCP tool as the right pattern for interactive-query
+class.*
