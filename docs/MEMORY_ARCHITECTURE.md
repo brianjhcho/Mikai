@@ -633,6 +633,38 @@ This is Palantir's model of entity resolution: **its own pipeline, with
 its own state, its own operators, its own recovery.** The elegant long-term
 target for MIKAI once the immediate consolidation pass in I.4 proves out.
 
+### I.9 V1 shipped / V2 as design intent
+
+The `consolidation.py` module shipped on `feat-dream-echoes` (commit
+`f5f9ff0`) is the **V1** implementation of PART I: cluster detection
+followed by LLM verification of every cluster. It works and is
+correct — bounded-test on the live graph produced 4 correct merges in
+5 calls at ~$0.02 each — but the V1 design is not the elegant version.
+
+**V2 (current design intent, not yet coded):**
+- Auto-merge when normalized name matches AND cosine > 0.92
+- Short-name guardrail (< 5 chars) sends high-similarity candidates
+  to the review queue rather than merging, preventing catastrophic
+  proper-noun collisions ("Sam Altman" vs "Sam")
+- LLM verification is opt-in via `--llm-verify` for the medium
+  similarity band [0.75, 0.92) only
+- Prerequisite: an unmerge utility (Cypher-based, uses the
+  `merged_from` attribute) so bad merges are cheap to reverse
+
+**Cost profile**:
+- V1: ~$1.20/night. ~30 nights to work through backlog. ~$36 total.
+- V2: $0/night default. ~$0.05/night with `--llm-verify`. Full backlog
+  in similar wall-clock.
+
+**The bet V2 makes**: personal knowledge graphs at MIKAI's scale
+tolerate occasional false merges if unmerge is cheap. LLM verification
+buys 5% risk reduction on a low-cost failure mode — that's a bad trade
+at this scale.
+
+Full reasoning: `docs/research/consolidation-approaches-2026-07.md`
+sections 4 (V1 vs V2), 3 (precedent lineages), and 2 (organic
+bridging mechanism).
+
 ---
 
 ## PART J — Model economics & the LLM policy layer (added 2026-07-02)
