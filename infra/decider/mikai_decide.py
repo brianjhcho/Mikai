@@ -53,6 +53,17 @@ import wiki_parser  # noqa: E402
 import needs_lens  # noqa: E402
 import dispatch_calendar  # noqa: E402
 
+# Life-dimensions ontology (see docs/DIMENSIONS.md). Loaded verbatim into the
+# prompt as the top-level frame — dimensions are the schema FIGS uses to
+# route candidates into meaningful surfacing rather than flat-density rank.
+DIMENSIONS_PATH = Path(__file__).resolve().parent.parent.parent / "docs" / "DIMENSIONS.md"
+
+
+def load_dimensions() -> str:
+    if not DIMENSIONS_PATH.exists():
+        return "(DIMENSIONS.md not found — falling back to flat needs+wiki ranking)"
+    return DIMENSIONS_PATH.read_text()
+
 # ── Config ─────────────────────────────────────────────────────────────
 
 GRAPHITI_URL = os.environ.get("MIKAI_GRAPHITI_URL", "http://localhost:8100")
@@ -552,6 +563,24 @@ You are MIKAI, Brian's notification decider. Your job this tick: surface 2 to 5 
 
 CURRENT TIME: {now} (UTC), {weekday}, hour {hour} UTC
 
+== FRAME — Brian's life-dimensions ontology (highest level) ==
+Below is Brian's personal ontology: 9 dimensions of his life, each with concrete
+goals and evidence concepts. Use this as the ROUTING SCHEMA when ranking
+candidates. Two hard rules:
+
+  RULE A — Spectrum coverage. Your 2-5-item slate MUST span at least 3
+  distinct dimensions. Do NOT stack the whole slate under one dimension.
+
+  RULE B — Noise filter. The concepts listed under Dimension 1 (AI Career /
+  MIKAI Build) are mostly framework/tooling noise — MIKAI, Claude Code,
+  Perplexity, Neo4j, Assistant, sidecar, launchd, etc. DO NOT surface these
+  as notifications unless a CONCRETE decision point in Dimension 1 crystallizes
+  (founder-vs-employee commitment, ship milestone, funding move). Otherwise
+  they are background context Brian sees every day; a notification about them
+  is signal-poor.
+
+{dimensions_content}
+
 == HIGHEST PRIORITY — Brian-curated PRIORITY NEEDS ==
 The NEEDS REGISTRY below was hand-curated by Brian. These are load-bearing life needs that may not surface in his conversations (financial admin, health admin, career decisions). FIGS should treat these as the FIRST candidates for surfacing, ranked by their score. The wiki and graph evidence below are SUPPORTING context — if a need's `next_step` aligns with recent fresh activity, surface that need.
 
@@ -701,6 +730,7 @@ def build_prompt(context: dict, recent_decisions: list[dict]) -> str:
         wiki_wants_summary=format_wiki_wants(wiki),
         wiki_last_dream=(wiki.last_dream_at if wiki and wiki.available else "WIKI UNAVAILABLE"),
         needs_summary=format_needs(context.get("needs_ranked", []), context.get("needs_registry")),
+        dimensions_content=load_dimensions(),
     )
 
 
