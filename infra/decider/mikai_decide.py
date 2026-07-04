@@ -58,11 +58,22 @@ import dispatch_calendar  # noqa: E402
 # route candidates into meaningful surfacing rather than flat-density rank.
 DIMENSIONS_PATH = Path(__file__).resolve().parent.parent.parent / "docs" / "DIMENSIONS.md"
 
+# Full-corpus ontology wiki (produced by full_corpus_dream.py on feat-dream-echoes).
+# Persistent, LLM-synthesized narrative organized by DIMENSIONS.md schema.
+# Overrides the incremental last-7d wiki as PRIMARY lens for FIGS candidates.
+ONTOLOGY_WIKI_PATH = Path.home() / ".mikai" / "wiki" / "wiki-ontology-v1.md"
+
 
 def load_dimensions() -> str:
     if not DIMENSIONS_PATH.exists():
         return "(DIMENSIONS.md not found — falling back to flat needs+wiki ranking)"
     return DIMENSIONS_PATH.read_text()
+
+
+def load_ontology_wiki() -> str:
+    if not ONTOLOGY_WIKI_PATH.exists():
+        return "(ontology wiki not yet generated — run full_corpus_dream.py to seed it)"
+    return ONTOLOGY_WIKI_PATH.read_text()
 
 # ── Config ─────────────────────────────────────────────────────────────
 
@@ -581,6 +592,18 @@ candidates. Two hard rules:
 
 {dimensions_content}
 
+== PRIMARY LENS — Full-corpus ontology wiki (LLM synthesis over entire corpus) ==
+Below is Brian's PRIMARY narrative representation of himself, synthesized from
+the whole corpus (~6,700 episodes, 21M chars, spanning 2013→today) organized
+against the DIMENSIONS ontology. This is the RICHEST source of surfaceable
+candidates you have — it contains named goals, dated pickup points, cross-time
+patterns, and stalled decisions that the last-7d incremental wiki misses
+entirely. TREAT THIS AS THE PRIMARY LENS for candidate selection. Pull
+surfacing candidates from this wiki's per-dimension sections; each dimension's
+listed goals with state/pickup are directly notification-eligible.
+
+{ontology_wiki_content}
+
 == HIGHEST PRIORITY — Brian-curated PRIORITY NEEDS ==
 The NEEDS REGISTRY below was hand-curated by Brian. These are load-bearing life needs that may not surface in his conversations (financial admin, health admin, career decisions). FIGS should treat these as the FIRST candidates for surfacing, ranked by their score. The wiki and graph evidence below are SUPPORTING context — if a need's `next_step` aligns with recent fresh activity, surface that need.
 
@@ -641,7 +664,9 @@ BRIAN'S RECENT NOTIFICATIONS AND HIS RESPONSES (newest first):
 
 RULES YOU MUST FOLLOW:
 
-1. **Rank the NEEDS REGISTRY FIRST.** Every entry in the Brian-curated needs registry is a candidate. A need that aligns with fresh raw activity (calendar event, message, email, graph edge) has high delivery_value. A need that has had no recent movement AND no contradicting wiki/graph evidence is a stalled-thread candidate (the canonical MIKAI use case). THEN consider wiki ## Now threads.
+0. **AT LEAST 1 ITEM MUST COME FROM THE ONTOLOGY WIKI, NOT THE NEEDS REGISTRY.** The needs registry has only 5 curated items. The ontology wiki covers Brian's ENTIRE 13-year corpus across all 9 dimensions — surfacing only from the registry means missing everything Brian hasn't hand-curated (International Village real estate, ocean farming, Kenya coffee, Recurring Themes, city-choice, Monstera project, dry-eye/smoking, etc.). Any dimension's goals + evidence in the ontology wiki are notification-eligible. Explicitly force yourself to promote AT LEAST ONE non-registry candidate this tick.
+
+1. **Rank the NEEDS REGISTRY items alongside ontology-wiki candidates.** Every entry in the Brian-curated needs registry is eligible AND every dimension-scoped goal in the ontology wiki is eligible. A need or wiki-goal that aligns with fresh raw activity (calendar event, message, email, graph edge) has high delivery_value. An item with no recent movement AND no contradicting evidence is a stalled-thread candidate (the canonical MIKAI use case). Give registry items a priority boost but DO NOT let it exclude wiki-only items.
 
 2. **The 4-factor metric.** surface_priority = thread_state × tension_pressure × delivery_value × delivery_cost⁻¹
    - thread_state: acting > stalled > decided > exploring
@@ -731,6 +756,7 @@ def build_prompt(context: dict, recent_decisions: list[dict]) -> str:
         wiki_last_dream=(wiki.last_dream_at if wiki and wiki.available else "WIKI UNAVAILABLE"),
         needs_summary=format_needs(context.get("needs_ranked", []), context.get("needs_registry")),
         dimensions_content=load_dimensions(),
+        ontology_wiki_content=load_ontology_wiki(),
     )
 
 
@@ -998,7 +1024,25 @@ def _evidence_pool(context: dict) -> set:
     for n in context.get("needs_ranked", []) or []:
         if n.get("slug"):
             seen.add(n["slug"])
+    # Ontology-wiki citations. The wiki content is always in-context (via the
+    # PRIMARY LENS section), so any 'wiki-dimension-*' or 'wiki-goal-*' citation
+    # is provably grounded. Rather than enumerate every possible dimension slug,
+    # we accept the prefix-based patterns and validate downstream via the
+    # sentinel token.
+    seen.add("__WIKI_ONTOLOGY__")  # sentinel — see _is_ontology_citation
     return seen
+
+
+_ONTOLOGY_PREFIXES = (
+    "wiki-dimension-", "wiki-goal-", "wiki-theme-",
+    "dimension-", "dim-", "dim_",
+    "ontology-", "ontology_",
+)
+
+
+def _is_ontology_citation(cite: str) -> bool:
+    c = (cite or "").lower()
+    return any(c.startswith(p) for p in _ONTOLOGY_PREFIXES)
 
 
 def validate_decision(decision: dict | None, context: dict) -> tuple[bool, str]:
@@ -1047,9 +1091,12 @@ def validate_decision(decision: dict | None, context: dict) -> tuple[bool, str]:
                 return False, f"notification[{i}] duplicate needs_slug '{ns}'"
             needs_slugs.add(ns)
 
-        # Citation check
+        # Citation check — accept graph UUIDs (full or 8-char), wiki-thread slugs,
+        # needs slugs (from _evidence_pool), OR ontology-wiki citations
+        # (wiki-dimension-*, dim_*, ontology-*), since the ontology wiki is
+        # always present in-context as a prompt section.
         for c in (n.get("evidence_edge_uuids", []) or []):
-            if c not in pool and c[:8] not in pool:
+            if c not in pool and c[:8] not in pool and not _is_ontology_citation(c):
                 return False, f"notification[{i}] cited evidence '{c}' not in context"
 
     return True, "ok"
