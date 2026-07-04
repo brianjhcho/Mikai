@@ -748,3 +748,118 @@ changes.
 *Cross-reference: MCP eval memo (2026-04-20) which validated
 Claude Max + MCP tool as the right pattern for interactive-query
 class.*
+
+---
+
+## PART K — Wiki-first empirical validation (added 2026-07-04)
+
+The V2 consolidation design (PART I.9) was deferred in favor of wiki-first
+architecture. This section records the empirical output that validated the
+decision.
+
+### K.1 The decision (reframed)
+
+The user identified the load-bearing observation on 2026-07-04:
+> "A text-based LLM analysis would easily have recognized that ocean farming
+> and 3D ocean farming are related nodes: there is an ontology design error
+> here."
+
+The correct reframe: the graph is trying to solve concept synonymy through
+entity resolution — a task LLMs handle natively at synthesis time. V2
+consolidation fixes a self-created problem. Wiki-first bypasses the whole
+extraction fragmentation issue by letting LLM synthesis do the unification
+at read time.
+
+### K.2 The build
+
+`full_corpus_dream.py` on `feat-dream-echoes`: map-reduce over every episode
+in Neo4j, structured against `docs/DIMENSIONS.md`, producing an
+LLM-synthesized ontology-organized wiki at `~/.mikai/wiki/wiki-ontology-v1.md`.
+
+Architecture:
+- MAP phase — chunk corpus into ~60K-token pieces, extract per-dimension
+  observations as strict JSON (DeepSeek V3, response_format json_object)
+- REDUCE phase — 9 dimension-scoped synthesis calls; each stays inside
+  DeepSeek's 128K context by processing only that dimension's observations
+- ASSEMBLE — new file, no clobber of incremental `dream.py`'s `wiki.md`
+
+### K.3 The output — measured
+
+- **Corpus:** 6,768 episodes / 21.5M chars spanning 2013→2026
+- **Chunking:** 89 chunks × 234K chars average
+- **MAP success rate:** 86/89 = 96.6%
+- **REDUCE:** 9/9 dimensions
+- **Total runtime:** 3.4 minutes end-to-end
+- **Cost:** ~$1.35 DeepSeek (calibrated to earlier estimate of $3.40 —
+  actual came in cheaper because per-chunk input was less than modeled)
+- **Output size:** 48,765 chars (~12K tokens — LLM-native wiki size)
+
+### K.4 Empirical noonchi
+
+The full-corpus wiki surfaced content invisible to every other lens
+(needs registry, incremental 7d wiki, graph density lens):
+
+- **Ocean farming** located under Dim 3 with a full cross-time trace
+  ("first surfaced 2015-12-03 as 'Marine agriculture,' reappears in 2018,
+  2023, 2024, and consistently through 2026 ... research done, email
+  coordination step reached but not followed through") — the exact
+  pickup point the user articulated ~4 hours earlier, without any graph
+  consolidation.
+- **International Village real estate** — a concrete Vancouver-based
+  business commitment (master lease model, Crystal Mall benchmarking,
+  dual-entity structure Cho Cho Group / Remi Consulting) that was
+  invisible to every prior lens.
+- **Dimension 9 (Recurring Themes)** — 574 observations extracted the
+  self-message substrate. Four stable themes surfaced with quotes
+  spanning 2014-2026:
+    - "The Journey is the Point" (2014-05-11 verbatim, repeated 2016,
+      2020, 2023, 2024, 2025, 2026 — the most persistent single line
+      in the corpus)
+    - "Act Before You're Ready"
+    - "Be Resolute, Unapologetic"
+    - "Courage is the Master Virtue"
+- **Self-diagnosis quoted back**: "the 8w7 pattern is generating
+  frameworks instead of shipping" (2026-03-19) — the user's own
+  observation, surfaced by MIKAI to MIKAI's user.
+
+### K.5 The downstream
+
+FIGS immediately points at the ontology wiki as PRIMARY LENS (see
+pear-seashore commit on 2026-07-04 wiring `ontology_wiki_content` into
+DECIDE_PROMPT with new Rule 0: "at least 1 of 2-5 items must come from
+the ontology wiki, not the needs registry"). First live tick with the
+wire-up produced a 4-item slate spanning 4 dimensions, TWO of which
+were wiki-derived non-registry items:
+- Robby's crypto test transfer (Dim 8 trust-vs-evidence tension)
+- International Village outreach (Dim 3 next-move)
+
+Neither was surfaceable by the needs registry, incremental wiki, or
+graph density lens on their own.
+
+### K.6 What this proves architecturally
+
+- **Corpus-canonical + LLM synthesis > graph consolidation at MIKAI's scale.**
+  The three-layer reframe (corpus | text index | graph | wiki) is empirically
+  right; wiki synthesis performs concept unification for free at read time.
+- **V2 consolidation is deferred, not killed.** Under the wiki-first
+  architecture, graph consolidation is an optimization for whoever consumes
+  the graph directly. FIGS reads the wiki first; graph is background.
+- **Ontology + LLM synthesis IS the "gradient loss function" the user
+  intuited** — Palantir-shape ontology (DIMENSIONS.md) as the teacher
+  signal, LLM synthesis as the update mechanism, wiki as the compressed
+  representation converging over regenerations.
+
+### K.7 New open decisions
+
+- **O-055 — Regeneration cadence.** Do we regenerate the ontology wiki
+  weekly (fresh full-corpus scan for ~$1.50) or run incremental updates
+  on top of it (cheaper but risks drift)? Current pattern: keep the
+  incremental `dream.py` (7d slice) writing `wiki.md`, run
+  `full_corpus_dream.py` on-demand or weekly cron for
+  `wiki-ontology-v1.md`. Refactor when cadence pattern stabilizes.
+
+- **O-056 — Consolidation V2 revisit trigger.** Under what condition
+  does V2 consolidation become worth building? Candidate: when the
+  ontology wiki alone can no longer surface a concept-that-should-be-
+  surfaced with < 3 regenerations. Signal the wiki is failing, not
+  the graph.
