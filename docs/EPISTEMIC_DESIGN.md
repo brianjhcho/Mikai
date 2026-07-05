@@ -176,6 +176,65 @@ Currently: nodes are concepts, projects, questions, decisions, tensions. But the
 **Q-E004: How do you evaluate whether the graph is accurate?**
 There is no ground truth for a person-graph. Self-evaluation ("does this feel right?") is the only available signal. This is both a validation problem and a product design problem — the UI must make the graph legible enough for the person to evaluate and correct it.
 
+**Q-E005: Where do recurrence-weighting and recall-decay live in the stack?**
+Sections 1, 4, and 5 of this document prescribe a graph that strengthens edges on retrieval, decays uncalled concepts, and weights recurrence across the corpus. Graphiti-core (the underlying library) implements *none* of this — it has three timestamps and binary supersession (see Addendum below). The open question: does this behavior get implemented as a layer above Graphiti (a periodic job that writes scores into `EntityEdge.attributes`), as part of L4's thread-state computation, or as a fork of graphiti-core itself? Each path has different blast radius.
+
+---
+
+## Addendum (2026-04-20): What Graphiti-Core Actually Does About Decay
+
+This addendum was added after the MIKAI eval (`docs/evals/run-20260418-103324.md`) surfaced a gap between what this document prescribes and what the underlying library implements. It is recorded here, not in DECISIONS.md, because the gap is epistemic before it is architectural — what to *do* about it depends on which of this document's principles are load-bearing.
+
+### What surfaced
+
+In eval question B1 ("how has my thinking about coffee supply chains evolved between January and April 2026?"), MIKAI returned an arc reconstructed from source-episode reference times — but not from edge bitemporality. Most coffee edges shared `valid_since=2026-03-19T12:52`, the timestamp of a single ingestion batch. Edge timestamps reflected when *the system learned the fact*, not when *Brian wrote it*. This led to the question: doesn't MIKAI track how thoughts evolve?
+
+### What graphiti-core actually has
+
+Investigation of `/usr/local/lib/python3.12/site-packages/graphiti_core/edges.py:263-285` (EntityEdge model) and `utils/maintenance/edge_operations.py:425-460` (`resolve_edge_contradictions`) returned the full mechanism:
+
+**Three temporal fields per edge, no scoring fields:**
+
+| Field | Meaning |
+|---|---|
+| `expired_at` | System-clock time when edge was invalidated |
+| `valid_at` | When the fact became true (asserted, optional) |
+| `invalid_at` | When the fact stopped being true (asserted, optional) |
+
+There is **no** `confidence`, `weight`, `score`, `priority`, `recency`, `recurrence_count`, or `last_recalled_at`. The only real-valued field on an edge is `fact_embedding` — used for retrieval similarity, not belief strength.
+
+**Supersession is binary, datetime-driven:**
+
+For each candidate edge, `resolve_edge_contradictions` does pure timestamp comparisons. If a new edge has a later `valid_at` and the windows overlap, the older edge gets `invalid_at = resolved_edge.valid_at` and `expired_at = utc_now()`. Otherwise it's left alone. There is also an LLM-driven step (`resolve_extracted_edge` prompts an LLM with invalidation candidates) — still produces a binary in-or-out decision.
+
+**No decay for uncontradicted edges.** An edge written six months ago that nothing later contradicts stays marked "current" forever. The library has no mechanism that says "this hasn't been touched in N months, downgrade it" or "this concept has been queried 50 times, strengthen its connections."
+
+### Where this conflicts with the prescriptions above
+
+| This document says | Graphiti-core does |
+|---|---|
+| "A concept queried frequently should have its edges strengthened" (§1) | Nothing. Retrieval is read-only. |
+| "A concept never recalled should have its weight decay over time" (§1) | Nothing. Old uncontradicted edges stay "current" indefinitely. |
+| "Weight by recurrence, not just content" (§Step 4) | Nothing. Edges have no count, no occurrence weight. |
+| "Let recall queries update the graph" (§Step 5) | Nothing. Search is non-mutating. |
+| "Beliefs that have already been revised need to be distinguished" (§3, Q-E002) | Partially: `invalid_at`/`expired_at` mark superseded facts, but only the contradiction case is detected — gradual abandonment is invisible. |
+
+In short: graphiti-core models *what was said* and *when contradictions were detected*. It does not model *how strongly the user still holds it* or *how recently they engaged with it*. The neuroscience-grounded model in §1–§3 of this document is, today, vapor at the storage layer.
+
+### Implementation paths (not a decision, just the option space)
+
+Three plausible places this could live, with different blast radius:
+
+1. **Layer above graphiti-core, writing into `EntityEdge.attributes`.** A periodic job (or a sidecar endpoint hook) computes a `recall_score`, `recurrence_count`, `last_seen_at`, and writes them as custom attributes on the edge. Graphiti's storage tolerates arbitrary attributes; nothing in core changes. Lowest blast radius. Highest likelihood that the scores drift out of sync with reality.
+2. **Compute it in L4 from `EntityEdge.episodes[]` + `EpisodicNode.valid_at`.** Don't materialize decay scores at all — derive them at query time from the episodes the edge cites and their authorship reference times. No write-side complexity. Slow at scale; needs caching.
+3. **Fork graphiti-core to add belief-strength as a first-class field.** Highest blast radius (we're already running a patched copy per the candidate-resolution cap, but adding a scoring field touches the schema and every retrieval query). Most architecturally honest. Cuts off easy upstream merges.
+
+The right answer depends on whether this document's principles (§1, §4, §5) are load-bearing for the product or aspirational. If load-bearing, option 3. If we're shipping L4 first and want to defer the decision, option 2 — derive at query time, materialize later if it becomes a hot path.
+
+### What this implies for the eval rubric
+
+The MIKAI eval's "Confidence calibration" axis is currently scoring whether the *answer* is well-calibrated. It is not scoring whether the *graph* carries calibrated belief weights — because today, no edge in the graph does. Once recurrence-weighting or recall-decay is implemented anywhere in the stack, the rubric should grow an axis for whether MIKAI's answer surfaces *strength of belief* alongside the fact itself ("you've returned to this 7 times across 4 months" vs. "you mentioned this once").
+
 ---
 
 *This document should be read before modifying the extraction prompt, before adding new node or edge types, and before designing the evaluation framework. It is a design constraint document, not a specification.*
