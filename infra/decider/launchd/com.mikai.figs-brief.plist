@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.mikai.figs-brief</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/briancho/Library/Application Support/mikai/launchd/figs-brief-runner.sh</string>
+    </array>
+
+    <!-- Once daily at 06:30 local — earlier than the 07:00 decide tick so the
+         brief is in Calendar BEFORE the first ntfy notification fires. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>6</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+
+    <key>ThrottleInterval</key>
+    <integer>300</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/briancho/.mikai/logs/figs-brief.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/briancho/.mikai/logs/figs-brief.err.log</string>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/briancho/Library/Application Support/mikai/launchd</string>
+</dict>
+</plist>

@@ -1075,4 +1075,58 @@ Agents and scripts live at `~/Library/Application Support/mikai/launchd/` — **
 - **Patch 0.28.2's node/edge `save()` to flatten/JSON-serialize attributes.** In-place patch clobbered on reinstall (like the cap-50 patch), and must be applied to both the local venv and the docker image.
 - **Strip only the attribute fields, keep custom types.** Still leaves typed labels but the bug recurs on edge attributes; no net gain over going fully native.
 
+---
+
+## D-053: FIGS — LLM-only notification interface (not rules engine + bandit)
+
+**Date:** 2026-06-26 (naming clarified 2026-06-27)
+**Source:** FIGS V0 build session (`infra/decider/`); supersedes the hybrid rules-engine-plus-bandit direction proposed in the predictive-layer-spec exploratory thread.
+
+**Naming convention (companion decision, 2026-06-27):** **MIKAI** is the backend (L3 graph + L4 reasoning). **FIGS** is the notification interface that consumes MIKAI. Every notification/push/interrupt surface is FIGS; every storage/extraction/reasoning surface is MIKAI. Code currently lives at `infra/decider/` for historical reasons; FIGS is the canonical doc name.
+
+**Decision:** FIGS V0 is a single Python script (`infra/decider/mikai_decide.py`) that on each tick:
+1. Pulls candidate signals from MIKAI (L3 graph) via Cypher recency lens (last 24h `RELATES_TO` edges) + 5 semantic-search lenses (active threads, contradictions, recurring patterns, urgent/time-sensitive, personal life)
+2. Pulls live cross-source events via FIGS's own per-source adapters (`adapters/imessage.py` via SQLite, `adapters/calendar.py` via Calendar.sqlitedb direct read, `adapters/gmail.py` via IMAP + app password)
+3. Invokes MIKAI's L4 reasoning by asking Claude (via headless `claude -p`, first-party OAuth — no API credits burned) "send a notification right now? if yes, what and at what interruption level?"
+4. Validates evidence citations against the prompt context (no hallucinated UUIDs), enforces a cooldown window (default 2h), and dispatches via ntfy.sh on send
+5. Logs every decision (sent + silent) to local SQLite at `~/.mikai/notification_log.db` for the dismiss/act feedback loop
+
+The brain is MIKAI's L4 reasoning (the LLM). There is no rules engine, no priority queue, no LightGBM ranker, no contextual bandit, no notification-graph engineering inside FIGS itself. Default is silence; the bar for "send" is structurally high (evidence-citation requirement + cooldown + explicit "default silent" instruction in the prompt).
+
+**Why:**
+
+1. **Mirrors Anthropic Dreaming's shape exactly.** Dreaming (research preview, 2026-05-06) is "scheduled async LLM curator over past content." MIKAI's decider is "scheduled async LLM curator over candidate signals." Same architecture pattern in the lane Anthropic is itself heading — confirms the shape is right.
+2. **The LLM is good enough to be the whole brain at single-user scale.** Candidate ranking, tiebreaker, copywriting, cold-start scoring, and explanation are all jobs the LLM does in one prompt round-trip. A rules engine sitting in front of the LLM duplicates work the LLM already does well, and adds engineering surface that doesn't pay back at 1-user scale.
+3. **Cold-start works on day 1.** A contextual bandit needs hundreds of dismiss/act examples before its policy beats random. The LLM starts with strong priors and learns in-context from the most recent N decisions injected into each prompt. No pre-training, no labeled data, no warm-up period.
+4. **~700 lines total.** Including all three adapters + Neo4j HTTP helper + cooldown + validation + ntfy dispatch + SQLite log. Same scope a rules engine would need just for its priority queue + dedup + token bucket.
+5. **Time-based retrieval via direct Cypher closes the recency gap that semantic-only `/search` cannot.** Embeddings don't encode "what's new in the graph since yesterday"; a `MATCH ()-[r:RELATES_TO]->() WHERE r.created_at > datetime() - duration({hours: $h}) ORDER BY r.created_at DESC` does. This was the bug behind early dry-runs that surfaced 2024-era booking-tool edges instead of fresh content.
+
+**Rejected:**
+
+- **Hybrid rules engine + LightGBM ranker + Vowpal Wabbit contextual bandit** (the predictive-layer-spec proposal). Right architecture at FAANG scale. Wrong architecture at single-user scale: ~10× more code, multiple new ML dependencies, weeks of cold-start before signal accumulates, and the LLM is already doing every job those components would do. Logged as a future-revisit if the LLM-only approach plateaus on dismiss rate.
+- **Hermes Agent fork as the runtime.** Burns extra-credit pool (third-party OAuth identity); doesn't use Max plan's base allowance. Headless `claude -p` from the user's own Claude Code install runs Max-legitimate.
+- **MCP scheduled task / Routines for V0.** Routines would be the right home eventually; for V0 we run from a terminal cron equivalent. Adding the Routines integration is a separate phase once the decision quality is calibrated.
+- **Apple's UNUserNotificationCenter native API (Swift app + APNs).** Would unlock action buttons on iOS lock screen, but requires a full Apple Developer setup + Swift skill. ntfy.sh provides cross-device delivery (Mac + iPhone) with standard swipe-to-dismiss interaction for V0. Upgrade path documented (terminal-notifier on Mac → Swift app on iOS) but not built.
+
+**Implementation:**
+
+- `infra/decider/mikai_decide.py` — main script, ~553 lines. CLI flags: `--init` (initialize SQLite), `--test-ntfy` (static dispatch test), `--dry-run` (build prompt + show Claude's decision; no dispatch, no log), `--force` (ignore cooldown), `--show-prompt`.
+- `infra/decider/adapters/imessage.py` — reads `~/Library/Messages/chat.db` read-only via SQLite; requires Full Disk Access on the Python interpreter (one-time grant).
+- `infra/decider/adapters/calendar.py` — reads `~/Library/Calendars/Calendar.sqlitedb` directly (works because Python already has FDA from the iMessage grant); falls back to icalbuddy then osascript. iCloud Calendars must be toggled on in System Settings → Apple ID → iCloud → Apps Using iCloud.
+- `infra/decider/adapters/gmail.py` — IMAP with Google app password (`MIKAI_GMAIL_USER`, `MIKAI_GMAIL_APP_PASSWORD` in `.env.local`). Pulls unread + 24h windowed inbox.
+- `infra/decider/README.md` — setup ritual, env var reference, upgrade-path table.
+
+**Revisit if:**
+
+- Dismiss rate fails to drop below 30% after 2–4 weeks of operation (suggests LLM judgment alone isn't enough; add a LightGBM scorer as one feature input to the prompt — predictive-layer spec).
+- Notification volume becomes too sparse (suggests candidate retrieval is missing signal; add specific source adapters before changing the brain).
+- Claude latency at 4h cadence becomes binding (suggests preprocessing candidates outside the LLM call; consider a lightweight scorer to shortlist the top-K from the candidate pool).
+- A new Anthropic Routines + MCP integration changes the runtime model (e.g., persistent push from Routines instead of cron).
+
+**Related to:**
+- ARCH-024 (L3 port) — decider sits above the port, reads via `GraphitiAdapter` (HTTP `/search`) and direct Neo4j (Cypher recency). Does not import graphiti-core.
+- D-041 (L4 above port) — confirms the decider is L4 product code, not L3 infrastructure.
+- O-022 (timing model for proactive delivery) — decider's intervention-timing logic (cooldown + time-of-day awareness in prompt) is the V1 implementation.
+- O-028 (reactive→proactive transition) — decider IS the proactive surface. Reactive surface (MCP `search`/`get_source`) remains alongside it.
+
 **Revisit if:** L4 needs typed node/edge attributes (e.g. edge confidence/explanation). Reviving Stage 6 first requires a graphiti-core version that persists custom attributes as flat Neo4j properties; set `MIKAI_TYPED_EXTRACTION=1` only once that holds.
