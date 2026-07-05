@@ -48,6 +48,91 @@ This produces fundamentally different products from identical starting architect
 
 ---
 
+## The Competitor Landscape (April 2026)
+
+The memory infrastructure space is no longer "Mem0 vs Graphiti." There are at least four distinct intellectual lineages, seven distinct mechanisms, and a universal pipeline shape that every system instantiates differently. This section is the corrected map.
+
+### The Four Theoretical Lineages
+
+Which cognitive or CS model does each system's designer carry in their head? This predicts their blind spots more reliably than feature comparison.
+
+| Lineage | Systems | Core assumption | Blind spot |
+|---|---|---|---|
+| Bitemporal database (XTDB, Datomic) | Graphiti, Supermemory | Every fact has two time axes: when it was true + when we learned it. Nothing deletes. | No salience, no forgetting, no confidence — grows unbounded. |
+| Modal / Atkinson-Shiffrin memory (1968) | Mem0, Cognee, LangMem | Three stores (sensory / short / long) with decay without rehearsal; rehearsal strengthens. | Decay rates are usually hand-picked; no empirical calibration. |
+| OS virtual memory (Mach, Linux) | Letta / MemGPT | Bounded context = bounded RAM; everything else is paged to disk. | No semantic importance — LRU treats a decision and a greeting equally. |
+| Systems consolidation / event segmentation (neuroscience, 2015+) | GAM, A-MEM, Hindsight (partial) | Memory is reconstructed, not retrieved; consolidation happens at event boundaries; beliefs evolve with evidence. | Computationally heavier; harder to implement correctly. |
+
+MIKAI's L3 sits in the bitemporal lineage (via Graphiti). MIKAI's L4 (the product) is moving toward systems consolidation — boundary-triggered state classification, belief evolution. The blind spot inherited from L3 (no forgetting, no salience) is what `docs/EPISTEMIC_DESIGN.md` §1, §4, §5 prescribe and the addendum admits the storage layer doesn't provide.
+
+### The Seven Mechanisms (Axes of Comparison)
+
+Every memory system implements some subset of these. None implement all seven. The choice of subset is the design.
+
+| # | Mechanism | What it does | Cost profile | Cognitive analog |
+|---|---|---|---|---|
+| M1 | Temporal invalidation | Marks facts expired when contradicted; preserves history | LLM per ingest | Memory is never erased, just superseded |
+| M2 | Relevance decay | Usage-based score drop over time; low scores pruned | Free (math) | Disuse atrophy |
+| M3 | Confidence evolution | Evidence-weighted belief strength updates | LLM at evidence arrival | Bayesian belief update |
+| M4 | Eviction policies | Mechanical FIFO/LRU removal when capacity exceeded | Free | Working memory displacement |
+| M5 | Update resolution | LLM judges ADD/UPDATE/DELETE/NOOP per candidate | LLM per fact | Conflict adjudication |
+| M6 | Summarization cascade | Compress old content to preserve gist, discard detail | LLM on eviction | Systems consolidation (hippocampus → cortex) |
+| M7 | Boundary-triggered consolidation | Detect semantic shift; promote local to global only then | LLM at boundaries only | Event segmentation (Zacks et al.) |
+
+Today MIKAI implements M1 (via Graphiti's `valid_at`/`invalid_at`/`expired_at`) and partially M5 (Graphiti's `resolve_extracted_edge`). M2, M3, M6, M7 are absent. The Phase 4A Tier 1 checks proposed below are M2 + M3 + M7 in their cheapest possible form (zero-LLM, query-only).
+
+### The Universal 5-Step Pipeline
+
+Every memory system — MIKAI, Mem0, Graphiti, Letta, Cognee, even Anthropic's project files — does these five steps. The differences live in how each step handles different source types.
+
+1. **Ingest** — get raw content + metadata from source
+2. **Segment** — split into units (chunks, messages, episodes)
+3. **Extract** — pull entities, facts, relationships (LLM or heuristic)
+4. **Store** — vector DB + graph DB + SQL metadata
+5. **Retrieve** — query-time: vector search + graph traversal + rank/fuse
+
+### Per-Stage Competitor Comparison
+
+| System | Ingest | Segment | Extract | Store | Retrieve |
+|---|---|---|---|---|---|
+| **Graphiti** | `add_episode()` HTTP/Python; one atomic call per episode | Episode-as-unit (no internal chunking) | LLM extracts entities + bitemporal edges; 4-tier resolution (exact → fuzzy → BM25 → LLM); ~6-10 LLM calls per episode | Neo4j graph + edge embeddings; bitemporal `valid_at` / `invalid_at` / `expired_at` on every edge | Hybrid: BM25 + cosine + breadth-first graph, fused via RRF |
+| **Obsidian** | Manual file authoring; user types markdown into the vault | Whole-note default; some plugins chunk by heading | None native — user-authored `[[wikilinks]]` are the "extraction"; Smart Connections plugin adds embedding-only similarity | Local markdown + `.obsidian/` index; the vault IS the storage | Full-text + Smart Connections cosine; user-driven graph view |
+| **Mem0** | Per-message API call from agent runtime; each turn = ingest event | Per-message — each turn is a candidate fact source | LLM extracts facts; explicit ADD / UPDATE / DELETE / NOOP resolution against top-k similar memories | Vector DB (Qdrant default) + optional Neo4j + SQLite metadata | Vector search + optional graph traversal, merged by score |
+| **Letta (MemGPT)** | Message arrives in agent loop | FIFO message buffer with recursive summarization at overflow | Agent self-decides via inner monologue (`memory_replace`, `archival_memory_insert`) — no automated extraction | PostgreSQL with three blocks: **core** (always in context), **recall** (SQL filter), **archival** (vector) | Tiered: core is free; recall via SQL; archival via vector when agent calls retrieval tool |
+| **Cognee** | Async ECL pipeline (extract → cognify → load); supports text/code/PDF | Configurable chunkers (sentence, paragraph, code-aware) at ingest time | LLM-based KG extraction producing typed nodes/edges; runs as a DAG | Vector store (LanceDB) + graph store (Kuzu/Neo4j) + SQL metadata | Hybrid retrieval with reranking; query-time graph expansion |
+| **Anthropic (Projects + Memory)** | User uploads files or pastes content into a Project; conversation messages append to the running thread | None at ingest — full files retained as artifacts; conversation kept as a turn list | None at ingest — no structured extraction. The model reads raw content at inference time | Project files persist as upload artifacts; conversation history persists per-thread; "memory" feature persists summarized facts across conversations | Whole project files are loaded into the system prompt; conversation history is FIFO with prompt cache; memory surfaces summarized cross-conversation facts |
+| **MIKAI (current)** | Graphiti `/episode` (manual scripts today; automated daemon on `feat/ingestion-automation`) | Source-adaptive splitter matrix (see `docs/SEGMENTATION_FRAMEWORK.md`) | Track A: Graphiti's LLM extraction (DeepSeek V3 via the sidecar's `DeepSeekClient`); Track B: rule engine (planned) | Neo4j via Graphiti; bitemporal edges; entity resolution capped at 50 candidates per the patch | Sidecar primitives: search, BFS expand, edges-between, history, communities |
+
+### The Project-File Thesis
+
+Anthropic's design treats memory as a curation problem owned by the user. A well-organized project file — the right density, the right cross-references — is itself a memory architecture. The user does the segmentation (which files), the extraction (what to write down), and the consolidation (which files belong together). The model does retrieval at query time by reading whole files into context.
+
+This works astonishingly well at small scale. It breaks at three places:
+
+1. **Curation cost compounds.** Every new piece of information requires a manual decision: which file, where in the file, how to phrase it for retrieval. At ten projects with thirty files each, the user is running knowledge management as a second job.
+
+2. **Density caps at the file level.** Two related ideas in different files don't link until the user notices the connection and writes it down. Implicit relationships stay implicit.
+
+3. **No bitemporality.** A project file says "this is true." It cannot say "this was true in March, contradicted in April, still held in tension." The user has to re-author the file every time their thinking updates.
+
+A graph memory automates exactly the parts that don't scale: it segments at ingest, extracts entities and edges as primitives, and consolidates by resolving the same entity across episodes. **Graph memory is the generalization of the project-file pattern, not its replacement.** The user-authored project file is the manual version of what the graph does automatically — same shape (curated context, dense cross-references), different cost-of-operation curve.
+
+The trade-off Brian made: trust the extraction enough to give up direct authorial control over the memory layer. This is reversible — Graphiti's episodes preserve raw input, so the original "project file" is always recoverable.
+
+### Emerging Practices Worth Copying (2025–2026)
+
+1. **MemMachine pattern (arXiv:2604.04853): preserve raw episodes.** Minimize LLM extraction at ingest; you can always re-extract later with a better model. Graphiti already does this — episodes carry full original content.
+
+2. **GAM two-layer split (arXiv:2604.12285): event progression → topic associative network.** Raw time-ordered events feed a stable belief network *only at semantic shifts* (M7). Maps cleanly onto MIKAI's L3 (raw episode) + L4 (derived state) split.
+
+3. **LangMem three-way classification: episodic / semantic / procedural.** The third bucket — procedural memory for the agent's own behavioral rules — is missing from MIKAI today. Likely belongs in L4 as agent self-rules, not in L3.
+
+4. **Mem0 ADD/UPDATE/DELETE/NOOP.** Every new extraction is a 4-way classification against existing memory. Graphiti achieves the same effect via temporal invalidation, but the explicit verb taxonomy is useful for evaluation rubrics.
+
+5. **Contradiction detection as free signal.** Vector similarity + keyword heuristics. Cheap to run, high-value for stalled-intent detection. This is the Tier 1 contradiction check on the Phase 4A roadmap.
+
+---
+
 ## Memory Architecture: Short-Term → Evaluation → Long-Term → Inference
 
 ### The Two-Phase Memory Model
