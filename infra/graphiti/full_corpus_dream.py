@@ -147,26 +147,26 @@ def load_env() -> None:
 
 # ── Neo4j: fetch every episode ────────────────────────────────────────
 
-FETCH_ALL_EPISODES = """
-MATCH (e:Episodic)
-WHERE e.content IS NOT NULL AND size(e.content) > 0
-RETURN e.uuid AS uuid,
-       e.name AS name,
-       e.content AS content,
-       e.group_id AS group_id,
-       toString(e.valid_at) AS valid_at
-ORDER BY e.valid_at ASC
-"""
-
-
-def fetch_all_episodes() -> list[dict]:
+def fetch_all_episodes(groups: list[str] | None = None) -> list[dict]:
     uri = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
     user = os.environ.get("NEO4J_USER", "neo4j")
     pw = os.environ.get("NEO4J_PASSWORD", "mikai-local-dev")
+    where_group = "AND e.group_id IN $groups" if groups else ""
+    query = f"""
+    MATCH (e:Episodic)
+    WHERE e.content IS NOT NULL AND size(e.content) > 0
+    {where_group}
+    RETURN e.uuid AS uuid,
+           e.name AS name,
+           e.content AS content,
+           e.group_id AS group_id,
+           toString(e.valid_at) AS valid_at
+    ORDER BY e.valid_at ASC
+    """
     driver = GraphDatabase.driver(uri, auth=(user, pw))
     try:
         with driver.session() as session:
-            return session.run(FETCH_ALL_EPISODES).data()
+            return session.run(query, groups=groups).data()
     finally:
         driver.close()
 
@@ -380,9 +380,15 @@ async def main_async(args) -> int:
     dimensions_content = dims_path.read_text()
     print(f"Dimensions file: {dims_path} ({len(dimensions_content):,} chars)", file=sys.stderr)
 
-    print("Fetching all episodes from Neo4j...", file=sys.stderr)
+    groups = [g.strip() for g in args.groups.split(",")] if args.groups else None
     t0 = time.time()
-    episodes = fetch_all_episodes()
+    if args.source == "raw":
+        import raw_corpus
+        print(f"Reading corpus from RAW sources (no Neo4j) · groups={groups or 'all'}...", file=sys.stderr)
+        episodes = raw_corpus.fetch_raw_episodes(groups)
+    else:
+        print(f"Fetching episodes from Neo4j · groups={groups or 'all'}...", file=sys.stderr)
+        episodes = fetch_all_episodes(groups)
     if args.limit:
         episodes = episodes[: args.limit]
     total_chars = sum(len(e.get("content") or "") for e in episodes)
@@ -445,6 +451,10 @@ def main() -> None:
                         help=f"Output path (default: {DEFAULT_OUT}).")
     parser.add_argument("--dimensions", type=str, default=None,
                         help=f"Path to DIMENSIONS.md (default: {DEFAULT_DIMENSIONS_PATH}).")
+    parser.add_argument("--source", choices=["neo4j", "raw"], default="neo4j",
+                        help="Corpus source: neo4j (needs the graph) or raw (graphless — reads sources directly).")
+    parser.add_argument("--groups", type=str, default=None,
+                        help="Comma-separated group_ids to include (e.g. claude-thread,apple-notes). Applies to both sources.")
     args = parser.parse_args()
     sys.exit(asyncio.run(main_async(args)))
 
