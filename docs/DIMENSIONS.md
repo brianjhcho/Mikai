@@ -195,9 +195,9 @@ template, use the URL; when nothing matches, set `next_step_url: null`.
 - `airbnb scout` → `https://www.airbnb.com/s/<city>`
 
 **Dim 3 · Business Opportunities**
-- `ocean farming grant / partner outreach` → `https://www.bcsrif.ca` (BC Salmon Restoration & Innovation Fund) or `mailto:info@ulvaseafarms.com`
+- `ocean farming grant / partner outreach` → `https://www.bcsrif.ca` (BC Salmon Restoration & Innovation Fund) or `googlegmail://co?to=info@ulvaseafarms.com`
 - `Kenya coffee exchange` → `https://www.nairobicoffeeexchange.co.ke`
-- `Vancouver commercial real estate` → `https://www.bcassessment.ca` (Int'l Village lookup) or `mailto:leasing@crystalmall.ca`
+- `Vancouver commercial real estate` → `https://www.bcassessment.ca` (Int'l Village lookup) or `googlegmail://co?to=leasing@crystalmall.ca`
 - `venture research` → `https://www.perplexity.ai/search?q=<query>`
 
 **Dim 4 · Relationship with Germaine**
@@ -215,7 +215,7 @@ template, use the URL; when nothing matches, set `next_step_url: null`.
 - `MSP reactivation` → `https://my.gov.bc.ca/msp/application` (Health Insurance BC portal)
 - `ServiceBC (BC address docs, licence lookup)` → `https://www.gov.bc.ca/servicebc`
 - `ICBC (BC driver's licence)` → `https://onlinebusiness.icbc.com/dbc`
-- `dry eye / optometrist appointment` → `mailto:office@<optometrist>` or the optometrist's booking URL
+- `dry eye / optometrist appointment` → `googlegmail://co?to=office@<optometrist>` or the optometrist's booking URL
 - `yoga program tracker` → local file / Apple Notes deep link
 
 **Dim 7 · Craft / Hobbies**
@@ -229,17 +229,20 @@ template, use the URL; when nothing matches, set `next_step_url: null`.
 - `TradingView` → `https://www.tradingview.com/chart/`
 - `strategy backtesting (QuantConnect)` → `https://www.quantconnect.com/lean/docs`
 - `PayPal decline / transaction review` → `https://www.paypal.com/myaccount/activity`
-- `Robby message decline draft` → `mailto:draft` with pre-composed decline body
+- `Robby message decline draft` → `sms:<Robby phone>&body=<url-encoded decline>` (opens iMessage with pre-composed reply; Robby is via iMessage, not email)
 
 **Dim 9 · Recurring Themes**
 - Usually NULL — themes are for reflection, not action. Optionally: Apple Notes deep-link to the source note where the theme was first captured.
 
 **Dim 1 · AI Career / MIKAI Build**
 - Normally NULL — background work, Brian is in it every day.
-- If a founder-vs-employee decision point crystallizes: `mailto:draft` to write the memo, or `https://linkedin.com/jobs/search/?keywords=AI+founding+engineer` for the employee side.
+- If a founder-vs-employee decision point crystallizes: `googlegmail://co?to=brianjhcho@gmail.com&subject=90-day%20lane%20decision%20memo` to write the memo to yourself, or `https://linkedin.com/jobs/search/?keywords=AI+founding+engineer` for the employee side.
 
-**Fallback URL schemes** (when no template matches):
-- Draft email → `mailto:` (with `?subject=…&body=…` for pre-filled content)
+**Email drafts** (PREFER Gmail over Apple Mail):
+- Gmail iOS app scheme (PREFERRED): `googlegmail://co?to=<addr>&subject=<url-encoded>&body=<url-encoded>` — opens Gmail's compose window directly on iPhone, skipping Apple Mail
+- `mailto:` (fallback only if Gmail scheme fails): `mailto:<addr>?subject=…&body=…` — routes through system default mail app
+
+**Other fallback URL schemes** (when no template matches):
 - Apple Calendar → `x-apple-calshow://` or `webcal://`
 - Apple Notes deep-link → `notes://showNote?identifier=<uuid>` or search `notes://showFolder?identifier=<name>`
 - Phone call → `tel:+1...`

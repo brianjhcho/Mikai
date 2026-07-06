@@ -95,7 +95,9 @@ DB_PATH = Path(os.environ.get("MIKAI_DB_PATH", str(Path.home() / ".mikai" / "not
 COOLDOWN_HOURS = float(os.environ.get("MIKAI_COOLDOWN_HOURS", "2"))
 RECENT_DECISIONS_N = 15
 
-CLAUDE_TIMEOUT_S = 180
+CLAUDE_TIMEOUT_S = 360  # bumped from 180 — full ontology wiki + graph context
+                        # pushes the prompt to ~70K chars, which needs longer
+                        # to process on the Claude Max / claude -p path
 
 # ── DB ─────────────────────────────────────────────────────────────────
 
@@ -700,7 +702,7 @@ RULES YOU MUST FOLLOW:
 
 11. **Next-step destination — where does tapping take Brian?** For every notification whose pickup can be routed to a URL, app deep-link, or draft email, set `next_step_url` to that destination. This is what makes FIGS more than a reminder — tapping the card transports Brian into the doing. Priority order for choosing the URL:
     (a) A canonical URL template from DIMENSIONS.md's "Per-Dimension Destination Templates" section. Use these when they match.
-    (b) A `mailto:` draft for outreach items ("email X"). Include `?subject=...&body=...` so the compose window opens ready.
+    (b) A `googlegmail://co?to=<addr>&subject=<url-encoded>&body=<url-encoded>` draft for outreach items ("email X"). PREFERRED over mailto: because it opens Gmail's compose window directly on iPhone rather than Apple Mail. Falls back to `mailto:` only if Gmail scheme isn't usable.
     (c) An `x-apple-*`, `notes://`, `scotia://`, or other app deep-link when appropriate.
     (d) An HTTPS URL to the specific portal, form, or resource (not just a domain root).
     (e) A `https://www.perplexity.ai/search?q=...` when the pickup is "research more."
