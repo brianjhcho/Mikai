@@ -126,6 +126,7 @@ EXTRA_COLUMNS = [
     ("decision_point", "TEXT"),
     ("slate_index", "INTEGER"),
     ("slate_size", "INTEGER"),
+    ("next_step_url", "TEXT"),
 ]
 
 
@@ -697,6 +698,15 @@ RULES YOU MUST FOLLOW:
 
 10. **Citation:** if you cite specific raw edge UUIDs, they MUST be visible in the candidates section. You may also cite wiki thread slugs (the [slug] before the title in ## Now) or needs registry slugs — those are always valid because they came from the curated lists above.
 
+11. **Next-step destination — where does tapping take Brian?** For every notification whose pickup can be routed to a URL, app deep-link, or draft email, set `next_step_url` to that destination. This is what makes FIGS more than a reminder — tapping the card transports Brian into the doing. Priority order for choosing the URL:
+    (a) A canonical URL template from DIMENSIONS.md's "Per-Dimension Destination Templates" section. Use these when they match.
+    (b) A `mailto:` draft for outreach items ("email X"). Include `?subject=...&body=...` so the compose window opens ready.
+    (c) An `x-apple-*`, `notes://`, `scotia://`, or other app deep-link when appropriate.
+    (d) An HTTPS URL to the specific portal, form, or resource (not just a domain root).
+    (e) A `https://www.perplexity.ai/search?q=...` when the pickup is "research more."
+    Set `next_step_url: null` ONLY when the pickup is purely physical/offline (e.g. "pull docs at home this weekend," "have the conversation in person"). In that case, explain in `reasoning` why no URL applies.
+    Never invent URLs — if unsure whether a portal exists at a specific path, use the domain root, or use a Perplexity search query.
+
 OUTPUT FORMAT: Return STRICTLY valid JSON, no markdown code fence, no commentary, no preamble. Just the JSON object.
 
 Shape (notifications is an array of 2-5 items, OR 0 only if everything is genuine noise/dismissed-cooldown):
@@ -711,6 +721,7 @@ Shape (notifications is an array of 2-5 items, OR 0 only if everything is genuin
       "evidence_edge_uuids": ["<uuid or 8-char short form or wiki slug or needs slug>", ...],
       "wiki_thread_slug": "<slug from ## Now if applicable, else null>",
       "needs_slug": "<slug from needs registry if applicable, else null>",
+      "next_step_url": "<URL, mailto:, or app deep-link that transports Brian to the next step; null if purely offline. See RULE 11.>",
       "reasoning": "<one sentence: why this item, why now, naming the 4 factors>"
     }},
     ...
@@ -993,7 +1004,8 @@ def normalize_decision(decision: dict | None) -> dict | None:
     if decision.get("send") is True:
         single = {k: decision.get(k) for k in (
             "title", "body", "priority", "decision_point",
-            "evidence_edge_uuids", "wiki_thread_slug", "needs_slug", "reasoning",
+            "evidence_edge_uuids", "wiki_thread_slug", "needs_slug",
+            "next_step_url", "reasoning",
         )}
         return {
             "notifications": [single],
@@ -1113,7 +1125,12 @@ NTFY_PRIORITY_MAP = {
 }
 
 
-def dispatch_via_ntfy(title: str, body: str, priority: str = "active") -> tuple[bool, str]:
+def dispatch_via_ntfy(
+    title: str,
+    body: str,
+    priority: str = "active",
+    next_step_url: str | None = None,
+) -> tuple[bool, str]:
     if not NTFY_TOPIC:
         return False, "MIKAI_NTFY_TOPIC env var not set"
 
@@ -1129,14 +1146,26 @@ def dispatch_via_ntfy(title: str, body: str, priority: str = "active") -> tuple[
     except UnicodeEncodeError:
         title_for_header = title.encode("ascii", errors="replace").decode("ascii")
 
+    headers = {
+        "Title": title_for_header,
+        "Priority": ntfy_priority,
+        "Tags": "mikai",
+    }
+    # Click header — the URL the notification opens when tapped. ntfy passes
+    # this through to the iOS/Android app which then hands it to the OS.
+    # Must be ASCII-safe. Skip if URL contains characters ntfy rejects
+    # (they'd trigger a 400 and drop the whole notification).
+    if next_step_url:
+        try:
+            next_step_url.encode("ascii")
+            headers["Click"] = next_step_url
+        except UnicodeEncodeError:
+            pass  # silently drop malformed URL rather than fail the send
+
     req = urlreq.Request(
         url,
         data=body.encode("utf-8"),
-        headers={
-            "Title": title_for_header,
-            "Priority": ntfy_priority,
-            "Tags": "mikai",
-        },
+        headers=headers,
         method="POST",
     )
     try:
@@ -1174,8 +1203,8 @@ def log_sent(conn: sqlite3.Connection, tick_ts: str, prompt: str,
         INSERT INTO notification_log
             (tick_ts, prompt_hash, decision_json, sent, title, body, priority,
              evidence_edge_uuids, reasoning, decision_point,
-             slate_index, slate_size)
-        VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+             slate_index, slate_size, next_step_url)
+        VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             tick_ts,
@@ -1189,6 +1218,7 @@ def log_sent(conn: sqlite3.Connection, tick_ts: str, prompt: str,
             notif.get("decision_point", ""),
             slate_index,
             slate_size,
+            notif.get("next_step_url"),
         ),
     )
     conn.commit()
@@ -1377,6 +1407,7 @@ def main() -> int:
             print(f"DRY-RUN [{i+1}/{len(notifs)}]: title='{n['title']}', "
                   f"body='{n['body']}', priority={n['priority']}")
             print(f"                decision_point: {n.get('decision_point', '')}")
+            print(f"                next_step_url: {n.get('next_step_url')}")
         return 0
 
     print(f"Dispatching {len(notifs)} notification(s) via ntfy ('{NTFY_TOPIC}')…")
@@ -1384,7 +1415,10 @@ def main() -> int:
     fail_count = 0
 
     for i, n in enumerate(notifs):
-        sent_ok, dispatch_msg = dispatch_via_ntfy(n["title"], n["body"], n["priority"])
+        sent_ok, dispatch_msg = dispatch_via_ntfy(
+            n["title"], n["body"], n["priority"],
+            next_step_url=n.get("next_step_url"),
+        )
         if sent_ok:
             log_sent(conn, now_ts, prompt, n, slate_index=i, slate_size=slate_size)
             print(f"  ✓ [{i+1}/{slate_size}] SENT: {n['title']}")

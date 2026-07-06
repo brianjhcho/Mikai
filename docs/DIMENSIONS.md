@@ -182,6 +182,71 @@ morning-tick philosophical anchor, but not more than once a week.
 
 ---
 
+## Per-Dimension Destination Templates
+
+FIGS reads these when composing `next_step_url` on each notification. Each
+template pairs a **type of pickup** with the **canonical URL** or app deep-link
+that transports Brian to the doing. When a notification's pickup matches a
+template, use the URL; when nothing matches, set `next_step_url: null`.
+
+**Dim 2 · Where to Live**
+- `flight search` → `https://www.google.com/flights?q=<from>+to+<city>`
+- `city housing browse` → Vancouver `https://www.rew.ca`, Austin `https://www.har.com`, Singapore `https://www.propertyguru.com.sg`, Nairobi `https://www.buyrentkenya.com`, Argentina `https://www.zonaprop.com.ar`
+- `airbnb scout` → `https://www.airbnb.com/s/<city>`
+
+**Dim 3 · Business Opportunities**
+- `ocean farming grant / partner outreach` → `https://www.bcsrif.ca` (BC Salmon Restoration & Innovation Fund) or `mailto:info@ulvaseafarms.com`
+- `Kenya coffee exchange` → `https://www.nairobicoffeeexchange.co.ke`
+- `Vancouver commercial real estate` → `https://www.bcassessment.ca` (Int'l Village lookup) or `mailto:leasing@crystalmall.ca`
+- `venture research` → `https://www.perplexity.ai/search?q=<query>`
+
+**Dim 4 · Relationship with Germaine**
+- `ring quote` → Whiteflash `https://www.whiteflash.com/loose-diamonds/`, Brilliant Earth `https://www.brilliantearth.com/loose-diamonds`, James Allen `https://www.jamesallen.com/loose-diamonds`
+- `flight to Atacama` → `https://www.google.com/flights?q=YVR+to+CJC` (Calama)
+- `flight to Ladakh` → `https://www.google.com/flights?q=YVR+to+IXL` (Leh)
+- `venue lodging` → `https://www.airbnb.com/s/atacama` or `https://www.airbnb.com/s/ladakh`
+- `Germaine shared calendar` → `https://calendar.google.com/calendar/u/0/r?tab=mc`
+
+**Dim 5 · Family Obligations**
+- `Scotia banking (joint applicant / card)` → `https://www.scotiaonline.scotiabank.com`
+- `Scotia iOS app` → `scotia://` (iPhone) or `https://apps.apple.com/ca/app/scotiabank/id382597895`
+
+**Dim 6 · Health / Body**
+- `MSP reactivation` → `https://my.gov.bc.ca/msp/application` (Health Insurance BC portal)
+- `ServiceBC (BC address docs, licence lookup)` → `https://www.gov.bc.ca/servicebc`
+- `ICBC (BC driver's licence)` → `https://onlinebusiness.icbc.com/dbc`
+- `dry eye / optometrist appointment` → `mailto:office@<optometrist>` or the optometrist's booking URL
+- `yoga program tracker` → local file / Apple Notes deep link
+
+**Dim 7 · Craft / Hobbies**
+- `plant research` → `https://www.perplexity.ai/search?q=<species>+care`
+- `Home Depot / plant supplies` → `https://www.homedepot.ca`
+- `Vancouver plant nurseries` → `https://www.figaros.ca` (or local specialty)
+
+**Dim 8 · Financial / Trading**
+- `IBKR client portal` → `https://www.interactivebrokers.com/portal`
+- `Alpaca (paper trading)` → `https://app.alpaca.markets/paper/dashboard/overview`
+- `TradingView` → `https://www.tradingview.com/chart/`
+- `strategy backtesting (QuantConnect)` → `https://www.quantconnect.com/lean/docs`
+- `PayPal decline / transaction review` → `https://www.paypal.com/myaccount/activity`
+- `Robby message decline draft` → `mailto:draft` with pre-composed decline body
+
+**Dim 9 · Recurring Themes**
+- Usually NULL — themes are for reflection, not action. Optionally: Apple Notes deep-link to the source note where the theme was first captured.
+
+**Dim 1 · AI Career / MIKAI Build**
+- Normally NULL — background work, Brian is in it every day.
+- If a founder-vs-employee decision point crystallizes: `mailto:draft` to write the memo, or `https://linkedin.com/jobs/search/?keywords=AI+founding+engineer` for the employee side.
+
+**Fallback URL schemes** (when no template matches):
+- Draft email → `mailto:` (with `?subject=…&body=…` for pre-filled content)
+- Apple Calendar → `x-apple-calshow://` or `webcal://`
+- Apple Notes deep-link → `notes://showNote?identifier=<uuid>` or search `notes://showFolder?identifier=<name>`
+- Phone call → `tel:+1...`
+- iOS Shortcuts (custom automation) → `shortcuts://run-shortcut?name=<name>`
+
+---
+
 ## How FIGS uses this file
 
 At every tick, the FIGS decider reads this file and:
