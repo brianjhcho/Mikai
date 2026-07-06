@@ -129,6 +129,7 @@ EXTRA_COLUMNS = [
     ("slate_index", "INTEGER"),
     ("slate_size", "INTEGER"),
     ("next_step_url", "TEXT"),
+    ("action_type", "TEXT"),
 ]
 
 
@@ -700,14 +701,33 @@ RULES YOU MUST FOLLOW:
 
 10. **Citation:** if you cite specific raw edge UUIDs, they MUST be visible in the candidates section. You may also cite wiki thread slugs (the [slug] before the title in ## Now) or needs registry slugs — those are always valid because they came from the curated lists above.
 
-11. **Next-step destination — where does tapping take Brian?** For every notification whose pickup can be routed to a URL, app deep-link, or draft email, set `next_step_url` to that destination. This is what makes FIGS more than a reminder — tapping the card transports Brian into the doing. Priority order for choosing the URL:
-    (a) A canonical URL template from DIMENSIONS.md's "Per-Dimension Destination Templates" section. Use these when they match.
-    (b) A `googlegmail://co?to=<addr>&subject=<url-encoded>&body=<url-encoded>` draft for outreach items ("email X"). PREFERRED over mailto: because it opens Gmail's compose window directly on iPhone rather than Apple Mail. Falls back to `mailto:` only if Gmail scheme isn't usable.
-    (c) An `x-apple-*`, `notes://`, `scotia://`, or other app deep-link when appropriate.
-    (d) An HTTPS URL to the specific portal, form, or resource (not just a domain root).
-    (e) A `https://www.perplexity.ai/search?q=...` when the pickup is "research more."
-    Set `next_step_url: null` ONLY when the pickup is purely physical/offline (e.g. "pull docs at home this weekend," "have the conversation in person"). In that case, explain in `reasoning` why no URL applies.
-    Never invent URLs — if unsure whether a portal exists at a specific path, use the domain root, or use a Perplexity search query.
+11. **Classify then route.** For every notification, first name the `action_type` explicitly, then choose `next_step_url` based on that type. The destination IS the action — do not attach a distracting URL to a pickup that's really a decision or a physical task.
+
+Action types (pick exactly one per notification):
+
+- `transaction` — do it inside a specific portal (MSP portal, Scotia banking, IBKR)
+- `communication` — send a message to a specific person (email draft, iMessage draft)
+- `search` — the pickup is "look up more info" or "research this"
+- `capture` — fill in a form / add a calendar event / log a decision (Notes, Calendar, Reminders)
+- `decision` — the action is *thinking*, not doing. The right destination is a time-block on the calendar with the full context bundle embedded so cognitive state can be resurrected when the block fires.
+- `physical` — offline action (pull docs from drawer, in-person conversation, make a call)
+- `user_response` — Brian's own meta-action on a prior notification (snooze/mark done). Not a first-step; handled by future action buttons.
+
+Routing by action_type:
+
+(a) `transaction` → a specific deep-link portal URL from DIMENSIONS.md's Per-Dimension Destination Templates.
+(b) `communication` → `googlegmail://co?to=<addr>&subject=<url-encoded>&body=<url-encoded>` draft (PREFERRED over mailto:). For iMessage: `sms:<phone>&body=<url-encoded>`.
+(c) `search` → `https://www.perplexity.ai/search?q=<url-encoded query>` (or Google Flights, Zonaprop, etc. from DIMENSIONS.md).
+(d) `capture` → Google Calendar quick-add URL. Pre-fill `text=` (event title) and `dates=` (30-min block in the next 3-5 days). Include a brief description in `details=`.
+(e) `decision` → Google Calendar quick-add URL. Same as capture, BUT the `details=` parameter MUST be a full context bundle so the calendar event carries the resurrection substrate. The bundle should contain, in url-encoded form:
+    - A 2-3 line wiki excerpt naming the dimension's goal and current state
+    - A "Prior beats:" list of dated decisions/beats from the corpus (up to 5)
+    - A "Research to load:" list of 3-5 URLs (Perplexity, LinkedIn, Notes, specific research the user has already done)
+    When the block fires 3 days later, this description IS what re-lights the cognitive state. Do not set null for decision — the block IS the destination.
+(f) `physical` → `next_step_url: null`. Explain in `reasoning` that this is an offline action. Optionally: if the action is calling someone, use `tel:+1...`.
+(g) `user_response` → `next_step_url: null` (action-button mechanism is deferred to a later iteration).
+
+For `capture` and `decision`, choose a reasonable block time relative to CURRENT TIME (see prompt header). Weekday work items → weekday morning. Personal decisions → weekend morning. Never invent URLs — use only the templates in DIMENSIONS.md or well-known schemes.
 
 OUTPUT FORMAT: Return STRICTLY valid JSON, no markdown code fence, no commentary, no preamble. Just the JSON object.
 
@@ -723,7 +743,8 @@ Shape (notifications is an array of 2-5 items, OR 0 only if everything is genuin
       "evidence_edge_uuids": ["<uuid or 8-char short form or wiki slug or needs slug>", ...],
       "wiki_thread_slug": "<slug from ## Now if applicable, else null>",
       "needs_slug": "<slug from needs registry if applicable, else null>",
-      "next_step_url": "<URL, mailto:, or app deep-link that transports Brian to the next step; null if purely offline. See RULE 11.>",
+      "action_type": "<one of: transaction | communication | search | capture | decision | physical | user_response — see RULE 11>",
+      "next_step_url": "<URL routed by action_type per RULE 11; for `decision`, a Google Calendar quick-add URL with the full context bundle in details=; null only for physical/user_response>",
       "reasoning": "<one sentence: why this item, why now, naming the 4 factors>"
     }},
     ...
@@ -1007,7 +1028,7 @@ def normalize_decision(decision: dict | None) -> dict | None:
         single = {k: decision.get(k) for k in (
             "title", "body", "priority", "decision_point",
             "evidence_edge_uuids", "wiki_thread_slug", "needs_slug",
-            "next_step_url", "reasoning",
+            "next_step_url", "action_type", "reasoning",
         )}
         return {
             "notifications": [single],
@@ -1205,8 +1226,8 @@ def log_sent(conn: sqlite3.Connection, tick_ts: str, prompt: str,
         INSERT INTO notification_log
             (tick_ts, prompt_hash, decision_json, sent, title, body, priority,
              evidence_edge_uuids, reasoning, decision_point,
-             slate_index, slate_size, next_step_url)
-        VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             slate_index, slate_size, next_step_url, action_type)
+        VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             tick_ts,
@@ -1221,6 +1242,7 @@ def log_sent(conn: sqlite3.Connection, tick_ts: str, prompt: str,
             slate_index,
             slate_size,
             notif.get("next_step_url"),
+            notif.get("action_type"),
         ),
     )
     conn.commit()
@@ -1408,6 +1430,7 @@ def main() -> int:
         for i, n in enumerate(notifs):
             print(f"DRY-RUN [{i+1}/{len(notifs)}]: title='{n['title']}', "
                   f"body='{n['body']}', priority={n['priority']}")
+            print(f"                action_type: {n.get('action_type', '?')}")
             print(f"                decision_point: {n.get('decision_point', '')}")
             print(f"                next_step_url: {n.get('next_step_url')}")
         return 0

@@ -242,6 +242,19 @@ template, use the URL; when nothing matches, set `next_step_url: null`.
 - Gmail iOS app scheme (PREFERRED): `googlegmail://co?to=<addr>&subject=<url-encoded>&body=<url-encoded>` — opens Gmail's compose window directly on iPhone, skipping Apple Mail
 - `mailto:` (fallback only if Gmail scheme fails): `mailto:<addr>?subject=…&body=…` — routes through system default mail app
 
+**Google Calendar quick-add** (for `action_type: decision` or `action_type: capture`):
+
+Format: `https://calendar.google.com/calendar/r/eventedit?text=<url-encoded title>&dates=<start>/<end>&details=<url-encoded description>`
+
+- **text**: title of the event ("MIKAI: founder vs employee decision")
+- **dates**: ISO basic format, `YYYYMMDDTHHmmssZ/YYYYMMDDTHHmmssZ` (30-90 min block)
+- **details**: URL-encoded description. For `decision` blocks, the description IS the context bundle — pack in the wiki excerpt, prior-beats timeline, relevant research URLs (Perplexity, Notes, LinkedIn, etc.). When the block fires 3 days later, this description is what re-lights the cognitive state of the decision.
+
+Example decision URL:
+```
+https://calendar.google.com/calendar/r/eventedit?text=Founder+vs+Employee+90-day+decision&dates=20260709T170000Z/20260709T183000Z&details=Prior+beats%3A%0A-+2026-03-19%3A+interviewing+at+a16z-backed+startup%0A-+2026-06-22%3A+substrate-vs-destination+question+surfaced%0A%0AResearch+to+load%3A%0Ahttps%3A%2F%2Flinkedin.com%2Fjobs%2Fsearch%2F%3Fkeywords%3DAI%2Bfounding%2Bengineer%0Ahttps%3A%2F%2Fperplexity.ai%2Fsearch%2F%3Fq%3DAI%2Bfounder%2Bvs%2Bemployee%2B2026
+```
+
 **Other fallback URL schemes** (when no template matches):
 - Apple Calendar → `x-apple-calshow://` or `webcal://`
 - Apple Notes deep-link → `notes://showNote?identifier=<uuid>` or search `notes://showFolder?identifier=<name>`
