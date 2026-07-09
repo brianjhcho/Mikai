@@ -182,6 +182,87 @@ morning-tick philosophical anchor, but not more than once a week.
 
 ---
 
+## Per-Dimension Destination Templates
+
+FIGS reads these when composing `next_step_url` on each notification. Each
+template pairs a **type of pickup** with the **canonical URL** or app deep-link
+that transports Brian to the doing. When a notification's pickup matches a
+template, use the URL; when nothing matches, set `next_step_url: null`.
+
+**Dim 2 · Where to Live**
+- `flight search` → `https://www.google.com/flights?q=<from>+to+<city>`
+- `city housing browse` → Vancouver `https://www.rew.ca`, Austin `https://www.har.com`, Singapore `https://www.propertyguru.com.sg`, Nairobi `https://www.buyrentkenya.com`, Argentina `https://www.zonaprop.com.ar`
+- `airbnb scout` → `https://www.airbnb.com/s/<city>`
+
+**Dim 3 · Business Opportunities**
+- `ocean farming grant / partner outreach` → `https://www.bcsrif.ca` (BC Salmon Restoration & Innovation Fund) or `googlegmail://co?to=info@ulvaseafarms.com`
+- `Kenya coffee exchange` → `https://www.nairobicoffeeexchange.co.ke`
+- `Vancouver commercial real estate` → `https://www.bcassessment.ca` (Int'l Village lookup) or `googlegmail://co?to=leasing@crystalmall.ca`
+- `venture research` → `https://www.perplexity.ai/search?q=<query>`
+
+**Dim 4 · Relationship with Germaine**
+- `ring quote` → Whiteflash `https://www.whiteflash.com/loose-diamonds/`, Brilliant Earth `https://www.brilliantearth.com/loose-diamonds`, James Allen `https://www.jamesallen.com/loose-diamonds`
+- `flight to Atacama` → `https://www.google.com/flights?q=YVR+to+CJC` (Calama)
+- `flight to Ladakh` → `https://www.google.com/flights?q=YVR+to+IXL` (Leh)
+- `venue lodging` → `https://www.airbnb.com/s/atacama` or `https://www.airbnb.com/s/ladakh`
+- `Germaine shared calendar` → `https://calendar.google.com/calendar/u/0/r?tab=mc`
+
+**Dim 5 · Family Obligations**
+- `Scotia banking (joint applicant / card)` → `https://www.scotiaonline.scotiabank.com`
+- `Scotia iOS app` → `scotia://` (iPhone) or `https://apps.apple.com/ca/app/scotiabank/id382597895`
+
+**Dim 6 · Health / Body**
+- `MSP reactivation` → `https://my.gov.bc.ca/msp/application` (Health Insurance BC portal)
+- `ServiceBC (BC address docs, licence lookup)` → `https://www.gov.bc.ca/servicebc`
+- `ICBC (BC driver's licence)` → `https://onlinebusiness.icbc.com/dbc`
+- `dry eye / optometrist appointment` → `googlegmail://co?to=office@<optometrist>` or the optometrist's booking URL
+- `yoga program tracker` → local file / Apple Notes deep link
+
+**Dim 7 · Craft / Hobbies**
+- `plant research` → `https://www.perplexity.ai/search?q=<species>+care`
+- `Home Depot / plant supplies` → `https://www.homedepot.ca`
+- `Vancouver plant nurseries` → `https://www.figaros.ca` (or local specialty)
+
+**Dim 8 · Financial / Trading**
+- `IBKR client portal` → `https://www.interactivebrokers.com/portal`
+- `Alpaca (paper trading)` → `https://app.alpaca.markets/paper/dashboard/overview`
+- `TradingView` → `https://www.tradingview.com/chart/`
+- `strategy backtesting (QuantConnect)` → `https://www.quantconnect.com/lean/docs`
+- `PayPal decline / transaction review` → `https://www.paypal.com/myaccount/activity`
+- `Robby message decline draft` → `sms:<Robby phone>&body=<url-encoded decline>` (opens iMessage with pre-composed reply; Robby is via iMessage, not email)
+
+**Dim 9 · Recurring Themes**
+- Usually NULL — themes are for reflection, not action. Optionally: Apple Notes deep-link to the source note where the theme was first captured.
+
+**Dim 1 · AI Career / MIKAI Build**
+- Normally NULL — background work, Brian is in it every day.
+- If a founder-vs-employee decision point crystallizes: `googlegmail://co?to=brianjhcho@gmail.com&subject=90-day%20lane%20decision%20memo` to write the memo to yourself, or `https://linkedin.com/jobs/search/?keywords=AI+founding+engineer` for the employee side.
+
+**Email drafts** (PREFER Gmail over Apple Mail):
+- Gmail iOS app scheme (PREFERRED): `googlegmail://co?to=<addr>&subject=<url-encoded>&body=<url-encoded>` — opens Gmail's compose window directly on iPhone, skipping Apple Mail
+- `mailto:` (fallback only if Gmail scheme fails): `mailto:<addr>?subject=…&body=…` — routes through system default mail app
+
+**Google Calendar quick-add** (for `action_type: decision` or `action_type: capture`):
+
+Format: `https://calendar.google.com/calendar/r/eventedit?text=<url-encoded title>&dates=<start>/<end>&details=<url-encoded description>`
+
+- **text**: title of the event ("MIKAI: founder vs employee decision")
+- **dates**: ISO basic format, `YYYYMMDDTHHmmssZ/YYYYMMDDTHHmmssZ` (30-90 min block)
+- **details**: URL-encoded description. For `decision` blocks, the description IS the context bundle — pack in the wiki excerpt, prior-beats timeline, relevant research URLs (Perplexity, Notes, LinkedIn, etc.). When the block fires 3 days later, this description is what re-lights the cognitive state of the decision.
+
+Example decision URL:
+```
+https://calendar.google.com/calendar/r/eventedit?text=Founder+vs+Employee+90-day+decision&dates=20260709T170000Z/20260709T183000Z&details=Prior+beats%3A%0A-+2026-03-19%3A+interviewing+at+a16z-backed+startup%0A-+2026-06-22%3A+substrate-vs-destination+question+surfaced%0A%0AResearch+to+load%3A%0Ahttps%3A%2F%2Flinkedin.com%2Fjobs%2Fsearch%2F%3Fkeywords%3DAI%2Bfounding%2Bengineer%0Ahttps%3A%2F%2Fperplexity.ai%2Fsearch%2F%3Fq%3DAI%2Bfounder%2Bvs%2Bemployee%2B2026
+```
+
+**Other fallback URL schemes** (when no template matches):
+- Apple Calendar → `x-apple-calshow://` or `webcal://`
+- Apple Notes deep-link → `notes://showNote?identifier=<uuid>` or search `notes://showFolder?identifier=<name>`
+- Phone call → `tel:+1...`
+- iOS Shortcuts (custom automation) → `shortcuts://run-shortcut?name=<name>`
+
+---
+
 ## How FIGS uses this file
 
 At every tick, the FIGS decider reads this file and:
