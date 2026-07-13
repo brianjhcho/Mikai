@@ -52,9 +52,27 @@ OPEN_MD_PATH = REPO / "docs" / "OPEN.md"
 NEEDS_MD_PATH = REPO / "docs" / "USER_NEEDS_REGISTRY.md"
 
 MIN_BLOCK_MINUTES = int(os.environ.get("MIKAI_PLANNER_MIN_MINUTES", "90"))
+
+# Comma-separated substring match on event titles. Case-insensitive.
+# Default targets Brian's known editable blocks. Set to empty string to
+# disable the filter (edit any sole-attendee ≥90min block).
+DEFAULT_TITLE_PATTERNS = "Recommendations,Noonchi,Sumimasen,MIKAI,Focus,Deep work"
+TITLE_PATTERNS = [p.strip().lower() for p in os.environ.get(
+    "MIKAI_PLANNER_TITLE_INCLUDE", DEFAULT_TITLE_PATTERNS,
+).split(",") if p.strip()]
+
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
 DEEPSEEK_MODEL = "deepseek-chat"
+
+
+def _title_matches(title: str) -> bool:
+    """True if title matches any configured pattern, or if patterns are
+    empty (no filter). Case-insensitive substring."""
+    if not TITLE_PATTERNS:
+        return True
+    t = (title or "").lower()
+    return any(p in t for p in TITLE_PATTERNS)
 
 
 # ── Candidate gathering ────────────────────────────────────────────────
@@ -327,12 +345,15 @@ def run_once(dry_run: bool = False, force: bool = False) -> int:
         print(f"ERROR: CalDAV discovery failed: {e}", file=sys.stderr)
         return 3
 
-    editable = [e for e in events
-                if _minutes_between(e.dtstart, e.dtend) >= MIN_BLOCK_MINUTES]
+    editable = [
+        e for e in events
+        if _minutes_between(e.dtstart, e.dtend) >= MIN_BLOCK_MINUTES
+        and _title_matches(e.title)
+    ]
 
     if not editable:
         print(f"OK: no editable blocks today (found {len(events)} sole-attendee "
-              f"events, none ≥ {MIN_BLOCK_MINUTES} min).")
+              f"events; filter ≥{MIN_BLOCK_MINUTES}min + title in {TITLE_PATTERNS or 'ANY'}).")
         return 0
 
     git_ctx = gather_git_context()
