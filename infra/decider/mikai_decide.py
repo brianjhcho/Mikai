@@ -42,6 +42,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib import request as urlreq
@@ -95,6 +96,28 @@ DB_PATH = Path(os.environ.get("MIKAI_DB_PATH", str(Path.home() / ".mikai" / "not
 COOLDOWN_HOURS = float(os.environ.get("MIKAI_COOLDOWN_HOURS", "2"))
 RECENT_DECISIONS_N = 15
 
+# Tap-redirect base URL. Every ntfy Click URL is rewritten to
+# `${TAP_BASE_URL}/t/${notif_id}` so we can log the tap event before
+# 302-ing to the real destination. Resolution order:
+#   1. env MIKAI_TAP_BASE_URL (explicit override)
+#   2. ~/.mikai/tap_base_url (written by cloudflared runner on tunnel start)
+#   3. empty → dispatch raw URLs untracked (feedback loop off)
+TAP_BASE_FILE = Path.home() / ".mikai" / "tap_base_url"
+
+
+def resolve_tap_base_url() -> str:
+    env = os.environ.get("MIKAI_TAP_BASE_URL", "").strip()
+    if env:
+        return env.rstrip("/")
+    if TAP_BASE_FILE.exists():
+        try:
+            v = TAP_BASE_FILE.read_text().strip().rstrip("/")
+            if v:
+                return v
+        except OSError:
+            pass
+    return ""
+
 CLAUDE_TIMEOUT_S = 360  # bumped from 180 — full ontology wiki + graph context
                         # pushes the prompt to ~70K chars, which needs longer
                         # to process on the Claude Max / claude -p path
@@ -120,6 +143,25 @@ CREATE TABLE IF NOT EXISTS notification_log (
 
 CREATE INDEX IF NOT EXISTS idx_notification_log_tick ON notification_log(tick_ts);
 CREATE INDEX IF NOT EXISTS idx_notification_log_sent ON notification_log(sent);
+
+-- Event stream for the feedback loop. Each notification generates a SENT
+-- row at dispatch, then a TAPPED row when the redirect endpoint hits, or
+-- a DISMISSED_INFERRED row if the hourly job finds no tap within 24h.
+-- The next_step_url is stored server-side only so the real destination
+-- never leaves this DB; ntfy only ever sees the tap-redirect URL.
+CREATE TABLE IF NOT EXISTS notification_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    notif_id TEXT NOT NULL,
+    event_type TEXT NOT NULL CHECK (event_type IN ('SENT','TAPPED','DISMISSED_INFERRED')),
+    event_ts TEXT NOT NULL,
+    dimension TEXT,
+    action_type TEXT,
+    source_ids TEXT,
+    next_step_url TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_notification_events_notif ON notification_events(notif_id);
+CREATE INDEX IF NOT EXISTS idx_notification_events_type_ts ON notification_events(event_type, event_ts);
 """
 
 # Columns added after the initial schema landed. SQLite doesn't support
@@ -130,6 +172,7 @@ EXTRA_COLUMNS = [
     ("slate_size", "INTEGER"),
     ("next_step_url", "TEXT"),
     ("action_type", "TEXT"),
+    ("notif_id", "TEXT"),
 ]
 
 
@@ -143,6 +186,10 @@ def db_connect() -> sqlite3.Connection:
             conn.execute(f"ALTER TABLE notification_log ADD COLUMN {col} {decl}")
         except sqlite3.OperationalError:
             pass  # already added
+    # Index on the newly-added notif_id column (idempotent).
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_notification_log_notif ON notification_log(notif_id)"
+    )
     conn.commit()
     return conn
 
@@ -745,6 +792,7 @@ Shape (notifications is an array of 2-5 items, OR 0 only if everything is genuin
       "needs_slug": "<slug from needs registry if applicable, else null>",
       "action_type": "<one of: transaction | communication | search | capture | decision | physical | user_response — see RULE 11>",
       "next_step_url": "<URL routed by action_type per RULE 11; for `decision`, a Google Calendar quick-add URL with the full context bundle in details=; null only for physical/user_response>",
+      "dimension": "<dim_1 | dim_2 | ... | dim_9 — the life-dimension slug this item belongs to (from the FRAME section above); required so the feedback loop can score tap-rate by dimension>",
       "reasoning": "<one sentence: why this item, why now, naming the 4 factors>"
     }},
     ...
@@ -1137,6 +1185,81 @@ def validate_decision(decision: dict | None, context: dict) -> tuple[bool, str]:
     return True, "ok"
 
 
+# ── Feedback loop primitives ───────────────────────────────────────────
+#
+# Every dispatched notification carries a short `notif_id` (12-char uuid).
+# The ntfy Click URL is rewritten from the raw destination
+# (e.g. https://mail.google.com/...) to `${TAP_BASE_URL}/t/${notif_id}`
+# so we can log the TAPPED event before 302-ing to the real URL.
+# The raw URL never leaves the local DB.
+#
+# If TAP_BASE_URL is empty (no tunnel running yet), we fall back to the
+# raw URL — the feedback loop is off but the notification still works.
+
+
+def new_notif_id() -> str:
+    return uuid.uuid4().hex[:12]
+
+
+# Match "dim 3", "dim_3", "dimension 3", "dim-3" — the LLM tends to phrase
+# dimensions loosely in reasoning even when the explicit field is empty.
+_DIM_RE = re.compile(r"\bdim(?:ension)?[\s_\-]*([1-9])\b", re.IGNORECASE)
+
+
+def infer_dimension(notif: dict) -> str | None:
+    """Return the life-dimension slug (dim_1..dim_9) for a notification,
+    or None. Prefers the explicit `dimension` field; falls back to a
+    regex over `reasoning` for the tail case where the LLM omitted it.
+    """
+    explicit = (notif.get("dimension") or "").strip().lower()
+    if explicit.startswith("dim_") or explicit.startswith("dim-"):
+        # Normalize to dim_N form.
+        digits = "".join(c for c in explicit if c.isdigit())
+        if digits:
+            return f"dim_{digits}"
+    m = _DIM_RE.search(notif.get("reasoning", "") or "")
+    if m:
+        return f"dim_{m.group(1)}"
+    return None
+
+
+def build_tap_url(notif_id: str, real_url: str) -> str:
+    """Wrap real_url in the tap-redirect endpoint, or return raw if no base."""
+    base = resolve_tap_base_url()
+    if not base:
+        return real_url
+    return f"{base}/t/{notif_id}"
+
+
+def log_sent_event(
+    conn: sqlite3.Connection,
+    notif_id: str,
+    notif: dict,
+    real_url: str | None,
+) -> None:
+    """Insert a SENT event. Called BEFORE ntfy dispatch so a crash mid-loop
+    still leaves a redirectable row — a stale SENT is a rare, self-heals via
+    DISMISSED_INFERRED at 24h.
+    """
+    conn.execute(
+        """
+        INSERT INTO notification_events
+            (notif_id, event_type, event_ts, dimension, action_type,
+             source_ids, next_step_url)
+        VALUES (?, 'SENT', ?, ?, ?, ?, ?)
+        """,
+        (
+            notif_id,
+            datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            infer_dimension(notif),
+            notif.get("action_type"),
+            json.dumps(notif.get("evidence_edge_uuids", []) or []),
+            real_url,
+        ),
+    )
+    conn.commit()
+
+
 # ── ntfy dispatch ──────────────────────────────────────────────────────
 
 # ntfy priority levels: 1 (min) to 5 (max); default 3
@@ -1220,14 +1343,15 @@ def log_silent(conn: sqlite3.Connection, tick_ts: str, prompt: str,
 
 
 def log_sent(conn: sqlite3.Connection, tick_ts: str, prompt: str,
-             notif: dict, slate_index: int, slate_size: int) -> None:
+             notif: dict, slate_index: int, slate_size: int,
+             notif_id: str | None = None) -> None:
     conn.execute(
         """
         INSERT INTO notification_log
             (tick_ts, prompt_hash, decision_json, sent, title, body, priority,
              evidence_edge_uuids, reasoning, decision_point,
-             slate_index, slate_size, next_step_url, action_type)
-        VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             slate_index, slate_size, next_step_url, action_type, notif_id)
+        VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             tick_ts,
@@ -1243,6 +1367,7 @@ def log_sent(conn: sqlite3.Connection, tick_ts: str, prompt: str,
             slate_size,
             notif.get("next_step_url"),
             notif.get("action_type"),
+            notif_id,
         ),
     )
     conn.commit()
@@ -1439,14 +1564,30 @@ def main() -> int:
     slate_size = len(notifs)
     fail_count = 0
 
+    tap_base = resolve_tap_base_url()
+    if not tap_base:
+        print("NOTE: MIKAI_TAP_BASE_URL not set — feedback loop OFF; "
+              "ntfy will get raw next_step_url (no TAPPED tracking).",
+              file=sys.stderr)
+
     for i, n in enumerate(notifs):
+        notif_id = new_notif_id()
+        real_url = n.get("next_step_url") or None
+        # Log SENT before dispatch so the redirect can serve the tap even
+        # if we crash between here and log_sent below.
+        if real_url:
+            log_sent_event(conn, notif_id, n, real_url)
+        dispatch_url = build_tap_url(notif_id, real_url) if real_url else None
+
         sent_ok, dispatch_msg = dispatch_via_ntfy(
             n["title"], n["body"], n["priority"],
-            next_step_url=n.get("next_step_url"),
+            next_step_url=dispatch_url,
         )
         if sent_ok:
-            log_sent(conn, now_ts, prompt, n, slate_index=i, slate_size=slate_size)
-            print(f"  ✓ [{i+1}/{slate_size}] SENT: {n['title']}")
+            log_sent(conn, now_ts, prompt, n, slate_index=i,
+                     slate_size=slate_size, notif_id=notif_id)
+            print(f"  ✓ [{i+1}/{slate_size}] SENT: {n['title']} "
+                  f"(notif_id={notif_id})")
         else:
             log_silent(conn, now_ts, prompt, n, f"dispatch_failed: {dispatch_msg}")
             print(f"  ✗ [{i+1}/{slate_size}] FAILED: {dispatch_msg}", file=sys.stderr)

@@ -1130,3 +1130,55 @@ The brain is MIKAI's L4 reasoning (the LLM). There is no rules engine, no priori
 - O-028 (reactive→proactive transition) — decider IS the proactive surface. Reactive surface (MCP `search`/`get_source`) remains alongside it.
 
 **Revisit if:** L4 needs typed node/edge attributes (e.g. edge confidence/explanation). Reviving Stage 6 first requires a graphiti-core version that persists custom attributes as flat Neo4j properties; set `MIKAI_TYPED_EXTRACTION=1` only once that holds.
+
+---
+
+## D-054: FIGS feedback loop — tap redirect + dismissal inference (Discover-analog)
+**Date:** 2026-07-13
+**Decision:** Every FIGS notification carries a 12-char `notif_id` and its ntfy Click header is rewritten from the raw destination URL to `${TAP_BASE_URL}/t/{notif_id}`. A standalone stdlib HTTP server (`infra/decider/tap_endpoint.py`, port 8210) logs a `TAPPED` event and 302s to the real URL; an hourly cron (`infra/decider/dismissal_inference.py`) marks any SENT older than 24h with no matching TAPPED as `DISMISSED_INFERRED`. All events land in a new `notification_events` table alongside `notification_log` in `~/.mikai/notification_log.db`.
+
+**Why:**
+
+1. **Closing the loop is the Pareto move.** Google Discover works because every tap/skip/dwell/hide becomes training data within minutes — that tight loop is what makes its 0.5s decide-or-skip cards convert. Every other Discover mechanism (two-tower retrieval, freshness prior, diversity penalty) is downstream of the loop. FIGS today has strong substrate (ontology wiki + LLM synthesis) but zero feedback signal, so ranking quality has a low ceiling until acted/dismissed data starts flowing.
+2. **Redirect wrapper is the minimum-viable capture mechanism.** ntfy is fire-and-forget — there is no callback when the user taps a card. Wrapping the Click URL in a redirect that logs then 302s is the only zero-UX-cost way to get a `TAPPED` row per real interaction. Works for every action_type FIGS emits.
+3. **Startup-engineering discipline: build for today's signal, not tomorrow's infra.** The tap URL doesn't need to be publicly reachable to produce useful data. Phase 1 binds LAN only — probably 70–90% of taps happen on home wifi anyway. When the off-wifi tap becomes a real gap, swap to Tailscale (already installed on this Mac). When someone else needs to tap, cloudflared named tunnel. Each upgrade is a one-line env change; the endpoint, schema, and iPhone flow don't move.
+4. **DISMISSED_INFERRED is the negative half of the signal.** Discover treats no-tap as ground truth for "not interested." Without an explicit dismiss button, an SENT that stays untapped after 24h is the closest proxy. Idempotent hourly cron; re-runs are safe. This is the signal that lets ranking know what NOT to surface, which matters as much as what to surface.
+
+**Rejected:**
+
+- **Tap endpoint inside the Graphiti sidecar.** Sidecar's `~/.mikai` mount is read-only (`docker-compose.yml:44`), and every code change forces a container rebuild. Standalone stdlib server on the host writes directly to the FIGS SQLite DB, no docker cycle, no dependency additions in the decider path.
+- **FastAPI + uvicorn for the tap endpoint.** Adds a real dependency for what is a ~200-line HTTP server. Stdlib `http.server` with a threading mixin handles the load (personal system, single user) and stays consistent with the decider's stdlib-urllib style.
+- **Cloudflared quick tunnel as Phase 1.** URL rotates on restart, forces re-wiring `~/.mikai/tap_base_url` every reboot. Also premature — LAN captures most taps, and cloudflared adds an install (`brew install cloudflared`) plus an always-on tunnel process that Phase 1 doesn't justify.
+- **Cloudflared named tunnel + stable DNS.** Correct for Phase 3 when sharing beyond N=1; premature for Phase 1 which just needs the first `TAPPED` row.
+- **Tailscale as Phase 1.** Also solid (Tailscale is already installed on this Mac), but requires iPhone Tailscale install first. LAN Phase 1 needs zero user setup, delivers signal today, and Phase 2 promotes to Tailscale in a single env change when off-wifi taps become the real bottleneck.
+- **Discrete dismiss button in ntfy Actions.** Would give explicit negative signal instead of inferred, but forces a click even for the "not interested" case and complicates the card UX. Inferred dismissal at 24h costs nothing and lets us upgrade to explicit later without schema change (both just become `event_type` rows).
+- **In-place `notification_log` extension with `tapped_at` / `dismissed_at` columns.** Simpler at N=1 but wrong shape — a notification can be tapped multiple times, and dismissed-then-tapped-later is a real case. Event-stream table lets ranking compute time-to-tap, tap-count-per-notif, and re-open-after-dismiss without further schema changes.
+
+**Implementation:**
+
+- **Schema** (`infra/decider/mikai_decide.py:104-176`) — `notification_events` table with columns `notif_id`, `event_type CHECK IN ('SENT','TAPPED','DISMISSED_INFERRED')`, `event_ts`, `dimension`, `action_type`, `source_ids`, `next_step_url`. Indexes on `notif_id` and `(event_type, event_ts)`. `notif_id` column added to `notification_log` for correlation.
+- **Dispatch wiring** (`mikai_decide.py:1146-1214, 1490-1516`) — `new_notif_id()` mints 12-char uuid; `log_sent_event()` inserts SENT before dispatch; `build_tap_url()` swaps in `${TAP_BASE_URL}/t/{id}`; `resolve_tap_base_url()` reads env `MIKAI_TAP_BASE_URL` → file `~/.mikai/tap_base_url` → empty (falls back to raw URL untracked); `infer_dimension()` extracts `dim_N` from the LLM's `dimension` field or regex-matches "dim N" in `reasoning` as fallback. The LLM output schema (`mikai_decide.py:793`) now emits an explicit `dimension` field.
+- **Tap endpoint** (`infra/decider/tap_endpoint.py`) — stdlib `http.server` + `socketserver.ThreadingMixIn`. `GET /t/{notif_id}` → 302 with real URL, log TAPPED. `GET /healthz` → 200. Rejects non-hex/non-12-char IDs at 404 (not a general open-redirect), rejects unknown IDs at 404 without inserting phantom rows. Runs as `com.mikai.tap-endpoint` LaunchAgent on port 8210 (port 8200 collides with an unrelated `brain.py` uvicorn on this machine).
+- **Dismissal cron** (`infra/decider/dismissal_inference.py`) — one SQL: SENT older than `MIKAI_DISMISS_AFTER_HOURS` (default 24) with no matching TAPPED or DISMISSED_INFERRED → insert DISMISSED_INFERRED. Runs as `com.mikai.dismissal-inference` LaunchAgent every 3600s. `--dry-run` flag for ad-hoc inspection.
+- **LaunchAgents** — new plists and runners under `infra/decider/launchd/`: `com.mikai.tap-endpoint.plist` + `tap-endpoint-runner.sh` (KeepAlive), `com.mikai.dismissal-inference.plist` + `dismissal-inference-runner.sh` (StartInterval=3600). Install pattern per D-051 (files symlinked into `~/Library/LaunchAgents/`, canonical copies at `~/Library/Application Support/mikai/launchd/`).
+- **Phase 1 tunnel** — LAN binding at `http://192.168.88.228:8210`. `~/.mikai/tap_base_url` holds that URL. Works when iPhone is on home wifi; taps from cellular fail closed (no TAPPED row, DISMISSED_INFERRED after 24h — a false-negative, acceptable at this stage).
+
+**Staged progression (documented separately):**
+
+- **Phase 1 (today):** LAN-only redirect. Zero cost, zero deps. Trigger: first TAPPED row in `notification_events`.
+- **Phase 2:** Swap `MIKAI_TAP_BASE_URL` to a Tailscale hostname when off-wifi taps become the observable gap. Requires iPhone Tailscale install (5 min, free). Endpoint code and iPhone flow don't change.
+- **Phase 3:** Cloudflared named tunnel + stable DNS. Only needed if sharing beyond N=1.
+- **Phase 4 (never for N=1):** Edge/CDN-hosted redirect.
+
+**Revisit if:**
+
+- Tap rate stays below ~5% after 2 weeks of accumulating data → the ranking is worse than random and the LLM prompt needs the aggregate signal fed back in as context. This is the next work item — reading `notification_events` counts and injecting a "last-7-day tap-rate by dimension / action_type" block into `build_prompt()`.
+- Off-wifi missed taps become a visible product bug → promote to Phase 2 (Tailscale) with a one-line `~/.mikai/tap_base_url` change.
+- A real dismiss-button UX becomes worth the friction → add `event_type='DISMISSED_EXPLICIT'` to the CHECK constraint and route via ntfy Actions webhook. Ranking logic treats explicit and inferred the same for now.
+- Ranking benefits from finer-grained events (dwell time, back-swipe, snooze) → the event-stream schema absorbs new `event_type` values without breaking existing analytics.
+
+**Related to:**
+- D-053 (FIGS as LLM-only decider) — this is the feedback pipe that closes the "LLM judgment vs empirical outcome" loop D-053 explicitly deferred to a later phase.
+- D-051 (Pattern B) — new LaunchAgents follow the same App Support pattern; secrets from `~/.mikai/launchd.env`.
+- D-041 (L4 above port) — feedback loop lives at L4 alongside FIGS, not in the L3 sidecar.
+- ARCH-023 (hybrid ingestion) — future work could ingest `notification_events` into the L3 graph as "user-action edges" (edge type: ACTED_ON, DISMISSED); currently they sit in FIGS-local SQLite only.

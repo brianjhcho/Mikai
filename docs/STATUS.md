@@ -2,8 +2,8 @@
 
 > **What this file is:** The volatile state-of-the-world doc. It describes what is actually live on `main` right now — not the long-term vision (`CLAUDE.md`), not the architectural decisions (`docs/DECISIONS.md`), not the intellectual foundations (`docs/EPISTEMIC_*.md`). Update this file as main changes. If it contradicts CLAUDE.md, update CLAUDE.md only if the change is a principle, not a state.
 
-**Last meaningful update:** 2026-06-10 (ingestion fixed + automated: graphiti-core pinned, native extraction is now the default per D-052, launchd ingestion daemon live; plus D-051 Pattern B)
-**Latest commit on main at writing:** `a19a81c` — fix(ingestion): default to native graphiti extraction; pin graphiti-core
+**Last meaningful update:** 2026-07-13 (FIGS feedback loop v1 live: tap-redirect endpoint + dismissal inference — D-054; SENT/TAPPED/DISMISSED_INFERRED events now landing in `~/.mikai/notification_log.db`)
+**Latest commit on main at writing:** `2cca7fb` — feat(sumimasen): Phase B watcher — catch MIKAI blocks 15 min before fire
 
 ---
 
@@ -67,6 +67,15 @@
 - **`adapters/gmail.py`** — IMAP via Google app password (env vars in `.env.local`). Pulls unread + 24h windowed inbox.
 - **Decision log** at `~/.mikai/notification_log.db` — one row per tick (sent or silent), captures prompt hash, decision JSON, reasoning, user response.
 - **Verification status:** end-to-end dry-run confirmed cross-source reasoning over real data. ntfy → iPhone dispatch verified via `--test-ntfy`. Real organic notifications gated on (a) more diverse live signal in MIKAI (claude-thread=0 gap — see O-048), and (b) cron-style scheduling (still manual `--force` invocation).
+
+### FIGS feedback loop v1 (D-054, 2026-07-13)
+- **`notification_events` table** in `~/.mikai/notification_log.db` — event stream keyed on 12-char `notif_id` with types `SENT | TAPPED | DISMISSED_INFERRED`, carrying `dimension`, `action_type`, `source_ids`, `next_step_url`. Indexed on `notif_id` and `(event_type, event_ts)`.
+- **Dispatch wiring** in `mikai_decide.py` — every dispatched notification now mints a `notif_id`, logs SENT before ntfy send, and rewrites the ntfy Click header from the raw destination URL to `${TAP_BASE_URL}/t/{notif_id}` so the real URL never leaves this Mac. The LLM output schema now includes an explicit `dimension` field; a `reasoning`-text regex fallback catches tail cases.
+- **Tap endpoint** at `infra/decider/tap_endpoint.py` — standalone stdlib HTTP server, runs as `com.mikai.tap-endpoint` LaunchAgent on `0.0.0.0:8210` (port 8200 has an unrelated collision on this Mac). `GET /t/{notif_id}` looks up the SENT row, inserts TAPPED, 302s to real URL. Rejects malformed/unknown IDs at 404 without inserting phantom rows.
+- **Dismissal inference cron** at `infra/decider/dismissal_inference.py` — runs as `com.mikai.dismissal-inference` LaunchAgent every 3600s. Marks any SENT older than 24h (env `MIKAI_DISMISS_AFTER_HOURS`) with no matching TAPPED or existing DISMISSED_INFERRED. Idempotent; re-runs are safe.
+- **Phase 1 tunnel = LAN only.** `~/.mikai/tap_base_url` holds `http://192.168.88.228:8210`. iPhone taps work on home wifi; cellular taps fall back to no-signal (would-be TAPPED becomes DISMISSED_INFERRED at 24h — false negative, acceptable at this stage). Phase 2 promotes to Tailscale by writing a Tailscale hostname to that same file; no code change.
+- **Not yet wired:** the aggregate `tap-rate by dimension / action_type` query is not yet fed back into the FIGS prompt as context. That's the second half of the loop — the LLM currently produces the SENT signal but doesn't yet see the TAPPED/DISMISSED signal on the next tick. Landing this is the next work item once ~2 weeks of empirical data have accumulated.
+- **Verification:** smoke-tested end-to-end via a simulated tap through the LAN URL (SENT row → 302 to real URL preserved exactly → TAPPED row with correct dimension + action_type). Real iPhone tap gated on wifi + the next organic FIGS tick.
 
 ---
 
