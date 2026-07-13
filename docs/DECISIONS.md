@@ -1182,3 +1182,60 @@ The brain is MIKAI's L4 reasoning (the LLM). There is no rules engine, no priori
 - D-051 (Pattern B) — new LaunchAgents follow the same App Support pattern; secrets from `~/.mikai/launchd.env`.
 - D-041 (L4 above port) — feedback loop lives at L4 alongside FIGS, not in the L3 sidecar.
 - ARCH-023 (hybrid ingestion) — future work could ingest `notification_events` into the L3 graph as "user-action edges" (edge type: ACTED_ON, DISMISSED); currently they sit in FIGS-local SQLite only.
+
+---
+
+## D-055: Calendar planner — iCloud CalDAV + approval loop
+**Date:** 2026-07-13
+**Decision:** MIKAI reads and writes to Apple/iCloud Calendar via CalDAV (`https://caldav.icloud.com`) using an app-specific password. Once per day at 08:00 local, a LaunchAgent fetches today's editable blocks, gathers a candidate pool spanning engineering + life items, asks DeepSeek V3 to pick 2-3 items per block, and dispatches an ntfy card with Approve/Reject action URLs. The actual CalDAV PATCH only fires when the user taps Approve — routed through the tap-endpoint (which already exists from D-054). Nothing is ever written to the user's calendar without an explicit tap; a proposal that isn't resolved within 4h auto-EXPIREs on the next lookup.
+
+**Why:**
+
+1. **The calendar block is another FIGS card.** Same L4 selection logic (LLM ranks in-flight items), different write surface (CalDAV PATCH, not ntfy body). Reuses the FIGS pattern instead of inventing a second one.
+2. **CalDAV over EventKit / Calendar.sqlitedb.** The Sumimasen Phase B watcher hit repeated TCC walls trying to read `Calendar.sqlitedb` under launchd. CalDAV is a network protocol with basic auth — no TCC, no Full Disk Access battle, works uniformly whether the LaunchAgent is fired at 08:00 or from a shell. And CalDAV is Apple's own sync backend for iCloud calendars, so a PATCH here is authoritative — direct SQLite writes would be silently overwritten by iCloud on next pull.
+3. **Explicit approval loop, not auto-apply.** Writing to Brian's calendar is a hard-to-undo mutation. An LLM misfire that renames a therapy appointment or overwrites a personal reminder is a real product bug. Requiring one tap to approve costs almost nothing on iOS (ntfy Actions render Approve/Reject buttons in Notification Center) and provides the exact safety property Brian asked for: "prompted of the changes."
+4. **Stdlib CalDAV client, no third-party deps.** iCloud's CalDAV surface is small: PROPFIND for discovery, REPORT for time-range queries, PUT for updates. Around 300 lines of `urllib` + `xml.etree` covers the entire need. Six unit tests over iCal fold/unfold + property replacement guard the highest-risk piece (the property-replace routine must preserve every VEVENT line except SUMMARY, DESCRIPTION, LAST-MODIFIED, DTSTAMP).
+5. **Sole-attendee + ≥90-min editability heuristic.** Brian said "any block where I'm the sole attendee." Adding the duration filter (`MIKAI_PLANNER_MIN_MINUTES`, default 90) rules out reminder alarms and short personal appointments — a work block is at least an hour and a half. Meetings with other attendees are strictly out of scope regardless of duration.
+
+**Rejected:**
+
+- **Google Calendar API.** Brian's calendar is Apple/iCloud. Google Calendar API works only for Google-backed accounts inside Apple Calendar; iCloud calendars aren't reachable that way.
+- **Direct `Calendar.sqlitedb` write.** iCloud sync will overwrite anything MIKAI writes locally on the next round-trip. Not a real write path.
+- **EventKit via osascript.** TCC-gated (Calendar Automation), flaky under launchd (Sumimasen Phase B keeps hitting this). Even when it works, the write goes to Apple Calendar's local view, which then round-trips through CalDAV anyway — an extra hop with less predictable failure modes.
+- **`caldav` PyPI package.** Adds a real dependency for what is ~250 lines of stdlib HTTP + XML. Consistency with the FIGS decider's stdlib-only style wins here.
+- **Rich preview page before approval.** Considered a two-tap flow (tap → open detailed diff page → tap Approve). Cut for MVP: ntfy body carries the full title + description preview already, and Notification Center rendering of ntfy Actions gives one-tap Approve. If the ntfy body ever proves insufficient, promote to a `/preview/{id}` route on the tap-endpoint that renders the diff before the Approve button.
+- **Auto-apply after N minutes if no reject.** Would remove the friction of an explicit tap, but flips the safety default in the wrong direction. Silent-safe > convenience for a mutating operation.
+- **Include shared events (with other attendees).** Would let MIKAI rewrite a meeting title, which changes the title *for other attendees* through iCloud's invitation delta. Sole-attendee filter closes that off entirely.
+- **Cron every 3 hours.** The block being rewritten is a work window that spans hours; a mid-day re-propose would just churn. Once a day at 08:00 + `--force` for on-demand refresh is the right cadence.
+
+**Implementation:**
+
+- **Schema** (`infra/decider/mikai_decide.py:150-186`) — new `calendar_proposals` table alongside `notification_events`. Fields: `proposal_id` (12-hex uuid), `event_uid`, `calendar_url`, `event_href`, `event_etag`, `status IN ('PROPOSED','APPLIED','REJECTED','EXPIRED')`, current/proposed title+description, `candidates_json`, `llm_rationale`, `apply_error`. Separate table because SQLite can't ALTER a CHECK constraint on `notification_events`, and the proposal lifecycle (four states, resolvable) is different from the append-only event stream.
+- **CalDAV client** (`infra/decider/caldav_client.py`, ~350 lines) — stdlib HTTP + XML. Public API: `discover_principal()`, `discover_home_set()`, `list_calendars()`, `list_events(cal, start, end, sole_attendee_only)`, `patch_event(event, title, description)`, plus the high-level `todays_events()` convenience. Handles method-preserving redirects (urllib's default drops to GET on 301/302, which breaks PROPFIND). iCal fold/unfold + escape/unescape + property replace inside VEVENT are the six unit-tested primitives; every VEVENT line other than SUMMARY / DESCRIPTION / LAST-MODIFIED / DTSTAMP is preserved verbatim. Optimistic concurrency via `If-Match: <etag>` on PUT.
+- **Planner** (`infra/decider/calendar_planner.py`, ~300 lines) — gathers git activity (branch, uncommitted, last-7-day log, recent branches) + `docs/OPEN.md` + `~/.mikai/inflight.md` + `docs/USER_NEEDS_REGISTRY.md`, injects into a DeepSeek V3 prompt (~10K chars total), receives structured JSON (title, description, picks, rationale), inserts a PROPOSED row, and dispatches an ntfy card with `Actions: view, Approve, ...; view, Reject, ...`. Deduplication: `already_proposed_today()` guards against re-proposing an event that already has a proposal today, regardless of that proposal's status. `--dry-run` prints the pick without writing; `--force` bypasses the dedup.
+- **Approve/Reject routes** on the existing tap-endpoint (`infra/decider/tap_endpoint.py`) — `GET /approve/{proposal_id}` refetches the event by UID (etag may have drifted between propose and approve), calls `client.patch_event()`, marks status APPLIED (with the fresh etag), sends a confirmation ntfy, returns a small HTML success page. `GET /reject/{proposal_id}` just marks REJECTED. Both routes are idempotent — a second tap returns the "already resolved" HTML without side effects, guarded by a `WHERE status = 'PROPOSED'` clause on the UPDATE. Malformed / unknown / expired proposal_ids return 404 or the appropriate resolved-state page.
+- **LaunchAgent** (`infra/decider/launchd/`) — `com.mikai.calendar-planner.plist` fires at 08:00 daily via `StartCalendarInterval`; `RunAtLoad=false` so installs and reboots don't trigger unexpected proposals. Runner script (`calendar-planner-runner.sh`) follows Pattern B (D-051) — sources `~/.mikai/launchd.env`, works from the App Support directory, logs to `~/.mikai/logs/calendar-planner.{out,err}.log`.
+- **Credentials** — `MIKAI_ICLOUD_USER` (Apple ID email) and `MIKAI_ICLOUD_APP_PASSWORD` (app-specific password from appleid.apple.com) added to `~/.mikai/launchd.env`. The Apple ID password itself never enters the system.
+
+**Approval lifecycle:**
+
+1. 08:00 tick → LLM picks → `INSERT INTO calendar_proposals (status='PROPOSED')` → ntfy card fires with Approve/Reject action URLs.
+2. Brian taps **Approve** → tap-endpoint `GET /approve/{id}` → refetch event by UID → `PUT` new SUMMARY + DESCRIPTION → status transitions to APPLIED with the new etag → confirmation ntfy "✓ MIKAI updated your block" → iPhone Calendar refreshes within seconds via CalDAV sync.
+3. Brian taps **Reject** → status transitions to REJECTED → no CalDAV write → tomorrow at 08:00, the planner sees "already proposed today" for this event and skips (until the next day).
+4. Brian taps neither within 4h → next lookup marks EXPIRED — the safe default.
+5. Any failure inside `patch_event` (network / 412 etag drift / 403 auth) records `apply_error` and keeps status PROPOSED so a second tap can retry.
+
+**Revisit if:**
+
+- The rewrite quality is off (too generic, too many stale items) → tighten the prompt or add a git-activity weighting term. The candidate pool `picks[]` array is audited via `candidates_json` in the DB so it's easy to grade retrospectively.
+- Brian wants a mid-day re-propose → drop `StartCalendarInterval` in favor of a 3-hour `StartInterval`; add cooldown logic in the planner so the same event isn't re-proposed within N hours of a Reject.
+- A shared event should be editable (e.g. "family dinner planning" that Brian owns even though a partner is on it) → add a `MIKAI_PLANNER_INCLUDE_SHARED=1` env flag; keep sole-attendee as the default.
+- iCloud CalDAV rate-limits us → back off exponentially in `_request()`; add a token bucket if it becomes a real issue.
+- Explicit dismiss button becomes worth the friction upgrade → promote the ntfy `view` action to `http` action + add a `/dismiss/{id}` route (already ~2 lines of code given the existing pattern).
+
+**Related to:**
+- D-054 (FIGS feedback loop) — reuses the tap-endpoint infrastructure. `/approve` and `/reject` sit next to `/t/{notif_id}` on the same host, port, DB. Approval taps and notification taps go through the same LaunchAgent.
+- D-051 (Pattern B) — new LaunchAgent follows the same App-Support pattern; secrets in `~/.mikai/launchd.env`; symlinks in `~/Library/LaunchAgents/`.
+- D-041 (L4 above port) — calendar planner is L4 product code; it does not import graphiti-core or hit the L3Backend port directly. (Future: could pull FIGS candidates from the port instead of loading the needs registry markdown by hand.)
+- D-053 (FIGS as LLM-only decider) — same LLM shape: candidate pool → structured JSON → dispatch. The planner is essentially FIGS with a CalDAV write instead of an ntfy send.
+- Sumimasen Phase B (`sumimasen_watcher.py`) — Sumimasen READS the calendar to warn about MIKAI-created blocks approaching; the planner WRITES to the calendar to fill them. Both are calendar-shaped surfaces of the same L4 reasoning; Sumimasen closes the "you're about to hit this block" loop, the planner closes the "the block is generic, populate it" loop. Future integration: Sumimasen's context bundle for a rewritten block should show the picks the planner made when it fills it.

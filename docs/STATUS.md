@@ -2,8 +2,8 @@
 
 > **What this file is:** The volatile state-of-the-world doc. It describes what is actually live on `main` right now — not the long-term vision (`CLAUDE.md`), not the architectural decisions (`docs/DECISIONS.md`), not the intellectual foundations (`docs/EPISTEMIC_*.md`). Update this file as main changes. If it contradicts CLAUDE.md, update CLAUDE.md only if the change is a principle, not a state.
 
-**Last meaningful update:** 2026-07-13 (FIGS feedback loop v1 live: tap-redirect endpoint + dismissal inference — D-054; SENT/TAPPED/DISMISSED_INFERRED events now landing in `~/.mikai/notification_log.db`)
-**Latest commit on main at writing:** `2cca7fb` — feat(sumimasen): Phase B watcher — catch MIKAI blocks 15 min before fire
+**Last meaningful update:** 2026-07-13 (D-055 calendar planner: iCloud CalDAV read/write with approval loop — MIKAI can now propose calendar-block rewrites; changes only land after a tap; awaiting iCloud app-specific password to end-to-end verify)
+**Latest commit on main at writing:** `0a499ed` — feat(figs): feedback loop v1 (D-054) — notif_id + tap redirect + dismissal inference
 
 ---
 
@@ -76,6 +76,16 @@
 - **Phase 1 tunnel = LAN only.** `~/.mikai/tap_base_url` holds `http://192.168.88.228:8210`. iPhone taps work on home wifi; cellular taps fall back to no-signal (would-be TAPPED becomes DISMISSED_INFERRED at 24h — false negative, acceptable at this stage). Phase 2 promotes to Tailscale by writing a Tailscale hostname to that same file; no code change.
 - **Not yet wired:** the aggregate `tap-rate by dimension / action_type` query is not yet fed back into the FIGS prompt as context. That's the second half of the loop — the LLM currently produces the SENT signal but doesn't yet see the TAPPED/DISMISSED signal on the next tick. Landing this is the next work item once ~2 weeks of empirical data have accumulated.
 - **Verification:** smoke-tested end-to-end via a simulated tap through the LAN URL (SENT row → 302 to real URL preserved exactly → TAPPED row with correct dimension + action_type). Real iPhone tap gated on wifi + the next organic FIGS tick.
+
+### Calendar planner v1 (D-055, 2026-07-13)
+- **`calendar_proposals` table** in `~/.mikai/notification_log.db` — separate from `notification_events` because SQLite can't ALTER a CHECK constraint, and the proposal lifecycle (`PROPOSED → APPLIED | REJECTED | EXPIRED`) differs from the append-only event stream. Stores `event_uid`, `calendar_url`, `event_href`, `event_etag`, current/proposed title+description, `candidates_json` (audit of the picks the LLM made), `llm_rationale`, `apply_error`.
+- **`infra/decider/caldav_client.py`** — stdlib iCloud CalDAV client (~350 lines). Handles principal + calendar-home discovery via PROPFIND, time-range event queries via REPORT, and PUT with `If-Match: <etag>` for optimistic-concurrency PATCH. Six unit tests cover the highest-risk piece: iCal fold/unfold, escape/unescape, and property replacement inside VEVENT blocks (every line except SUMMARY / DESCRIPTION / LAST-MODIFIED / DTSTAMP is preserved verbatim).
+- **`infra/decider/calendar_planner.py`** — orchestrator (~300 lines). Once a day at 08:00 local via `com.mikai.calendar-planner` LaunchAgent: (1) discovers today's editable blocks via CalDAV (sole-attendee only, ≥90 min duration), (2) gathers a candidate pool spanning recent git activity on this repo + `docs/OPEN.md` + optional `~/.mikai/inflight.md` + FIGS needs registry, (3) calls DeepSeek V3 for a structured JSON pick (title, description, picks[], rationale), (4) inserts a PROPOSED row, (5) dispatches an ntfy card with `Actions: view, Approve, ...; view, Reject, ...`.
+- **Approve/Reject routes** on the existing tap-endpoint (`GET /approve/{proposal_id}` / `GET /reject/{proposal_id}`). Approve refetches the event by UID (etag may drift between propose and approve), PATCHes via CalDAV, marks APPLIED with the new etag, sends confirmation ntfy. Reject just marks REJECTED. Both idempotent by construction — the UPDATE has `WHERE status = 'PROPOSED'`, so a second tap on either route hits 0 rows and returns the resolved-state HTML. Malformed / unknown / expired IDs return 404 or the appropriate confirmation page. Failure inside the CalDAV PATCH records `apply_error` and keeps status PROPOSED so a retry works.
+- **Safety heuristic:** no calendar write ever fires without a tap. Auto-EXPIRE at 4h (`MIKAI_PROPOSAL_EXPIRY_H`) is the default if the user taps neither. Meetings with other attendees are strictly out of scope regardless of duration.
+- **Credentials:** `MIKAI_ICLOUD_USER` (Apple ID email) + `MIKAI_ICLOUD_APP_PASSWORD` (app-specific password from appleid.apple.com) in `~/.mikai/launchd.env` (chmod 0600, gitignored). Regular iCloud password never enters the system.
+- **Verified in isolation:** iCal fold/unfold/escape/property-replace passes 6 unit tests. Tap-endpoint approve/reject routes verified with seeded rows (reject → REJECTED; second reject → "Already rejected"; approve on rejected → "Already rejected"; approve with missing iCloud creds → 500 + apply_error recorded + status stays PROPOSED for retry).
+- **Gated on Brian:** end-to-end iCloud verification (real 8am fire, real Approve tap, real block rewrite on iPhone) requires an app-specific password added to `~/.mikai/launchd.env` under the two keys above. Everything else is running.
 
 ---
 

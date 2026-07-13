@@ -29,6 +29,7 @@ Design notes:
 
 from __future__ import annotations
 
+import html
 import http.server
 import json
 import logging
@@ -37,8 +38,15 @@ import re
 import socketserver
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib import request as urlreq
+
+# caldav_client is stdlib-only, so importing it at module load is safe even
+# if iCloud creds aren't configured. The client constructor is the layer
+# that requires MIKAI_ICLOUD_{USER,APP_PASSWORD}.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from caldav_client import ICloudCalDAV, CalDAVError, Event  # noqa: E402
 
 logger = logging.getLogger("mikai-tap")
 logging.basicConfig(
@@ -57,6 +65,14 @@ HOST = os.environ.get("MIKAI_TAP_HOST", "127.0.0.1")
 
 # notif_id = uuid4().hex[:12] — 12 lowercase hex chars.
 NOTIF_ID_RE = re.compile(r"^[0-9a-f]{12}$")
+# proposal_id has the same shape (uuid4().hex[:12] in calendar_planner.py).
+PROPOSAL_ID_RE = NOTIF_ID_RE
+
+# A proposal not resolved within this window auto-EXPIREs on next lookup.
+PROPOSAL_EXPIRY_HOURS = float(os.environ.get("MIKAI_PROPOSAL_EXPIRY_H", "4"))
+
+NTFY_BASE_URL = os.environ.get("MIKAI_NTFY_BASE", "https://ntfy.sh")
+NTFY_TOPIC = os.environ.get("MIKAI_NTFY_TOPIC", "")
 
 
 def _lookup_sent(notif_id: str) -> tuple[str | None, str | None, str | None]:
@@ -119,6 +135,181 @@ def _log_tapped(
         logger.warning("could not log TAPPED for %s: %s", notif_id, exc)
 
 
+# ── Calendar-proposal approval loop (D-055) ────────────────────────────
+
+
+def _open_db() -> sqlite3.Connection:
+    conn = sqlite3.connect(f"file:{DB_PATH}?mode=rw", uri=True, timeout=2.0)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _lookup_proposal(proposal_id: str) -> sqlite3.Row | None:
+    if not DB_PATH.exists():
+        return None
+    try:
+        conn = _open_db()
+        row = conn.execute(
+            "SELECT * FROM calendar_proposals WHERE proposal_id = ?",
+            (proposal_id,),
+        ).fetchone()
+        conn.close()
+        return row
+    except sqlite3.Error as exc:
+        logger.warning("proposal lookup failed for %s: %s", proposal_id, exc)
+        return None
+
+
+def _parse_ts_utc(v: str) -> datetime | None:
+    """Parse either an ISO-8601 aware timestamp (what the planner writes)
+    or a SQLite `datetime('now')` naive string (`'YYYY-MM-DD HH:MM:SS'`).
+    Naive values are assumed UTC — which matches SQLite's default.
+    """
+    if not v:
+        return None
+    try:
+        dt = datetime.fromisoformat(v.replace(" ", "T"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _mark_expired_if_stale(row: sqlite3.Row) -> str:
+    """If row is PROPOSED and older than PROPOSAL_EXPIRY_HOURS, mark it
+    EXPIRED and return the new status; else return the original status.
+    """
+    if row["status"] != "PROPOSED":
+        return row["status"]
+    proposed_at = _parse_ts_utc(row["proposed_at"])
+    if proposed_at is None:
+        return row["status"]
+    if datetime.now(timezone.utc) - proposed_at <= timedelta(hours=PROPOSAL_EXPIRY_HOURS):
+        return row["status"]
+    try:
+        conn = _open_db()
+        conn.execute(
+            "UPDATE calendar_proposals SET status='EXPIRED', resolved_at=? "
+            "WHERE proposal_id=? AND status='PROPOSED'",
+            (datetime.now(timezone.utc).isoformat(timespec="seconds"),
+             row["proposal_id"]),
+        )
+        conn.commit()
+        conn.close()
+        logger.info("expired proposal %s (proposed_at=%s > %sh)",
+                    row["proposal_id"], row["proposed_at"], PROPOSAL_EXPIRY_HOURS)
+        return "EXPIRED"
+    except sqlite3.Error as exc:
+        logger.warning("expiry update failed for %s: %s", row["proposal_id"], exc)
+        return row["status"]
+
+
+def _finalize_proposal(
+    proposal_id: str,
+    new_status: str,
+    apply_error: str | None = None,
+    new_etag: str | None = None,
+) -> None:
+    """Atomically flip PROPOSED → new_status. If the row is already in a
+    non-PROPOSED state, the UPDATE hits 0 rows and we return without side
+    effects — idempotent by construction.
+    """
+    try:
+        conn = _open_db()
+        conn.execute(
+            """
+            UPDATE calendar_proposals
+            SET status = ?,
+                resolved_at = ?,
+                apply_error = COALESCE(?, apply_error),
+                event_etag = COALESCE(?, event_etag)
+            WHERE proposal_id = ? AND status = 'PROPOSED'
+            """,
+            (
+                new_status,
+                datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                apply_error, new_etag, proposal_id,
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except sqlite3.Error as exc:
+        logger.warning("finalize failed for %s: %s", proposal_id, exc)
+
+
+def _apply_to_icloud(row: sqlite3.Row) -> tuple[bool, str, str]:
+    """Refetch the event by UID (etag may have drifted), PATCH SUMMARY +
+    DESCRIPTION, return (ok, message, new_etag).
+    """
+    user = os.environ.get("MIKAI_ICLOUD_USER", "")
+    pw = os.environ.get("MIKAI_ICLOUD_APP_PASSWORD", "")
+    if not user or not pw:
+        return (False, "iCloud creds missing on the tap-endpoint host", "")
+    try:
+        client = ICloudCalDAV(user, pw)
+        # Refetch by scanning today's events on all calendars until the UID matches
+        # — safer than PUTting with the stored stale etag.
+        events = client.todays_events(sole_attendee_only=False)
+        target = next((e for e in events if e.uid == row["event_uid"]), None)
+        if target is None:
+            # Not on today's list — maybe the user moved the block. Try a
+            # direct GET against the stored href as a last resort.
+            return (False, f"event UID {row['event_uid']} no longer in today's range", "")
+        new_etag = client.patch_event(
+            target,
+            new_title=row["proposed_title"],
+            new_description=row["proposed_description"],
+        )
+        return (True, "applied", new_etag or "")
+    except CalDAVError as exc:
+        return (False, f"CalDAV error: {exc}", "")
+
+
+def _send_confirmation_ntfy(title: str, body: str) -> None:
+    if not NTFY_TOPIC:
+        return
+    try:
+        req = urlreq.Request(
+            f"{NTFY_BASE_URL}/{NTFY_TOPIC}",
+            data=body.encode("utf-8"),
+            method="POST",
+            headers={"Title": title, "Priority": "3", "Tags": "mikai,calendar"},
+        )
+        with urlreq.urlopen(req, timeout=8):
+            pass
+    except Exception as exc:
+        logger.warning("confirmation ntfy failed: %s", exc)
+
+
+# ── Approval / rejection HTML confirmation pages ───────────────────────
+
+
+_PAGE_CSS = (
+    "font-family:-apple-system,BlinkMacSystemFont,sans-serif;"
+    "max-width:520px;margin:48px auto;padding:0 24px;"
+    "line-height:1.55;color:#111"
+)
+
+
+def _confirmation_page(headline: str, sub: str, current: str, proposed: str,
+                       accent: str) -> bytes:
+    return (
+        f"<!doctype html><meta charset='utf-8'>"
+        f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        f"<title>{html.escape(headline)}</title>"
+        f"<div style='{_PAGE_CSS}'>"
+        f"<h2 style='color:{accent};margin-bottom:6px'>{html.escape(headline)}</h2>"
+        f"<p style='color:#666;margin-top:0'>{html.escape(sub)}</p>"
+        f"<hr style='border:none;border-top:1px solid #eee;margin:24px 0'>"
+        f"<div style='color:#888;font-size:13px'>Was</div>"
+        f"<div>{html.escape(current)}</div>"
+        f"<div style='color:#888;font-size:13px;margin-top:14px'>Now</div>"
+        f"<div style='font-weight:600'>{html.escape(proposed)}</div>"
+        f"</div>"
+    ).encode()
+
+
 class TapHandler(http.server.BaseHTTPRequestHandler):
     server_version = "MikaiTap/1.0"
 
@@ -130,11 +321,25 @@ class TapHandler(http.server.BaseHTTPRequestHandler):
             return
 
         m = re.match(r"^/t/([^/]+)$", path)
-        if not m:
-            self._reply(404, "text/plain", b"not found\n")
+        if m:
+            self._handle_tap(m.group(1))
             return
 
-        notif_id = m.group(1)
+        m = re.match(r"^/approve/([^/]+)$", path)
+        if m:
+            self._handle_proposal(m.group(1), approve=True)
+            return
+
+        m = re.match(r"^/reject/([^/]+)$", path)
+        if m:
+            self._handle_proposal(m.group(1), approve=False)
+            return
+
+        self._reply(404, "text/plain", b"not found\n")
+
+    # ── Route handlers ────────────────────────────────────────────────
+
+    def _handle_tap(self, notif_id: str) -> None:
         if not NOTIF_ID_RE.match(notif_id):
             logger.info("rejected malformed notif_id=%r", notif_id)
             self._reply(404, "text/plain", b"not found\n")
@@ -157,6 +362,103 @@ class TapHandler(http.server.BaseHTTPRequestHandler):
             "TAPPED notif_id=%s dim=%s action=%s → %s",
             notif_id, dimension, action_type,
             (next_url[:80] + "…") if next_url and len(next_url) > 80 else next_url,
+        )
+
+    def _handle_proposal(self, proposal_id: str, approve: bool) -> None:
+        if not PROPOSAL_ID_RE.match(proposal_id):
+            logger.info("rejected malformed proposal_id=%r", proposal_id)
+            self._reply(404, "text/plain", b"not found\n")
+            return
+
+        row = _lookup_proposal(proposal_id)
+        if row is None:
+            logger.info("unknown proposal_id=%s", proposal_id)
+            self._reply(404, "text/plain", b"not found\n")
+            return
+
+        status = _mark_expired_if_stale(row)
+
+        # Idempotent second-tap: if already resolved, show the final state.
+        if status != "PROPOSED":
+            label = {
+                "APPLIED": ("✓ Already applied", "#0a7d3a"),
+                "REJECTED": ("✗ Already rejected", "#a11a1a"),
+                "EXPIRED": ("⌛ Proposal expired", "#8a6f00"),
+            }.get(status, (f"Status: {status}", "#333"))
+            self._reply(
+                200, "text/html; charset=utf-8",
+                _confirmation_page(
+                    label[0],
+                    "This proposal was resolved earlier — no change made now.",
+                    row["current_title"] or "",
+                    row["proposed_title"] or "",
+                    label[1],
+                ),
+            )
+            return
+
+        if not approve:
+            _finalize_proposal(proposal_id, "REJECTED")
+            logger.info("REJECTED proposal_id=%s", proposal_id)
+            self._reply(
+                200, "text/html; charset=utf-8",
+                _confirmation_page(
+                    "✗ Rejected",
+                    "Calendar block left untouched. MIKAI will try again tomorrow.",
+                    row["current_title"] or "",
+                    row["proposed_title"] or "",
+                    "#a11a1a",
+                ),
+            )
+            return
+
+        # Approve path — call iCloud CalDAV.
+        ok, msg, new_etag = _apply_to_icloud(row)
+        if not ok:
+            _finalize_proposal(proposal_id, "PROPOSED",
+                               apply_error=msg[:400])  # stay PROPOSED so retry works
+            # Actually the UPDATE has WHERE status='PROPOSED', so no
+            # transition happens — apply_error still isn't recorded that way.
+            # Do it directly:
+            try:
+                conn = _open_db()
+                conn.execute(
+                    "UPDATE calendar_proposals SET apply_error = ? "
+                    "WHERE proposal_id = ?",
+                    (msg[:400], proposal_id),
+                )
+                conn.commit()
+                conn.close()
+            except sqlite3.Error:
+                pass
+            logger.warning("APPLY FAILED proposal_id=%s: %s", proposal_id, msg)
+            self._reply(
+                500, "text/html; charset=utf-8",
+                _confirmation_page(
+                    "⚠ Could not apply",
+                    f"iCloud rejected the change: {msg}",
+                    row["current_title"] or "",
+                    row["proposed_title"] or "",
+                    "#a11a1a",
+                ),
+            )
+            return
+
+        _finalize_proposal(proposal_id, "APPLIED", new_etag=new_etag or None)
+        logger.info("APPLIED proposal_id=%s → %r", proposal_id, row["proposed_title"])
+        _send_confirmation_ntfy(
+            "✓ MIKAI updated your block",
+            f"Rewrote {row['current_title']!r} → {row['proposed_title']!r}",
+        )
+        self._reply(
+            200, "text/html; charset=utf-8",
+            _confirmation_page(
+                "✓ Applied",
+                "Your iCloud calendar was updated. iPhone should refresh in a few seconds.",
+                row["current_title"] or "",
+                row["proposed_title"] or "",
+                "#0a7d3a",
+            ),
         )
 
     def _reply(self, status: int, ctype: str, body: bytes) -> None:

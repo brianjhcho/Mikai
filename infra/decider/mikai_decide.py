@@ -162,6 +162,38 @@ CREATE TABLE IF NOT EXISTS notification_events (
 
 CREATE INDEX IF NOT EXISTS idx_notification_events_notif ON notification_events(notif_id);
 CREATE INDEX IF NOT EXISTS idx_notification_events_type_ts ON notification_events(event_type, event_ts);
+
+-- Calendar rewrite proposals (D-055). Kept in a separate table from
+-- notification_events because (a) SQLite can't ALTER a CHECK constraint,
+-- and (b) proposals have a different lifecycle (PROPOSED → APPLIED |
+-- REJECTED | EXPIRED) than the append-only event stream.
+--
+-- A proposal represents: MIKAI wants to rewrite iCloud CalDAV event
+-- `event_uid` on calendar `calendar_url` from (current_title, current_description)
+-- to (proposed_title, proposed_description). It sits PROPOSED until the user
+-- taps Approve or Reject (via tap-endpoint /approve/{proposal_id} or
+-- /reject/{proposal_id}), or the hourly expiry job marks it EXPIRED at 4h.
+CREATE TABLE IF NOT EXISTS calendar_proposals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    proposal_id TEXT NOT NULL UNIQUE,
+    event_uid TEXT NOT NULL,
+    calendar_url TEXT NOT NULL,
+    event_href TEXT NOT NULL,
+    event_etag TEXT,
+    status TEXT NOT NULL CHECK (status IN ('PROPOSED','APPLIED','REJECTED','EXPIRED')),
+    proposed_at TEXT NOT NULL,
+    resolved_at TEXT,
+    current_title TEXT,
+    current_description TEXT,
+    proposed_title TEXT,
+    proposed_description TEXT,
+    candidates_json TEXT,
+    llm_rationale TEXT,
+    apply_error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_calendar_proposals_status ON calendar_proposals(status, proposed_at);
+CREATE INDEX IF NOT EXISTS idx_calendar_proposals_pid ON calendar_proposals(proposal_id);
 """
 
 # Columns added after the initial schema landed. SQLite doesn't support
