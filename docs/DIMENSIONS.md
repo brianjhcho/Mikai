@@ -1,7 +1,7 @@
 # MIKAI — Life Dimensions
 
 > **What this file is:** Brian's personal ontology. Nine top-level life dimensions,
-> each with concrete goals and evidence concepts. FIGS reads this to organize
+> each with concrete goals and evidence concepts. Surface Engine reads this to organize
 > surfacing by dimension rather than by flat entity density.
 >
 > **Why this exists:** the density lens surfaces high-mention concepts, but
@@ -24,11 +24,11 @@ goals:
 - Ship MIKAI to a usable prototype — state=acting
 
 concepts (mostly framework noise absorbed here — DO NOT surface as notifications unless a decision point arises):
-- MIKAI, FIGS, Assistant, Claude Code, Perplexity, Neo4j, Graphiti, OpenAI, Anthropic, DeepSeek, Gemini, LLM, Ollama, Docker, sync.py, bot.py, dream.py, mikai_decide.py, HICCUP, Hermes, Sumimasen, Noonchi, openclaw, sidecar, launchd, MCP, iPhone, iMessage, Telegram, Instagram, Facebook, Google, Apple, Microsoft, GitHub, ChatGPT, Slack, Notion, n8n, Mem.ai, main, Cursor, Pinecone, Voyage, WhatsApp, Signal, Discord
+- MIKAI, Surface Engine, Assistant, Claude Code, Perplexity, Neo4j, Graphiti, OpenAI, Anthropic, DeepSeek, Gemini, LLM, Ollama, Docker, sync.py, bot.py, dream.py, mikai_decide.py, HICCUP, Hermes, Sumimasen, Noonchi, openclaw, sidecar, launchd, MCP, iPhone, iMessage, Telegram, Instagram, Facebook, Google, Apple, Microsoft, GitHub, ChatGPT, Slack, Notion, n8n, Mem.ai, main, Cursor, Pinecone, Voyage, WhatsApp, Signal, Discord
 
 notes:
 This dimension is the meta-project. Brian is in it every day; he does not need
-FIGS to remind him. Only surface if a concrete decision point crystallizes
+Surface Engine to remind him. Only surface if a concrete decision point crystallizes
 (founder-vs-employee commitment, ship-milestone, funding move, tool-choice
 gate). Framework noise here is deliberately captured so the rest of the
 system knows to route it away from notification surface.
@@ -99,7 +99,7 @@ concepts:
 
 notes:
 Low frequency but load-bearing. On hold for reasons Brian has not surfaced
-back to himself; FIGS should ask "still on hold?" rather than nag.
+back to himself; Surface Engine should ask "still on hold?" rather than nag.
 
 ---
 
@@ -164,7 +164,7 @@ and belongs in ## Tensions of the wiki as well.
 
 ## 9. Recurring Themes (Self-Messages)
 
-Not goals — recurring wisdom Brian tells himself, month over month. FIGS
+Not goals — recurring wisdom Brian tells himself, month over month. Surface Engine
 does not usually surface these as notifications (they're not actionable);
 the wiki's `## Who` should reflect them as stable-trait self-model.
 
@@ -177,14 +177,14 @@ exemplars (from June 2026 notes):
 notes:
 Look for these as high-signal short-form entries repeated across months of
 Apple Notes. They shape HOW Brian approaches every goal above; the wiki
-Who section should quote them. FIGS may occasionally surface one as a
+Who section should quote them. Surface Engine may occasionally surface one as a
 morning-tick philosophical anchor, but not more than once a week.
 
 ---
 
 ## Per-Dimension Destination Templates
 
-FIGS reads these when composing `next_step_url` on each notification. Each
+Surface Engine reads these when composing `next_step_url` on each notification. Each
 template pairs a **type of pickup** with the **canonical URL** or app deep-link
 that transports Brian to the doing. When a notification's pickup matches a
 template, use the URL; when nothing matches, set `next_step_url: null`.
@@ -263,9 +263,9 @@ https://calendar.google.com/calendar/r/eventedit?text=Founder+vs+Employee+90-day
 
 ---
 
-## How FIGS uses this file
+## How Surface Engine uses this file
 
-At every tick, the FIGS decider reads this file and:
+At every tick, the Surface Engine decider reads this file and:
 
 1. Uses the dimensions as bins. When ranking candidates for surfacing, aim
    for spectrum coverage — the 2-5 slate should span at least 3 different

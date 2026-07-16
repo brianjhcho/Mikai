@@ -109,11 +109,11 @@ The design posture per ARCH-025 is that this is not a legacy revival, not a fork
 
 ---
 
-## §7 — FIGS — the notification interface (D-053)
+## §7 — Surface Engine — the notification interface (D-053)
 
-**Naming convention (2026-06-27).** Going forward, **MIKAI** refers to the backend (L3 graph + L4 reasoning). **FIGS** refers to the notification interface that consumes MIKAI — every surface that pushes information to Brian falls under FIGS. The current code lives at `infra/decider/` for historical reasons; the FIGS name is the canonical doc reference.
+**Naming convention (2026-06-27).** Going forward, **MIKAI** refers to the backend (L3 graph + L4 reasoning). **Surface Engine** refers to the notification interface that consumes MIKAI — every surface that pushes information to Brian falls under Surface Engine. The current code lives at `infra/decider/` for historical reasons; the Surface Engine name is the canonical doc reference.
 
-FIGS V0 is a single Python script — `infra/decider/mikai_decide.py` — that runs on a schedule, asks Claude (via MIKAI's L4 reasoning) whether to send Brian a notification right now, and dispatches via ntfy.sh on send. Same shape as Anthropic's Dreaming (scheduled async LLM curator) but applied to notification timing rather than memory consolidation.
+Surface Engine V0 is a single Python script — `infra/decider/mikai_decide.py` — that runs on a schedule, asks Claude (via MIKAI's L4 reasoning) whether to send Brian a notification right now, and dispatches via ntfy.sh on send. Same shape as Anthropic's Dreaming (scheduled async LLM curator) but applied to notification timing rather than memory consolidation.
 
 ```
         ┌──────────────────────────────────────┐
@@ -123,7 +123,7 @@ FIGS V0 is a single Python script — `infra/decider/mikai_decide.py` — that r
         └─────────────────┬────────────────────┘     personal life
                           │
         ┌─────────────────┴────────────────────┐
-        │  FIGS — candidate aggregation        │   ← cross-source events
+        │  Surface Engine — candidate aggregation        │   ← cross-source events
         │   - iMessage adapter (chat.db)       │     (live, transient)
         │   - Calendar adapter (Calendar.db)   │
         │   - Gmail adapter (IMAP)             │
@@ -141,7 +141,7 @@ FIGS V0 is a single Python script — `infra/decider/mikai_decide.py` — that r
                           │ decision
                           ▼
         ┌──────────────────────────────────────┐
-        │  FIGS validation                     │
+        │  Surface Engine validation                     │
         │   - evidence UUIDs ∈ prompt context  │
         │   - cooldown (default 2h)            │
         │   - format/length bounds             │
@@ -149,19 +149,19 @@ FIGS V0 is a single Python script — `infra/decider/mikai_decide.py` — that r
                           │ on send
                           ▼
         ┌──────────────────────────────────────┐
-        │  FIGS dispatch                       │
+        │  Surface Engine dispatch                       │
         │   - ntfy.sh → iPhone + Mac           │
         │   - SQLite log →                     │
         │     ~/.mikai/notification_log.db     │
         └──────────────────────────────────────┘
 ```
 
-**Why FIGS is a single Python script and not a rules engine.** At single-user scale MIKAI's L4 reasoning (Claude via headless `claude -p`) is good enough to do every job a rules-engine-plus-bandit architecture would split out (candidate ranking, tiebreaker, copywriting, cold-start scoring, explanation). A rules engine in front of L4 reasoning adds engineering surface that doesn't pay back at 1-user scale. The Dreaming-shaped architecture is correct for this problem class — and Anthropic shipping it in 2026-05 confirms that. The full decision rationale + rejected alternatives are in D-053.
+**Why Surface Engine is a single Python script and not a rules engine.** At single-user scale MIKAI's L4 reasoning (Claude via headless `claude -p`) is good enough to do every job a rules-engine-plus-bandit architecture would split out (candidate ranking, tiebreaker, copywriting, cold-start scoring, explanation). A rules engine in front of L4 reasoning adds engineering surface that doesn't pay back at 1-user scale. The Dreaming-shaped architecture is correct for this problem class — and Anthropic shipping it in 2026-05 confirms that. The full decision rationale + rejected alternatives are in D-053.
 
-**The recency lens.** Graphiti's `/search` (the L3 query surface) is semantic-similarity only — embeddings don't encode time. To answer "what's new in MIKAI since yesterday" FIGS queries Neo4j HTTP directly: `MATCH ()-[r:RELATES_TO]->() WHERE r.created_at > datetime() - duration({hours: 24}) ORDER BY r.created_at DESC LIMIT 25`. This is the single most important lens for the notification decision because everything fresh that just landed in MIKAI (from auto-ingestion) shows up here. The semantic lenses provide context (what threads exist, what tensions are active); the recency lens provides "what specifically just happened."
+**The recency lens.** Graphiti's `/search` (the L3 query surface) is semantic-similarity only — embeddings don't encode time. To answer "what's new in MIKAI since yesterday" Surface Engine queries Neo4j HTTP directly: `MATCH ()-[r:RELATES_TO]->() WHERE r.created_at > datetime() - duration({hours: 24}) ORDER BY r.created_at DESC LIMIT 25`. This is the single most important lens for the notification decision because everything fresh that just landed in MIKAI (from auto-ingestion) shows up here. The semantic lenses provide context (what threads exist, what tensions are active); the recency lens provides "what specifically just happened."
 
-**Source adapters.** FIGS's source adapters are *not* MIKAI ingestion paths — they don't write to the graph. They produce a transient list of cross-source events scoped to the current tick (last 24–72h, capped per source). The actual ingestion of these sources into MIKAI is a separate concern (Mode 1 daemon for Apple Notes / Claude Code; in-flight branch for Claude.ai web; future Mode 2 for Gmail/Calendar). FIGS's adapters are read-side context for L4 reasoning, not a substitute for proper ingestion. When MIKAI ingestion catches up, the adapters become redundant (graph already has the data) — the recency lens replaces them.
+**Source adapters.** Surface Engine's source adapters are *not* MIKAI ingestion paths — they don't write to the graph. They produce a transient list of cross-source events scoped to the current tick (last 24–72h, capped per source). The actual ingestion of these sources into MIKAI is a separate concern (Mode 1 daemon for Apple Notes / Claude Code; in-flight branch for Claude.ai web; future Mode 2 for Gmail/Calendar). Surface Engine's adapters are read-side context for L4 reasoning, not a substitute for proper ingestion. When MIKAI ingestion catches up, the adapters become redundant (graph already has the data) — the recency lens replaces them.
 
-**The `claude-thread=0` blocker.** As of writing, MIKAI has 0 Claude.ai web/desktop episodes (see O-048). FIGS's fresh-lens correctly surfaces what IS there (Apple Notes, Claude Code terminal sessions), but Brian's actual Claude.ai conversations don't reach it. Notification quality is therefore bottlenecked on closing that MIKAI ingestion gap, not on FIGS itself.
+**The `claude-thread=0` blocker.** As of writing, MIKAI has 0 Claude.ai web/desktop episodes (see O-048). Surface Engine's fresh-lens correctly surfaces what IS there (Apple Notes, Claude Code terminal sessions), but Brian's actual Claude.ai conversations don't reach it. Notification quality is therefore bottlenecked on closing that MIKAI ingestion gap, not on Surface Engine itself.
 
 **Status:** running in dry-run + `--force` modes. End-to-end verified (MIKAI context retrieval, all three source adapters, validation, ntfy dispatch). Real organic notifications gated on richer live signal in MIKAI (O-048) and scheduled execution (cron / Routines). See STATUS.md for current operational notes.

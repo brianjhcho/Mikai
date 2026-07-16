@@ -1,15 +1,15 @@
 # MIKAI — User Needs Registry
 
-> **What this file is:** Brian-curated list of high-priority life needs MIKAI should track. **FIGS reads this file at every tick and treats every item here as a candidate for surfacing.** This is the highest-priority lens — it outranks the nightly Dream-generated `wiki.md` because Brian explicitly authored these.
+> **What this file is:** Brian-curated list of high-priority life needs MIKAI should track. **Surface Engine reads this file at every tick and treats every item here as a candidate for surfacing.** This is the highest-priority lens — it outranks the nightly Dream-generated `wiki.md` because Brian explicitly authored these.
 >
 > **Why this exists, not in `wiki.md`:** The Dream wiki reflects what's *in your recent conversations*. Many of Brian's load-bearing life needs don't show up in Claude.ai conversations at all (mom's Scotia card, MSP residency) — or they show up sparsely and get crowded out by product-build noise. This registry is the override.
 >
-> **How to maintain:** Edit by hand. Add a need when one becomes load-bearing. Mark `state: done` when closed (FIGS will stop surfacing). Don't delete done items for at least 30 days — they're useful for FIGS to learn "Brian acts on financial-admin needs within N days" patterns.
+> **How to maintain:** Edit by hand. Add a need when one becomes load-bearing. Mark `state: done` when closed (Surface Engine will stop surfacing). Don't delete done items for at least 30 days — they're useful for Surface Engine to learn "Brian acts on financial-admin needs within N days" patterns.
 
 **Schema per item** (each `## N. Title` section below contains one `yaml` fenced block following this schema):
 
 ```
-slug: short-id            # used by FIGS as the citation key
+slug: short-id            # used by Surface Engine as the citation key
 title: human-readable
 state: in_flight | on_hold | blocked | exploring | decided | done
 urgency: critical | high | medium | low
@@ -68,11 +68,11 @@ connects_to:
   - Mom's mailing address verification (likely a separate step)
 blockers: |
   Unknown — Brian needs to surface the reason for the hold to himself.
-  FIGS should ask him "is this still on hold for the same reason?" rather
+  Surface Engine should ask him "is this still on hold for the same reason?" rather
   than nag for action.
 notes: |
   This is an on_hold item, not a blocked one — the difference is that
-  Brian chose to pause it. FIGS should remind less frequently (every
+  Brian chose to pause it. Surface Engine should remind less frequently (every
   ~10 days) and frame as "still on hold?" not "you should do this."
 ---
 ```
@@ -97,7 +97,7 @@ blockers: |
   current BC address, (2) a government-issued ID with BC address.
 notes: |
   Health coverage gap is a hard time-sensitive risk — if Brian needs
-  medical care while uncovered, the cost spikes. FIGS should escalate
+  medical care while uncovered, the cost spikes. Surface Engine should escalate
   the urgency if more than 7 days pass without movement.
 ---
 ```
@@ -120,10 +120,10 @@ connects_to:
 blockers: |
   This need straddles two life paths (employee vs founder) that have
   incompatible week-to-week routines. Until Brian explicitly picks one
-  for the next 90 days, FIGS will surface this as an open-question
+  for the next 90 days, Surface Engine will surface this as an open-question
   prompt rather than an action prompt.
 notes: |
-  Open-question framing for FIGS: "career thread is unbranched — pick a
+  Open-question framing for Surface Engine: "career thread is unbranched — pick a
   90-day lane this week?" NOT "apply to N jobs today."
 ---
 ```
@@ -137,7 +137,7 @@ state: exploring
 urgency: medium
 domain: trading
 last_movement: 2026-05
-next_step: Pick a depth — full execution (IBKR API or Alpaca) or suggestion-only (a daily candidate list pushed to FIGS itself). Suggestion-only is the smaller step. If suggestion-only, define one strategy class (e.g., earnings-drift, sector momentum) and the data source (e.g., Yahoo Finance, Polygon).
+next_step: Pick a depth — full execution (IBKR API or Alpaca) or suggestion-only (a daily candidate list pushed to Surface Engine itself). Suggestion-only is the smaller step. If suggestion-only, define one strategy class (e.g., earnings-drift, sector momentum) and the data source (e.g., Yahoo Finance, Polygon).
 connects_to:
   - IBKR (Interactive Brokers) — primary trading account API
   - Alpaca — simpler API for paper/live automation
@@ -145,11 +145,11 @@ connects_to:
   - Polygon / Yahoo Finance / IEX Cloud (price data)
 blockers: |
   Strategy undefined. Automation is a means; without a defined strategy
-  there's nothing to automate. FIGS should surface this as "define one
+  there's nothing to automate. Surface Engine should surface this as "define one
   strategy class before any infra work" not "set up the API."
 notes: |
   The "suggestion-only" version is the small, MIKAI-compatible variant:
-  one daily FIGS notification listing N candidate trades with reasoning,
+  one daily Surface Engine notification listing N candidate trades with reasoning,
   no execution. This composes cleanly with the existing notification
   surface. Full automation is V2.
 ---
@@ -157,11 +157,11 @@ notes: |
 
 ---
 
-## How FIGS uses this file
+## How Surface Engine uses this file
 
 1. At every tick, the `needs_lens.py` parser reads this file and produces structured candidates with the per-item scoring fields.
-2. These needs go into the FIGS prompt as the **highest-priority section** — above the Dream wiki — because Brian explicitly curated them.
-3. FIGS applies the same `surface_priority = state_weight × urgency × delivery_value × delivery_cost⁻¹` formula (see `FIGS_LOSS_FUNCTION.md`).
+2. These needs go into the Surface Engine prompt as the **highest-priority section** — above the Dream wiki — because Brian explicitly curated them.
+3. Surface Engine applies the same `surface_priority = state_weight × urgency × delivery_value × delivery_cost⁻¹` formula (see `SURFACE_ENGINE_LOSS_FUNCTION.md`).
 4. Recently-surfaced needs are deprioritized via the SQLite log (e.g., if MSP was surfaced 2 days ago and Brian dismissed, don't repeat for 7 days; if he acted, mark `last_movement` forward and lower priority for 14 days).
 
 ---
@@ -188,4 +188,4 @@ notes: |
 
 1. Append a new `## N. <Title>` section at the bottom of this file
 2. Fill all fields in the YAML block
-3. The next FIGS tick picks it up automatically — no code changes needed
+3. The next Surface Engine tick picks it up automatically — no code changes needed

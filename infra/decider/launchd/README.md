@@ -1,4 +1,4 @@
-# FIGS LaunchAgents
+# Surface Engine LaunchAgents
 
 > **Per D-051 (TCC-safe pattern):** these files are **templates**. The canonical install location is `~/Library/Application Support/mikai/launchd/` — outside `~/Desktop/` and `~/Documents/` so launchd-spawned bash can `exec` them without TCC blocking. The repo holds the source of truth; the deployed copies are derived.
 
@@ -6,7 +6,7 @@
 
 | File | Purpose |
 |---|---|
-| `com.mikai.figs-decide.plist` | LaunchAgent: runs FIGS decider 3x daily (07:00, 12:00, 18:00 local) |
+| `com.mikai.figs-decide.plist` | LaunchAgent: runs Surface Engine decider 3x daily (07:00, 12:00, 18:00 local) |
 | `com.mikai.figs-brief.plist` | LaunchAgent: writes the Calendar daily brief at 06:30 local |
 | `figs-decide-runner.sh` | Wrapper script the decide LaunchAgent invokes |
 | `figs-brief-runner.sh` | Wrapper script the brief LaunchAgent invokes |
@@ -42,7 +42,7 @@ MIKAI_GMAIL_USER="you@gmail.com"
 MIKAI_GMAIL_APP_PASSWORD="<16-char google app password>"
 ```
 
-The runners source this file at every invocation. **They also `unset ANTHROPIC_API_KEY` before calling `claude -p`** — having that env var set causes `claude` to refuse first-party OAuth and fall back to API billing, which fails for FIGS' headless prompts. The Graphiti-side runners (sync, claude-threads, dream) need `ANTHROPIC_API_KEY` for the DeepSeek/Voyage path, so the unset must be per-runner, not global.
+The runners source this file at every invocation. **They also `unset ANTHROPIC_API_KEY` before calling `claude -p`** — having that env var set causes `claude` to refuse first-party OAuth and fall back to API billing, which fails for Surface Engine' headless prompts. The Graphiti-side runners (sync, claude-threads, dream) need `ANTHROPIC_API_KEY` for the DeepSeek/Voyage path, so the unset must be per-runner, not global.
 
 ## Path-dependency to fix on merge to main
 
@@ -52,7 +52,7 @@ Both runner scripts hardcode:
 REPO="$HOME/.superset/worktrees/MIKAI/pear-seashore"
 ```
 
-When FIGS lands on `main` (i.e., on `~/Desktop/MIKAI`), update both files:
+When Surface Engine lands on `main` (i.e., on `~/Desktop/MIKAI`), update both files:
 
 ```
 REPO="$HOME/Desktop/MIKAI"

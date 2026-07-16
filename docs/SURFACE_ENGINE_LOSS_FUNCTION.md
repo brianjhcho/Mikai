@@ -1,8 +1,8 @@
-# FIGS — Loss Function and Surface-Priority Metric
+# Surface Engine — Loss Function and Surface-Priority Metric
 
-> **What this file is:** The formal definition of how FIGS decides what to surface, how it measures whether its surfacing was useful, and how it improves over time. Grounded in five research papers on intervention timing and proactive AI assistance (see `docs/research/l4-papers.md`).
+> **What this file is:** The formal definition of how Surface Engine decides what to surface, how it measures whether its surfacing was useful, and how it improves over time. Grounded in five research papers on intervention timing and proactive AI assistance (see `docs/research/l4-papers.md`).
 >
-> **Audience:** FIGS implementation code, the Claude prompt in `mikai_decide.py`, and Brian when he wants to understand or tune FIGS' behaviour.
+> **Audience:** Surface Engine implementation code, the Claude prompt in `mikai_decide.py`, and Brian when he wants to understand or tune Surface Engine' behaviour.
 >
 > **Status:** V1 (operational). Numeric calibration deferred — the LLM-as-judge implementation of `delivery_value` and `delivery_cost` is the V1 stand-in for the learned-utility model that the literature implies but cannot be trained until 100+ logged interactions exist.
 
@@ -10,7 +10,7 @@
 
 ## 1. The surface-priority metric
 
-Per candidate (a user need from the registry, or a wiki ## Now thread, or a raw graph thread), FIGS computes:
+Per candidate (a user need from the registry, or a wiki ## Now thread, or a raw graph thread), Surface Engine computes:
 
 ```
 surface_priority = state_weight × tension_pressure × delivery_value × delivery_cost⁻¹
@@ -52,7 +52,7 @@ For user-need-registry entries, `tension_pressure` defaults to `0.7` unless the 
 
 Source: Inner Thoughts (CHI 2025, arXiv:2501.00383) "evaluation stage" — the question is not "is this true?" but "is this worth speaking?" plus the OmniActions (CHI 2024, arXiv:2405.03901) finding that recommendation value tracks with the user's action-readiness.
 
-In V1, **this factor is judged by the LLM** in the prompt because the literature is clear that calibrated `delivery_value` requires a learned model over many interactions, and FIGS doesn't have those yet. The LLM is given explicit guidance:
+In V1, **this factor is judged by the LLM** in the prompt because the literature is clear that calibrated `delivery_value` requires a learned model over many interactions, and Surface Engine doesn't have those yet. The LLM is given explicit guidance:
 
 | Signal | Effect on `delivery_value` |
 |---|---|
@@ -85,22 +85,22 @@ Source: ProMemAssist's intervention timing gate (UIST 2025) and PPP's productivi
 
 ## 2. User-response signals — the four-channel feedback loop
 
-When FIGS dispatches a notification, the user can respond in four distinguishable ways. Mapping borrows from PPP's reward function and Inner Thoughts' "participation" stage.
+When Surface Engine dispatches a notification, the user can respond in four distinguishable ways. Mapping borrows from PPP's reward function and Inner Thoughts' "participation" stage.
 
 | Signal | Captured how | Maps to |
 |---|---|---|
-| `ACTED` | (a) ntfy click → opens MIKAI URL handler that posts back; (b) within 24h Brian opens the linked external surface (e.g., Scotia app) and FIGS sees evidence in the graph; (c) manual `mikai mark-acted <log_id>` CLI | Productivity: +1; Calibration: positive class |
+| `ACTED` | (a) ntfy click → opens MIKAI URL handler that posts back; (b) within 24h Brian opens the linked external surface (e.g., Scotia app) and Surface Engine sees evidence in the graph; (c) manual `mikai mark-acted <log_id>` CLI | Productivity: +1; Calibration: positive class |
 | `DISMISSED` | ntfy swipe-clear OR `mikai mark-dismissed <log_id>` CLI | Productivity: −1; Personalization: increments dismiss count for this candidate-category |
 | `IGNORED` | No response within 24h of dispatch, AND no graph evidence of acting | Productivity: −0.3; Personalization: weak signal — Brian saw it and didn't engage |
 | `SNOOZED` | `mikai snooze <log_id> <days>` CLI; or the LLM detects a dismiss-then-later-acted pattern | Productivity: 0; Personalization: positive long-tail signal |
 
-**V1 instrumentation gap.** ntfy.sh's iOS app does NOT report click/dismiss back to the publisher. Brian sees the notification but FIGS sees no response unless Brian uses the CLI. V1 ships with the CLI; V2 should consider native iOS (APNs) or Pushover with click-tracking webhooks. See `FIGS_SURFACE_DECISION.md`.
+**V1 instrumentation gap.** ntfy.sh's iOS app does NOT report click/dismiss back to the publisher. Brian sees the notification but Surface Engine sees no response unless Brian uses the CLI. V1 ships with the CLI; V2 should consider native iOS (APNs) or Pushover with click-tracking webhooks. See `SURFACE_ENGINE_DECISION.md`.
 
 ---
 
 ## 3. The loss function (per tick)
 
-The LLM doesn't see this directly — it's the framework for evaluating FIGS' decisions over time. Computed daily over the SQLite log:
+The LLM doesn't see this directly — it's the framework for evaluating Surface Engine' decisions over time. Computed daily over the SQLite log:
 
 ```
 L(t) = α·dismiss_rate(t) + β·ignore_rate(t) − γ·act_rate(t) − δ·time_to_act⁻¹(t)
@@ -113,7 +113,7 @@ Where:
 - `time_to_act` = median seconds from dispatch → ACTED for dispatches that were acted on
 - α=1.0, β=0.5, γ=2.0, δ=0.1 (initial weights; tunable)
 
-Lower L is better. Negative L = FIGS is net-helpful.
+Lower L is better. Negative L = Surface Engine is net-helpful.
 
 **Target operating ranges**, per PPP's empirical finding (CMU Nov 2025) that dismiss rate ≤30% after 20 interactions is the threshold below which proactive systems sustain trust:
 
@@ -124,13 +124,13 @@ Lower L is better. Negative L = FIGS is net-helpful.
 | `act_rate` | ≥ 0.30 | ≥ 0.40 |
 | Median `time_to_act` | ≤ 6 hours | ≤ 3 hours |
 
-If after 20 dispatches `dismiss_rate > 0.30`, the operational policy is: lower the FIGS dispatch threshold, NOT increase notification volume. The literature is consistent — surfacing more does not improve action rates, it just trains the user to ignore.
+If after 20 dispatches `dismiss_rate > 0.30`, the operational policy is: lower the Surface Engine dispatch threshold, NOT increase notification volume. The literature is consistent — surfacing more does not improve action rates, it just trains the user to ignore.
 
 ---
 
 ## 4. The four PPP-adapted metrics
 
-PPP (CMU Nov 2025, arXiv:2511.02208) ran a joint-optimization training loop on three signals (productivity, proactivity, personalization). FIGS adapts these for single-user MIKAI plus adds calibration as a fourth quality metric.
+PPP (CMU Nov 2025, arXiv:2511.02208) ran a joint-optimization training loop on three signals (productivity, proactivity, personalization). Surface Engine adapts these for single-user MIKAI plus adds calibration as a fourth quality metric.
 
 ### 4.1 Productivity — "did Brian act on what I surfaced?"
 
@@ -138,7 +138,7 @@ PPP (CMU Nov 2025, arXiv:2511.02208) ran a joint-optimization training loop on t
 productivity = acts_within_24h / total_dispatches
 ```
 
-The most direct measure of whether FIGS is useful at all. A productivity of 0 = FIGS is just noise.
+The most direct measure of whether Surface Engine is useful at all. A productivity of 0 = Surface Engine is just noise.
 
 ### 4.2 Proactivity — "was the surface unsolicited and useful?"
 
@@ -146,7 +146,7 @@ The most direct measure of whether FIGS is useful at all. A productivity of 0 = 
 proactivity = (acts_within_24h on proactive surfaces) / total_proactive_surfaces
 ```
 
-A proactive surface is one fired by FIGS' tick logic (vs. one fired by Brian explicitly asking "what should I deal with today?"). Reactive surfaces are easier to make valuable — they answer a direct question. Proactivity isolates whether FIGS' *unprompted* judgment is good.
+A proactive surface is one fired by Surface Engine' tick logic (vs. one fired by Brian explicitly asking "what should I deal with today?"). Reactive surfaces are easier to make valuable — they answer a direct question. Proactivity isolates whether Surface Engine' *unprompted* judgment is good.
 
 ### 4.3 Personalization — "is dismiss rate trending below the PPP threshold?"
 
@@ -156,17 +156,17 @@ personalization_score = max(0, 1 - dismiss_rate_over_last_20 / 0.30)
 
 Target: 1.0 (zero dismisses) or close. Below 0 (more than 30% dismissed) is the PPP-paper red line.
 
-### 4.4 Calibration — "is FIGS' stated confidence aligned with actual act rate?"
+### 4.4 Calibration — "is Surface Engine' stated confidence aligned with actual act rate?"
 
-For each dispatch, FIGS' decision JSON includes a confidence (implicit in the choice to send + the body language used). We bin dispatches by confidence (low / medium / high) and check whether higher confidence empirically delivers higher act rate.
+For each dispatch, Surface Engine' decision JSON includes a confidence (implicit in the choice to send + the body language used). We bin dispatches by confidence (low / medium / high) and check whether higher confidence empirically delivers higher act rate.
 
 A simple Brier-score-like metric:
 
 ```
-calibration_error = mean over all dispatches of (FIGS_confidence_normalized - actually_acted ? 1 : 0)²
+calibration_error = mean over all dispatches of (surface_engine_confidence_normalized - actually_acted ? 1 : 0)²
 ```
 
-Lower is better. Calibration error = 0 means FIGS' confidence is perfectly aligned with action probability.
+Lower is better. Calibration error = 0 means Surface Engine' confidence is perfectly aligned with action probability.
 
 ---
 
@@ -174,7 +174,7 @@ Lower is better. Calibration error = 0 means FIGS' confidence is perfectly align
 
 Source: PPP's "UserVille" persona-conditioning + Inner Thoughts' continuous reasoning loop.
 
-**V1 implementation:** FIGS does NOT train a model. Instead, the last 15 decisions are read from SQLite and injected into the Claude prompt verbatim. Claude reads them and adjusts its judgment per-candidate-category:
+**V1 implementation:** Surface Engine does NOT train a model. Instead, the last 15 decisions are read from SQLite and injected into the Claude prompt verbatim. Claude reads them and adjusts its judgment per-candidate-category:
 
 ```
 BRIAN'S RECENT NOTIFICATIONS AND HIS RESPONSES (newest first):
@@ -192,9 +192,9 @@ This is the simplest possible learning loop — the LLM reads its own track reco
 
 ## 6. The four-stage decision pipeline (Inner Thoughts mapping)
 
-Inner Thoughts (CHI 2025, arXiv:2501.00383) defines a 5-stage loop. FIGS implements it as:
+Inner Thoughts (CHI 2025, arXiv:2501.00383) defines a 5-stage loop. Surface Engine implements it as:
 
-| Inner Thoughts stage | FIGS implementation |
+| Inner Thoughts stage | Surface Engine implementation |
 |---|---|
 | 1. Trigger | Scheduled tick (cron / `mikai-decide`) OR user-requested via CLI |
 | 2. Retrieval | Read needs registry + wiki + graph recency-lens + adapters (iMessage/Calendar/Gmail) |
@@ -202,7 +202,7 @@ Inner Thoughts (CHI 2025, arXiv:2501.00383) defines a 5-stage loop. FIGS impleme
 | 4. Evaluation (the critical stage) | Claude applies the 4-factor `surface_priority` formula + the recent-decisions log; decides send vs silent |
 | 5. Participation | Dispatch via ntfy.sh (V1) OR via Calendar.app daily brief (V1.5) OR via macOS Notification Center (V2) |
 
-The **Evaluation** stage is where Inner Thoughts says proactive systems usually fail — they generate plausible candidates but don't gate them well. FIGS' V1 gate is the explicit "default to silence for noise; only surface stalled or trigger-aligned candidates" prompt instruction. This is a soft gate; the loss-function metrics measure whether the gate is well-calibrated.
+The **Evaluation** stage is where Inner Thoughts says proactive systems usually fail — they generate plausible candidates but don't gate them well. Surface Engine' V1 gate is the explicit "default to silence for noise; only surface stalled or trigger-aligned candidates" prompt instruction. This is a soft gate; the loss-function metrics measure whether the gate is well-calibrated.
 
 ---
 
@@ -232,11 +232,11 @@ mikai status                        # show last 20 dispatches + their response s
 mikai metrics                       # print productivity, proactivity, personalization, calibration
 ```
 
-When Brian sees a FIGS notification and acts on it, he runs `mikai mark-acted` to close the loop. This is friction; V2 replaces it with native iOS click-tracking (Pushover or APNs) or with a Calendar.app integration where the act of opening the linked event itself signals ACTED.
+When Brian sees a Surface Engine notification and acts on it, he runs `mikai mark-acted` to close the loop. This is friction; V2 replaces it with native iOS click-tracking (Pushover or APNs) or with a Calendar.app integration where the act of opening the linked event itself signals ACTED.
 
 ---
 
-## 9. The V2 path — when does FIGS need real machine learning?
+## 9. The V2 path — when does Surface Engine need real machine learning?
 
 Not until both are true:
 
@@ -247,7 +247,7 @@ At that point, the LLM-as-judge is provably insufficient and a small ranker (XGB
 
 ---
 
-## 10. What this file commits FIGS to
+## 10. What this file commits Surface Engine to
 
 1. Surface candidates only when `surface_priority ≥ 0.5` AND `delivery_value ≥ 0.5` simultaneously
 2. Never repeat a candidate in cooldown (2h default; longer for dismissed candidates)
