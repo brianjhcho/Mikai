@@ -76,6 +76,84 @@ def load_ontology_wiki() -> str:
         return "(ontology wiki not yet generated — run full_corpus_dream.py to seed it)"
     return ONTOLOGY_WIKI_PATH.read_text()
 
+
+# Life-tier config (~/.mikai/life-tier.json). Declares Brian's current top-4
+# themes as an overlay above the 9-dim ontology. See docs/COMPARISON.md — the
+# declarative top-tier is one of MIKAI's differentiators over Hermes/OpenClaw.
+# Missing file = fall back to pure-ontology ranking (no top-4 bias).
+LIFE_TIER_PATH = Path.home() / ".mikai" / "life-tier.json"
+
+
+def load_life_tier() -> str:
+    """Return the life-tier config as a prompt-shaped markdown block.
+    Empty string when the config is missing so build_prompt() can degrade
+    gracefully — the FRAME + wiki still work without top-4 bias."""
+    if not LIFE_TIER_PATH.exists():
+        return "(no life-tier config at ~/.mikai/life-tier.json — falling back to pure-ontology ranking)"
+    try:
+        cfg = json.loads(LIFE_TIER_PATH.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        return f"(life-tier config unreadable: {exc})"
+
+    lines: list[str] = []
+    lines.append(
+        "Brian has declared the following as his TOP-TIER life themes for the "
+        "current period. Every FIGS tick MUST include at least one item from "
+        "each theme when signal is available; when it isn't, name the theme "
+        "and note it as stalled. These outrank the 9-dim ontology's raw "
+        "ordering — dimensions are the classifier, top-tier is the ranker."
+    )
+    lines.append("")
+    lines.append(f"Life-tier config version {cfg.get('version', '?')} "
+                 f"(updated {cfg.get('updated_at', '?')}):")
+    lines.append("")
+    for i, tier in enumerate(cfg.get("top_tier", []), 1):
+        lines.append(f"{i}. **{tier['name']}** (weight {tier.get('weight', 1.0)})")
+        srcs = ", ".join(tier.get("sources", []))
+        if srcs:
+            lines.append(f"   - Sources: {srcs}")
+        also = tier.get("also_pull_from")
+        if also:
+            lines.append(f"   - Also pull from: {', '.join(also)}")
+        filts = tier.get("filter_goals", [])
+        if filts:
+            lines.append(f"   - Include goals matching: {', '.join(repr(f) for f in filts)}")
+        rejs = tier.get("reject_goals", [])
+        if rejs:
+            lines.append(f"   - Reject goals matching: {', '.join(repr(r) for r in rejs)}")
+        why = tier.get("why_now")
+        if why:
+            lines.append(f"   - Why now: {why}")
+        lines.append("")
+
+    resolved = cfg.get("resolved", [])
+    if resolved:
+        lines.append("RESOLVED (do not surface — user has closed these):")
+        for r in resolved:
+            lines.append(f"  - {r}")
+        lines.append("")
+
+    reject = cfg.get("reject_universally", [])
+    if reject:
+        lines.append(
+            "REJECT UNIVERSALLY (never surface as a top-tier item — these are "
+            "MIKAI's own tooling, not the user's life): "
+            + ", ".join(repr(r) for r in reject)
+        )
+        lines.append("")
+
+    guardrails = cfg.get("guardrails", {})
+    if guardrails:
+        lines.append("Guardrails:")
+        for k, v in guardrails.items():
+            if k == "notes":
+                continue
+            lines.append(f"  - {k}: {v}")
+        if guardrails.get("notes"):
+            lines.append(f"  Notes: {guardrails['notes']}")
+
+    return "\n".join(lines)
+
 # ── Config ─────────────────────────────────────────────────────────────
 
 GRAPHITI_URL = os.environ.get("MIKAI_GRAPHITI_URL", "http://localhost:8100")
@@ -657,6 +735,9 @@ You are MIKAI, Brian's notification decider. Your job this tick: surface 2 to 5 
 
 CURRENT TIME: {now} (UTC), {weekday}, hour {hour} UTC
 
+== TOP-TIER — Brian's declared life-tier themes (OUTRANKS ontology ordering) ==
+{life_tier_content}
+
 == FRAME — Brian's life-dimensions ontology (highest level) ==
 Below is Brian's personal ontology: 9 dimensions of his life, each with concrete
 goals and evidence concepts. Use this as the ROUTING SCHEMA when ranking
@@ -871,6 +952,7 @@ def build_prompt(context: dict, recent_decisions: list[dict]) -> str:
         needs_summary=format_needs(context.get("needs_ranked", []), context.get("needs_registry")),
         dimensions_content=load_dimensions(),
         ontology_wiki_content=load_ontology_wiki(),
+        life_tier_content=load_life_tier(),
     )
 
 
