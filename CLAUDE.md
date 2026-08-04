@@ -22,6 +22,7 @@ Always start with `docs/STATUS.md` for the volatile "what's actually on main rig
 |---|---|
 | Current state of main / what's live | `docs/STATUS.md` |
 | Product vision / noonchi / positioning / moat | `docs/VISION.md` |
+| Scope boundaries vs Hermes / OpenClaw / adjacent tools · consumer-product bet | `docs/COMPARISON.md` |
 | Architecture / port-adapter / Graphiti patch / current stack | `docs/ARCHITECTURE.md` |
 | L3 port/adapter design | `docs/ARCHITECTURE.md`, `docs/DECISIONS.md` → ARCH-024, ARCH-025 |
 | Ingestion (filesystem, MCP client, drop folder) | `docs/ARCHITECTURE.md`, `docs/DECISIONS.md` → ARCH-023 |
