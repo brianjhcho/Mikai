@@ -9,9 +9,13 @@ package. It sits alongside as an optional richer retrieval surface
 via BrainStore adapters (see store.py).
 """
 
+import os
 from pathlib import Path
 
-BRAIN_ROOT = Path.home() / ".mikai" / "brain"
+# MIKAI_BRAIN_ROOT lets tests and sandboxes point the whole package at a
+# scratch tree. Must be set before first import — modules bind these paths
+# at import time.
+BRAIN_ROOT = Path(os.environ.get("MIKAI_BRAIN_ROOT", str(Path.home() / ".mikai" / "brain")))
 
 THREADS_DIR = BRAIN_ROOT / "threads"
 DECISIONS_LOG = BRAIN_ROOT / "decisions" / "LOG.md"

@@ -81,6 +81,17 @@ def apply_rules(thread: threads.Thread) -> list[Finding]:
                 kind="stall",
                 reason=f"{thread.state}, no activity in {days}d (threshold {threshold}d)",
             ))
+    elif thread.state == "stalled":
+        # Already-stalled threads must keep appearing — otherwise a thread
+        # falls out of every standup the run after its transition persists.
+        # The cooldown/mute gate, not detection, is what stops nagging.
+        since = _days_since(thread.state_since)
+        out.append(Finding(
+            thread_slug=thread.slug,
+            kind="stall",
+            reason=f"stalled for {since if since is not None else '?'}d"
+                   + (f" — next: {thread.next_step}" if thread.next_step else ""),
+        ))
 
     # 2) Overdue next_step
     if thread.next_step_due:
