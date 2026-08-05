@@ -30,6 +30,7 @@ from pathlib import Path
 from urllib import request as urlreq
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from caldav_client import (  # noqa: E402
     ICloudCalDAV, CalDAVError, _request, _escape_text, _fold,
 )
@@ -49,10 +50,6 @@ TARGET_HREF = (
 DTSTART_TIME = "100000"   # 10:00 local
 DTEND_TIME = "153000"     # 15:30 local
 TZID = "America/Vancouver"
-
-DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
-DEEPSEEK_MODEL = "deepseek-chat"
-
 
 def week_workdays(anchor: date_type | None = None) -> list[date_type]:
     """Return Mon-Fri dates for the current work week. If today is
@@ -252,27 +249,18 @@ Return ONLY valid JSON, no prose before or after:
 """
 
 
-def call_deepseek(prompt: str, timeout: float = 90.0) -> dict:
-    key = os.environ.get("DEEPSEEK_API_KEY", "")
-    if not key:
-        raise RuntimeError("DEEPSEEK_API_KEY not set")
-    payload = json.dumps({
-        "model": DEEPSEEK_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "response_format": {"type": "json_object"},
-        "temperature": 0.3,
-    }).encode()
-    req = urlreq.Request(
-        DEEPSEEK_URL, data=payload, method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {key}",
-        },
-    )
-    with urlreq.urlopen(req, timeout=timeout) as resp:
-        raw = resp.read().decode()
-    content = json.loads(raw)["choices"][0]["message"]["content"]
-    return json.loads(content)
+# tier=interactive: user-facing copy — 5 themed day-plan titles/descriptions
+# land on Brian's calendar. Runs weekly, so volume is trivial for the Max-sub
+# claude -p path; not bulk background extraction.
+def call_llm(prompt: str, timeout: float = 300.0) -> dict:
+    from infra.mikai_llm import chat as _chat
+    raw = _chat(prompt, tier="interactive", json_mode=True, timeout=timeout)
+    t = raw.strip()
+    if t.startswith("```"):
+        t = t.split("\n", 1)[1] if "\n" in t else t
+        if t.rstrip().endswith("```"):
+            t = t.rstrip()[:-3]
+    return json.loads(t.strip())
 
 
 def render_override_vevent(day_date: date_type, title: str,
@@ -347,9 +335,9 @@ def main() -> int:
     prompt = build_prompt(days, workspace_branches, uncommitted_wt, open_q)
 
     # 4. LLM call
-    print("calling DeepSeek (may take 20-40s)…")
+    print("calling interactive-tier LLM (may take 20-60s)…")
     try:
-        plan = call_deepseek(prompt)
+        plan = call_llm(prompt)
     except Exception as e:
         print(f"ERROR: LLM call failed: {e}", file=sys.stderr)
         return 4

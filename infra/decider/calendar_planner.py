@@ -11,7 +11,8 @@ Once per tick:
         - docs/OPEN.md (architectural open questions)
         - ~/.mikai/inflight.md (Brian-curated manual override)
         - FIGS life candidates (needs registry)
-  3. Ask a background LLM (DeepSeek V3) to pick 2-3 items per block
+  3. Ask the interactive-tier LLM (mikai_llm shim → claude -p) to pick
+     2-3 items per block
      and produce a proposed title + description.
   4. Store each proposal in the calendar_proposals table (PROPOSED).
   5. Dispatch an ntfy card with Approve / Reject action URLs pointing at
@@ -46,6 +47,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import mikai_decide as md  # noqa: E402
 from caldav_client import ICloudCalDAV, CalDAVError, Event  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from infra.mikai_llm import chat as llm_chat  # noqa: E402
+
 REPO = Path(__file__).resolve().parents[2]
 INFLIGHT_PATH = Path.home() / ".mikai" / "inflight.md"
 OPEN_MD_PATH = REPO / "docs" / "OPEN.md"
@@ -60,11 +64,6 @@ DEFAULT_TITLE_PATTERNS = "Recommendations,Noonchi,Sumimasen,MIKAI,Focus,Deep wor
 TITLE_PATTERNS = [p.strip().lower() for p in os.environ.get(
     "MIKAI_PLANNER_TITLE_INCLUDE", DEFAULT_TITLE_PATTERNS,
 ).split(",") if p.strip()]
-
-DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
-DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
-DEEPSEEK_MODEL = "deepseek-chat"
-
 
 def _title_matches(title: str) -> bool:
     """True if title matches any configured pattern, or if patterns are
@@ -122,7 +121,7 @@ def gather_needs_registry(cap: int = 2000) -> str:
     return NEEDS_MD_PATH.read_text(errors="replace")[:cap]
 
 
-# ── LLM (DeepSeek V3) ──────────────────────────────────────────────────
+# ── LLM (mikai_llm shim, tier=interactive) ─────────────────────────────
 
 
 def _prompt(current_title: str, current_desc: str, dt_range: str,
@@ -178,26 +177,21 @@ Return ONLY valid JSON. No prose before or after.
 """
 
 
-def call_deepseek(prompt: str, timeout: float = 60.0) -> dict:
-    if not DEEPSEEK_API_KEY:
-        raise RuntimeError("DEEPSEEK_API_KEY not set")
-    payload = json.dumps({
-        "model": DEEPSEEK_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "response_format": {"type": "json_object"},
-        "temperature": 0.3,
-    }).encode()
-    req = urlreq.Request(
-        DEEPSEEK_URL, data=payload, method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-        },
-    )
-    with urlreq.urlopen(req, timeout=timeout) as resp:
-        data = json.loads(resp.read().decode())
-    content = data["choices"][0]["message"]["content"]
-    return json.loads(content)
+# tier=interactive: user-facing copy — the proposal title/description land in
+# Brian's calendar and ntfy card after a tap. Low volume (≤ a few blocks/day),
+# so it fits the Max-sub claude -p path; not bulk background extraction.
+def call_llm(prompt: str, timeout: float = 300.0) -> dict:
+    raw = llm_chat(prompt, tier="interactive", json_mode=True, timeout=timeout)
+    return json.loads(_strip_fences(raw))
+
+
+def _strip_fences(text: str) -> str:
+    t = text.strip()
+    if t.startswith("```"):
+        t = t.split("\n", 1)[1] if "\n" in t else t
+        if t.rstrip().endswith("```"):
+            t = t.rstrip()[:-3]
+    return t.strip()
 
 
 # ── Proposal storage ───────────────────────────────────────────────────
@@ -372,7 +366,7 @@ def run_once(dry_run: bool = False, force: bool = False) -> int:
                          git_ctx, open_q, inflight, needs)
 
         try:
-            resp = call_deepseek(prompt)
+            resp = call_llm(prompt)
         except Exception as e:
             print(f"  ✗ LLM call failed for {event.title!r}: {e}", file=sys.stderr)
             continue

@@ -1107,26 +1107,24 @@ def format_decisions(decisions: list[dict]) -> str:
 
 # ── Claude invocation ──────────────────────────────────────────────────
 
+# tier=interactive: the decide tick drafts user-facing notification copy —
+# best-model territory. Already claude -p before the shim existed; routing
+# through mikai_llm centralizes provider policy (and the shim strips
+# ANTHROPIC_API_KEY from the subprocess env, which the launchd runner
+# previously had to do by hand).
 def invoke_claude(prompt: str) -> str | None:
-    """Invoke Claude via the `claude` CLI in headless mode (Max-legitimate)."""
     try:
-        result = subprocess.run(
-            ["claude", "-p", prompt, "--output-format", "text"],
-            capture_output=True,
-            text=True,
-            timeout=CLAUDE_TIMEOUT_S,
-        )
-        if result.returncode != 0:
-            print(f"ERROR: `claude` CLI returned {result.returncode}", file=sys.stderr)
-            if result.stderr:
-                print(f"  stderr: {result.stderr.strip()[:500]}", file=sys.stderr)
-            return None
-        return result.stdout.strip()
-    except FileNotFoundError:
-        print("ERROR: `claude` CLI not found. Install Claude Code first.", file=sys.stderr)
-        return None
+        from infra.mikai_llm import chat as _chat
+    except ImportError:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+        from infra.mikai_llm import chat as _chat
+    try:
+        return _chat(prompt, tier="interactive", timeout=CLAUDE_TIMEOUT_S)
     except subprocess.TimeoutExpired:
-        print(f"ERROR: `claude` CLI timed out after {CLAUDE_TIMEOUT_S}s", file=sys.stderr)
+        print(f"ERROR: LLM call timed out after {CLAUDE_TIMEOUT_S}s", file=sys.stderr)
+        return None
+    except Exception as e:
+        print(f"ERROR: LLM call failed: {e}", file=sys.stderr)
         return None
 
 
