@@ -74,7 +74,13 @@ def apply_rules(thread: threads.Thread) -> list[Finding]:
     # 1) Stall detection
     threshold = _stall_threshold_for(thread.state)
     if threshold is not None:
-        days = _days_since(thread.last_activity) or _days_since(thread.state_since) or 0
+        # `or`-chaining would treat 0 (activity today) as falsy and fall
+        # back to state_since, stalling a thread touched today.
+        days = _days_since(thread.last_activity)
+        if days is None:
+            days = _days_since(thread.state_since)
+        if days is None:
+            days = 0
         if days >= threshold:
             out.append(Finding(
                 thread_slug=thread.slug,
