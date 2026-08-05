@@ -161,6 +161,26 @@ If beta users come for memory and stay for memory, the noonchi thesis needs re-e
 
 ---
 
+### [O-048] Claude.ai web/desktop thread ingestion — `claude-thread=0` gap
+**Surfaced:** 2026-06-26 during Surface Engine V0 build session. Surface Engine's fresh-lens query against MIKAI (`MATCH ()-[r:RELATES_TO]->() WHERE r.created_at > datetime() - duration({hours: 24}) ORDER BY r.created_at DESC`) revealed that the entire `claude-thread` source is empty in MIKAI — 0 episodes. MIKAI contains 1,642 `claude-code` episodes (from this terminal) but no Claude.ai web/desktop conversations. Apple Notes ingestion is alive (62 episodes); claude-thread is dead.
+
+This means Surface Engine cannot reason about anything Brian discussed on Claude.ai/Desktop — e.g., live proposal-spot research surfaced only as a meta-reference from a separate Claude Code conversation ("Brian has been researching proposal spots using Claude"), never as the actual content. Surface Engine correctly stayed silent because the signal that would have warranted a notification wasn't in its context.
+
+**In flight on a separate branch (Brian, 2026-06-26):** daily Claude.ai web/desktop thread ingestion into MIKAI via cookie-decrypt + internal API; 7-day capture window. Will close the gap once landed.
+
+**Resolution path:** merge the MIKAI ingestion branch; verify `claude-thread` source count grows on the next sync cycle; re-run Surface Engine's fresh-lens to confirm Claude.ai conversation content reaches the prompt. Related: D-053 (Surface Engine signal pipeline), STATUS.md "Active investigations".
+
+---
+
+### [O-049] Dual-memory consolidation problem — undefined consumer / "importance"
+**Surfaced:** 2026-06-25 in a strategy session, captured in memory entry. The architecture envisioned for MIKAI is: a 7-day raw-capture buffer (everything ingested at full fidelity) → a consolidation step that decides what's "important" enough to promote → a long-term store that is both a graph (current Graphiti) AND a Karpathy-style markdown wiki memory. The central design gap is the consumer of "importance" — who/what decides which raw episodes get promoted vs. forgotten, and what makes a memory wiki-page-worthy vs. graph-edge-worthy.
+
+The Surface Engine V0 design (D-053) implicitly answers part of this: L4 reasoning (the LLM) decides what's worth surfacing *now*, on every tick, with no explicit "important enough to remember forever" step. That suggests a possible answer: drop the explicit consolidation step and let L4 read raw capture each tick. But that doesn't explain the wiki side — wiki pages would be user-readable durable summaries, which is a different artifact than a notification decision or a graph edge.
+
+**Resolution path:** prototype both shapes (raw-only retrieval vs. consolidated-tier retrieval) against the same eval set; see which produces better notification decisions over 2–4 weeks. If consolidation isn't needed for proactive surfacing, the wiki becomes a separate question (Brian-facing artifact, not an LLM input).
+
+---
+
 ## Resolved
 
 - **[O-001]** Which surface first? — **Resolved 2026-03-14** via D-019. V1: WhatsApp bot. Final destination: Siri integration.

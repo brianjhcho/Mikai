@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MIKAI vs Dreaming — Architecture Comparison</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --card: #161b22;
+    --card-elevated: #1c2128;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --text-strong: #f0f6fc;
+    --muted: #8b949e;
+    --mono: ui-monospace, 'SF Mono', Monaco, 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', sans-serif;
+
+    --accent-source: #f0883e;        /* sources */
+    --accent-storage: #58a6ff;       /* storage / substrate */
+    --accent-runtime: #56d364;       /* runtime / processes */
+    --accent-skill: #bc8cff;         /* skills / agents */
+    --accent-surface: #ff7b72;       /* user-facing surfaces */
+    --accent-overlap: #d29922;       /* overlap zones */
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .container {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 64px 32px;
+  }
+
+  header {
+    margin-bottom: 64px;
+    padding-bottom: 32px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  h1 {
+    font-size: 2.4rem;
+    font-weight: 700;
+    color: var(--text-strong);
+    margin: 0 0 12px 0;
+    letter-spacing: -0.02em;
+  }
+
+  .subtitle {
+    color: var(--muted);
+    font-size: 1.05rem;
+    margin: 0;
+  }
+
+  .meta {
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 0.85rem;
+    margin-top: 12px;
+  }
+
+  .meta a {
+    color: var(--accent-storage);
+    text-decoration: none;
+  }
+  .meta a:hover { text-decoration: underline; }
+
+  section {
+    margin-bottom: 72px;
+  }
+
+  h2 {
+    font-size: 1.6rem;
+    font-weight: 600;
+    color: var(--text-strong);
+    margin: 0 0 8px 0;
+    letter-spacing: -0.01em;
+  }
+
+  .section-tag {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 3px 10px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    margin-bottom: 16px;
+  }
+
+  .section-tag.dreaming { color: var(--accent-source); border-color: var(--accent-source); }
+  .section-tag.mikai { color: var(--accent-skill); border-color: var(--accent-skill); }
+  .section-tag.overlap { color: var(--accent-overlap); border-color: var(--accent-overlap); }
+
+  .section-intro {
+    color: var(--text);
+    margin: 0 0 32px 0;
+    max-width: 980px;
+    font-size: 1rem;
+  }
+
+  .diagram-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 32px;
+    overflow-x: auto;
+  }
+
+  .diagram-card svg {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    margin: 0 auto;
+  }
+
+  /* SVG-internal text styling for portability */
+  svg text { font-family: var(--mono); }
+  svg .box-label { font-size: 13px; font-weight: 600; fill: #f0f6fc; }
+  svg .box-sublabel { font-size: 10px; fill: #c9d1d9; }
+  svg .arrow-label { font-size: 10px; fill: #8b949e; font-style: italic; font-family: var(--sans); }
+  svg .group-title { font-size: 14px; font-weight: 700; fill: #c9d1d9; font-family: var(--sans); }
+  svg .group-sub { font-size: 10px; fill: #8b949e; font-family: var(--sans); }
+
+  .legend {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+    margin-top: 24px;
+    padding: 20px;
+    background: var(--card-elevated);
+    border-radius: 8px;
+    border: 1px solid var(--border);
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 0.85rem;
+  }
+
+  .legend-swatch {
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    flex-shrink: 0;
+  }
+
+  .legend-label {
+    font-family: var(--mono);
+    color: var(--text);
+  }
+
+  .legend-desc {
+    color: var(--muted);
+    font-size: 0.78rem;
+    margin-left: 24px;
+  }
+
+  .key-takeaways {
+    margin-top: 32px;
+    padding: 20px 24px;
+    background: var(--card-elevated);
+    border-left: 3px solid var(--accent-storage);
+    border-radius: 4px;
+  }
+
+  .key-takeaways h3 {
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    margin: 0 0 12px 0;
+    font-weight: 600;
+  }
+
+  .key-takeaways ul {
+    margin: 0;
+    padding-left: 20px;
+  }
+
+  .key-takeaways li {
+    margin-bottom: 8px;
+    color: var(--text);
+  }
+
+  .key-takeaways li code {
+    background: rgba(110, 118, 129, 0.2);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-family: var(--mono);
+    font-size: 0.85em;
+    color: var(--text-strong);
+  }
+
+  footer {
+    margin-top: 96px;
+    padding-top: 32px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 0.85rem;
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 16px;
+  }
+
+  footer a {
+    color: var(--accent-storage);
+    text-decoration: none;
+  }
+  footer a:hover { text-decoration: underline; }
+
+  @media (max-width: 768px) {
+    .container { padding: 32px 16px; }
+    h1 { font-size: 1.6rem; }
+    .diagram-card { padding: 16px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <h1>MIKAI vs Anthropic Dreaming — Architecture Comparison</h1>
+    <p class="subtitle">Same mechanism, different scope. Cross-source user-knowledge-consolidation vs Claude agent self-improvement.</p>
+    <p class="meta">2026-06-22 · companion to <a href="COMPARISON_MIKAI_vs_DREAMING.md">COMPARISON_MIKAI_vs_DREAMING.md</a></p>
+  </header>
+
+  <!-- ========================================================== -->
+  <!-- SECTION 1: ANTHROPIC DREAMING                                -->
+  <!-- ========================================================== -->
+  <section>
+    <span class="section-tag dreaming">Architecture A</span>
+    <h2>Anthropic Dreaming</h2>
+    <p class="section-intro">
+      Launched 2026-05-06 as a research preview. Asynchronous job that reviews up to 100 past agent session transcripts plus
+      an existing memory store, and produces a curated new memory store consisting of plain-text notes and structured
+      playbooks. Target: agent self-improvement inside Anthropic's runtime. Models: claude-opus-4-7, claude-sonnet-4-6.
+    </p>
+
+    <div class="diagram-card">
+      <svg viewBox="0 0 1200 580" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Anthropic Dreaming architecture">
+        <defs>
+          <marker id="arr-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#f0883e"/>
+          </marker>
+          <marker id="arr-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#56d364"/>
+          </marker>
+          <marker id="arr-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#58a6ff"/>
+          </marker>
+        </defs>
+
+        <!-- Group: Past sessions -->
+        <text x="120" y="38" class="group-title">Inputs (Anthropic runtime)</text>
+        <text x="120" y="56" class="group-sub">Past agent session transcripts, up to 100</text>
+
+        <rect x="40" y="90" width="200" height="60" rx="6" fill="#1c2128" stroke="#f0883e" stroke-width="1.5"/>
+        <text x="140" y="118" text-anchor="middle" class="box-label">Agent session #1</text>
+        <text x="140" y="134" text-anchor="middle" class="box-sublabel">tool calls + reasoning</text>
+
+        <rect x="40" y="170" width="200" height="60" rx="6" fill="#1c2128" stroke="#f0883e" stroke-width="1.5"/>
+        <text x="140" y="198" text-anchor="middle" class="box-label">Agent session #2</text>
+        <text x="140" y="214" text-anchor="middle" class="box-sublabel">tool calls + reasoning</text>
+
+        <rect x="40" y="250" width="200" height="60" rx="6" fill="#1c2128" stroke="#f0883e" stroke-width="1.5"/>
+        <text x="140" y="270" text-anchor="middle" class="box-label">. . .</text>
+        <text x="140" y="288" text-anchor="middle" class="box-sublabel">up to 100 transcripts</text>
+
+        <rect x="40" y="330" width="200" height="60" rx="6" fill="#1c2128" stroke="#f0883e" stroke-width="1.5"/>
+        <text x="140" y="358" text-anchor="middle" class="box-label">Agent session #N</text>
+        <text x="140" y="374" text-anchor="middle" class="box-sublabel">tool calls + reasoning</text>
+
+        <!-- Existing memory store input -->
+        <rect x="40" y="430" width="200" height="60" rx="6" fill="#1c2128" stroke="#58a6ff" stroke-width="1.5"/>
+        <text x="140" y="458" text-anchor="middle" class="box-label">Existing memory store</text>
+        <text x="140" y="474" text-anchor="middle" class="box-sublabel">notes + playbooks (prior)</text>
+
+        <!-- Arrows from inputs to dreaming -->
+        <path d="M 240 120 C 320 120 380 270 460 270" fill="none" stroke="#f0883e" stroke-width="1.5" marker-end="url(#arr-orange)"/>
+        <path d="M 240 200 C 320 200 380 275 460 280" fill="none" stroke="#f0883e" stroke-width="1.5" marker-end="url(#arr-orange)"/>
+        <path d="M 240 280 L 460 290" fill="none" stroke="#f0883e" stroke-width="1.5" marker-end="url(#arr-orange)"/>
+        <path d="M 240 360 C 320 360 380 305 460 300" fill="none" stroke="#f0883e" stroke-width="1.5" marker-end="url(#arr-orange)"/>
+        <path d="M 240 460 C 320 460 380 320 460 310" fill="none" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr-blue)"/>
+
+        <!-- Dreaming process box -->
+        <text x="600" y="120" class="group-title" text-anchor="middle">Dreaming process</text>
+        <text x="600" y="138" class="group-sub" text-anchor="middle">asynchronous, 3 phases, scheduled</text>
+
+        <rect x="460" y="155" width="280" height="190" rx="10" fill="#1c2128" stroke="#56d364" stroke-width="2"/>
+
+        <rect x="480" y="175" width="240" height="40" rx="4" fill="#0d1117" stroke="#56d364" stroke-width="1"/>
+        <text x="600" y="200" text-anchor="middle" class="box-label">Phase 1: review</text>
+
+        <rect x="480" y="225" width="240" height="40" rx="4" fill="#0d1117" stroke="#56d364" stroke-width="1"/>
+        <text x="600" y="250" text-anchor="middle" class="box-label">Phase 2: extract patterns</text>
+
+        <rect x="480" y="275" width="240" height="40" rx="4" fill="#0d1117" stroke="#56d364" stroke-width="1"/>
+        <text x="600" y="300" text-anchor="middle" class="box-label">Phase 3: write curated store</text>
+
+        <text x="600" y="335" text-anchor="middle" class="box-sublabel">claude-opus-4-7 / sonnet-4-6</text>
+
+        <!-- Arrow to output -->
+        <path d="M 740 250 L 880 250" fill="none" stroke="#58a6ff" stroke-width="2" marker-end="url(#arr-blue)"/>
+        <text x="810" y="240" text-anchor="middle" class="arrow-label">produces</text>
+
+        <!-- Output: new memory store -->
+        <text x="1020" y="120" text-anchor="middle" class="group-title">Output</text>
+        <text x="1020" y="138" text-anchor="middle" class="group-sub">curated, opaque to user</text>
+
+        <rect x="880" y="160" width="280" height="60" rx="6" fill="#1c2128" stroke="#58a6ff" stroke-width="1.5"/>
+        <text x="1020" y="188" text-anchor="middle" class="box-label">Plain-text notes</text>
+        <text x="1020" y="204" text-anchor="middle" class="box-sublabel">curated memory store</text>
+
+        <rect x="880" y="240" width="280" height="60" rx="6" fill="#1c2128" stroke="#58a6ff" stroke-width="1.5"/>
+        <text x="1020" y="268" text-anchor="middle" class="box-label">Structured playbooks</text>
+        <text x="1020" y="284" text-anchor="middle" class="box-sublabel">for future agent sessions</text>
+
+        <!-- Future sessions consume -->
+        <path d="M 1020 300 C 1020 380 750 410 700 460" fill="none" stroke="#bc8cff" stroke-width="1.5" marker-end="url(#arr-orange)" stroke-dasharray="4,3"/>
+        <text x="900" y="395" class="arrow-label">consumed by</text>
+
+        <rect x="540" y="450" width="320" height="60" rx="6" fill="#1c2128" stroke="#bc8cff" stroke-width="1.5"/>
+        <text x="700" y="478" text-anchor="middle" class="box-label">Future agent sessions</text>
+        <text x="700" y="494" text-anchor="middle" class="box-sublabel">improved behavior, same agent class</text>
+      </svg>
+    </div>
+
+    <div class="legend">
+      <div>
+        <div class="legend-item"><span class="legend-swatch" style="background:#f0883e"></span><span class="legend-label">Source / input</span></div>
+        <div class="legend-desc">Agent session transcripts</div>
+      </div>
+      <div>
+        <div class="legend-item"><span class="legend-swatch" style="background:#56d364"></span><span class="legend-label">Runtime / process</span></div>
+        <div class="legend-desc">Dreaming async job</div>
+      </div>
+      <div>
+        <div class="legend-item"><span class="legend-swatch" style="background:#58a6ff"></span><span class="legend-label">Storage / artifact</span></div>
+        <div class="legend-desc">Notes + playbooks</div>
+      </div>
+      <div>
+        <div class="legend-item"><span class="legend-swatch" style="background:#bc8cff"></span><span class="legend-label">Downstream consumer</span></div>
+        <div class="legend-desc">Future Claude agents</div>
+      </div>
+    </div>
+
+    <div class="key-takeaways">
+      <h3>Key properties</h3>
+      <ul>
+        <li>Input scope: <code>Anthropic-runtime sessions only</code> — no cross-source ingestion</li>
+        <li>Output ownership: <code>opaque memory store</code> inside Anthropic's runtime</li>
+        <li>Consumer: <code>Future agent sessions</code> of the same agent class</li>
+        <li>Access: <code>research preview</code>, API-only, requires form request</li>
+        <li>Optimization target: <code>agent task performance</code> over time</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ========================================================== -->
+  <!-- SECTION 2: MIKAI                                             -->
+  <!-- ========================================================== -->
+  <section>
+    <span class="section-tag mikai">Architecture B</span>
+    <h2>MIKAI — Personal Context Engine</h2>
+    <p class="section-intro">
+      Cross-source ingestion into a Graphiti L3 substrate (12,849 entities, 18,510 edges, 3,455 episodes as of 2026-06-15).
+      Three scheduled Claude Code skills consolidate evidence into user-owned markdown identity files. Downstream
+      projects (Village mentor, weekend planner, taste-furniture, etc.) compose identity files with per-use-case retrieval
+      recipes for any LLM or agent the user points at them.
+    </p>
+
+    <div class="diagram-card">
+      <svg viewBox="0 0 1200 900" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="MIKAI architecture">
+        <defs>
+          <marker id="arr-mikai-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#f0883e"/>
+          </marker>
+          <marker id="arr-mikai-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#58a6ff"/>
+          </marker>
+          <marker id="arr-mikai-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#bc8cff"/>
+          </marker>
+          <marker id="arr-mikai-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#ff7b72"/>
+          </marker>
+        </defs>
+
+        <!-- Layer 1: Sources -->
+        <text x="600" y="30" text-anchor="middle" class="group-title">Layer 1 — Cross-source ingestion</text>
+        <text x="600" y="48" text-anchor="middle" class="group-sub">user's heterogeneous content surfaces</text>
+
+        <rect x="60" y="70" width="160" height="50" rx="6" fill="#1c2128" stroke="#f0883e" stroke-width="1.5"/>
+        <text x="140" y="92" text-anchor="middle" class="box-label">Apple Notes</text>
+        <text x="140" y="108" text-anchor="middle" class="box-sublabel">osascript dump</text>
+
+        <rect x="240" y="70" width="160" height="50" rx="6" fill="#1c2128" stroke="#f0883e" stroke-width="1.5"/>
+        <text x="320" y="92" text-anchor="middle" class="box-label">Claude.ai</text>
+        <text x="320" y="108" text-anchor="middle" class="box-sublabel">live connector</text>
+
+        <rect x="420" y="70" width="160" height="50" rx="6" fill="#1c2128" stroke="#f0883e" stroke-width="1.5"/>
+        <text x="500" y="92" text-anchor="middle" class="box-label">Perplexity</text>
+        <text x="500" y="108" text-anchor="middle" class="box-sublabel">browser-driven</text>
+
+        <rect x="600" y="70" width="160" height="50" rx="6" fill="#1c2128" stroke="#f0883e" stroke-width="1.5"/>
+        <text x="680" y="92" text-anchor="middle" class="box-label">Gmail</text>
+        <text x="680" y="108" text-anchor="middle" class="box-sublabel">OAuth</text>
+
+        <rect x="780" y="70" width="160" height="50" rx="6" fill="#1c2128" stroke="#f0883e" stroke-width="1.5"/>
+        <text x="860" y="92" text-anchor="middle" class="box-label">iMessage / WA</text>
+        <text x="860" y="108" text-anchor="middle" class="box-sublabel">computer-use bridge</text>
+
+        <rect x="960" y="70" width="180" height="50" rx="6" fill="#1c2128" stroke="#f0883e" stroke-width="1.5" stroke-dasharray="4,3"/>
+        <text x="1050" y="92" text-anchor="middle" class="box-label">future sources</text>
+        <text x="1050" y="108" text-anchor="middle" class="box-sublabel">Spotify, Letterboxd</text>
+
+        <!-- Arrows down -->
+        <path d="M 140 120 L 300 200" fill="none" stroke="#f0883e" stroke-width="1.2" marker-end="url(#arr-mikai-orange)"/>
+        <path d="M 320 120 L 400 200" fill="none" stroke="#f0883e" stroke-width="1.2" marker-end="url(#arr-mikai-orange)"/>
+        <path d="M 500 120 L 530 200" fill="none" stroke="#f0883e" stroke-width="1.2" marker-end="url(#arr-mikai-orange)"/>
+        <path d="M 680 120 L 660 200" fill="none" stroke="#f0883e" stroke-width="1.2" marker-end="url(#arr-mikai-orange)"/>
+        <path d="M 860 120 L 760 200" fill="none" stroke="#f0883e" stroke-width="1.2" marker-end="url(#arr-mikai-orange)"/>
+        <path d="M 1050 120 L 900 200" fill="none" stroke="#f0883e" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#arr-mikai-orange)"/>
+
+        <!-- Layer 2: L3 substrate -->
+        <text x="600" y="180" text-anchor="middle" class="group-title">Layer 2 — L3 substrate (already built)</text>
+
+        <rect x="200" y="200" width="800" height="100" rx="10" fill="#1c2128" stroke="#58a6ff" stroke-width="2"/>
+        <text x="600" y="225" text-anchor="middle" class="box-label">Graphiti + Neo4j + DeepSeek V3 + Voyage AI sidecar</text>
+        <text x="600" y="245" text-anchor="middle" class="box-sublabel">FastAPI at localhost:8100</text>
+        <text x="600" y="263" text-anchor="middle" class="box-sublabel">12,849 entities · 18,510 edges · 3,455 episodes</text>
+        <text x="600" y="281" text-anchor="middle" class="box-sublabel">bitemporal edges · entity resolution · episode preservation</text>
+
+        <!-- Arrow down to skills -->
+        <path d="M 600 300 L 600 350" fill="none" stroke="#58a6ff" stroke-width="2" marker-end="url(#arr-mikai-blue)"/>
+        <text x="620" y="328" class="arrow-label">read via MCP + /search + /get_source</text>
+
+        <!-- Layer 3: Three skills -->
+        <text x="600" y="370" text-anchor="middle" class="group-title">Layer 3 — Three Claude Code Skills</text>
+        <text x="600" y="388" text-anchor="middle" class="group-sub">Max-legitimate runtime · Routines-scheduled · operationalized briefs</text>
+
+        <rect x="80" y="410" width="320" height="120" rx="8" fill="#1c2128" stroke="#bc8cff" stroke-width="2"/>
+        <text x="240" y="438" text-anchor="middle" class="box-label">mikai-curator</text>
+        <text x="240" y="458" text-anchor="middle" class="box-sublabel">Daily (cron)</text>
+        <text x="240" y="476" text-anchor="middle" class="box-sublabel">NOOP / APPEND / SUPERSEDE</text>
+        <text x="240" y="492" text-anchor="middle" class="box-sublabel">TENSION / DEFER / SKIP_PINNED</text>
+        <text x="240" y="510" text-anchor="middle" class="box-sublabel">cites episode UUIDs</text>
+
+        <rect x="440" y="410" width="320" height="120" rx="8" fill="#1c2128" stroke="#bc8cff" stroke-width="2"/>
+        <text x="600" y="438" text-anchor="middle" class="box-label">mikai-thread-linker</text>
+        <text x="600" y="458" text-anchor="middle" class="box-sublabel">Auto-load per session</text>
+        <text x="600" y="476" text-anchor="middle" class="box-sublabel">"current work belongs to existing</text>
+        <text x="600" y="492" text-anchor="middle" class="box-sublabel">problem-thread X"</text>
+        <text x="600" y="510" text-anchor="middle" class="box-sublabel">surfaces consolidated project file</text>
+
+        <rect x="800" y="410" width="320" height="120" rx="8" fill="#1c2128" stroke="#bc8cff" stroke-width="2"/>
+        <text x="960" y="438" text-anchor="middle" class="box-label">deep-analyze</text>
+        <text x="960" y="458" text-anchor="middle" class="box-sublabel">Triggered on complexity signal</text>
+        <text x="960" y="476" text-anchor="middle" class="box-sublabel">disambiguate → formalize</text>
+        <text x="960" y="492" text-anchor="middle" class="box-sublabel">→ find gaps → synthesize</text>
+        <text x="960" y="510" text-anchor="middle" class="box-sublabel">feeds curator high-value reasoning</text>
+
+        <!-- Arrows down to identity layer -->
+        <path d="M 240 530 L 360 620" fill="none" stroke="#bc8cff" stroke-width="1.5" marker-end="url(#arr-mikai-purple)"/>
+        <path d="M 600 530 L 600 620" fill="none" stroke="#bc8cff" stroke-width="1.5" marker-end="url(#arr-mikai-purple)"/>
+        <path d="M 960 530 L 840 620" fill="none" stroke="#bc8cff" stroke-width="1.5" marker-end="url(#arr-mikai-purple)"/>
+
+        <!-- Layer 4: Identity layer files -->
+        <text x="600" y="600" text-anchor="middle" class="group-title">Layer 4 — Identity layer (~/mikai/identity/)</text>
+        <text x="600" y="618" text-anchor="middle" class="group-sub">user-owned markdown · pinned-section protection · history audit</text>
+
+        <rect x="80" y="640" width="180" height="60" rx="6" fill="#1c2128" stroke="#ff7b72" stroke-width="1.5"/>
+        <text x="170" y="668" text-anchor="middle" class="box-label">core/</text>
+        <text x="170" y="684" text-anchor="middle" class="box-sublabel">values goals perspectives voice</text>
+
+        <rect x="280" y="640" width="180" height="60" rx="6" fill="#1c2128" stroke="#ff7b72" stroke-width="1.5"/>
+        <text x="370" y="668" text-anchor="middle" class="box-label">taste/</text>
+        <text x="370" y="684" text-anchor="middle" class="box-sublabel">film food music furniture reading</text>
+
+        <rect x="480" y="640" width="180" height="60" rx="6" fill="#1c2128" stroke="#ff7b72" stroke-width="1.5"/>
+        <text x="570" y="668" text-anchor="middle" class="box-label">mentors/</text>
+        <text x="570" y="684" text-anchor="middle" class="box-sublabel">Village briefs</text>
+
+        <rect x="680" y="640" width="180" height="60" rx="6" fill="#1c2128" stroke="#ff7b72" stroke-width="1.5"/>
+        <text x="770" y="668" text-anchor="middle" class="box-label">concerns/</text>
+        <text x="770" y="684" text-anchor="middle" class="box-sublabel">active contradictions deferred</text>
+
+        <rect x="880" y="640" width="180" height="60" rx="6" fill="#1c2128" stroke="#ff7b72" stroke-width="1.5"/>
+        <text x="970" y="668" text-anchor="middle" class="box-label">projects/</text>
+        <text x="970" y="684" text-anchor="middle" class="box-sublabel">retrieval recipes</text>
+
+        <!-- Arrow down to downstream consumers -->
+        <path d="M 600 700 L 600 760" fill="none" stroke="#ff7b72" stroke-width="2" marker-end="url(#arr-mikai-red)"/>
+        <text x="620" y="735" class="arrow-label">read by</text>
+
+        <!-- Layer 5: Downstream consumers -->
+        <text x="600" y="780" text-anchor="middle" class="group-title">Layer 5 — Downstream consumers (platform-agnostic)</text>
+
+        <rect x="80" y="800" width="200" height="50" rx="6" fill="#1c2128" stroke="#bc8cff" stroke-width="1.5"/>
+        <text x="180" y="822" text-anchor="middle" class="box-label">Village mentor</text>
+        <text x="180" y="838" text-anchor="middle" class="box-sublabel">Maya Angelou, etc</text>
+
+        <rect x="300" y="800" width="200" height="50" rx="6" fill="#1c2128" stroke="#bc8cff" stroke-width="1.5"/>
+        <text x="400" y="822" text-anchor="middle" class="box-label">Weekend planner</text>
+        <text x="400" y="838" text-anchor="middle" class="box-sublabel">taste + calendar + budget</text>
+
+        <rect x="520" y="800" width="200" height="50" rx="6" fill="#1c2128" stroke="#bc8cff" stroke-width="1.5"/>
+        <text x="620" y="822" text-anchor="middle" class="box-label">Taste-furniture</text>
+        <text x="620" y="838" text-anchor="middle" class="box-sublabel">aesthetic retrieval</text>
+
+        <rect x="740" y="800" width="200" height="50" rx="6" fill="#1c2128" stroke="#bc8cff" stroke-width="1.5"/>
+        <text x="840" y="822" text-anchor="middle" class="box-label">Problem-state surface</text>
+        <text x="840" y="838" text-anchor="middle" class="box-sublabel">noonchi destination product</text>
+
+        <rect x="960" y="800" width="180" height="50" rx="6" fill="#1c2128" stroke="#bc8cff" stroke-width="1.5" stroke-dasharray="4,3"/>
+        <text x="1050" y="822" text-anchor="middle" class="box-label">user-authored</text>
+        <text x="1050" y="838" text-anchor="middle" class="box-sublabel">future projects</text>
+      </svg>
+    </div>
+
+    <div class="legend">
+      <div>
+        <div class="legend-item"><span class="legend-swatch" style="background:#f0883e"></span><span class="legend-label">Source</span></div>
+        <div class="legend-desc">Cross-source ingestion</div>
+      </div>
+      <div>
+        <div class="legend-item"><span class="legend-swatch" style="background:#58a6ff"></span><span class="legend-label">L3 substrate</span></div>
+        <div class="legend-desc">Graphiti + Neo4j</div>
+      </div>
+      <div>
+        <div class="legend-item"><span class="legend-swatch" style="background:#bc8cff"></span><span class="legend-label">Skill / consumer</span></div>
+        <div class="legend-desc">Claude Code skills, downstream projects</div>
+      </div>
+      <div>
+        <div class="legend-item"><span class="legend-swatch" style="background:#ff7b72"></span><span class="legend-label">User-facing artifact</span></div>
+        <div class="legend-desc">Identity files (markdown)</div>
+      </div>
+    </div>
+
+    <div class="key-takeaways">
+      <h3>Key properties</h3>
+      <ul>
+        <li>Input scope: <code>cross-source</code> — Apple Notes, Claude, Perplexity, Gmail, iMessage (computer-use)</li>
+        <li>Output ownership: <code>user-owned markdown files</code> on user's filesystem</li>
+        <li>Consumer: <code>any downstream agent or project</code> that can read markdown</li>
+        <li>Access: <code>open</code> — runs on Max plan + Claude Code, no special access</li>
+        <li>Optimization target: <code>user reasoning continuity</code> across surfaces</li>
+        <li>Wedge: <code>cross-source + file-based + recipe library + mentor authoring</code></li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ========================================================== -->
+  <!-- SECTION 3: OVERLAP                                           -->
+  <!-- ========================================================== -->
+  <section>
+    <span class="section-tag overlap">Architecture C</span>
+    <h2>Overlap Zone — where the two architectures share mechanism</h2>
+    <p class="section-intro">
+      Brian's strategic claim: user-knowledge-consolidation and agent-self-improvement are the same problem. The
+      diagram below isolates exactly where that's true (shared mechanism, shared output format, shared HITL pattern)
+      and exactly where it's not (scope of input, ownership of output, target consumer). The overlap is real and load-bearing
+      — that's why Dreaming's release is a platform-risk signal MIKAI must respond to.
+    </p>
+
+    <div class="diagram-card">
+      <svg viewBox="0 0 1200 760" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Overlap zone between Dreaming and MIKAI">
+        <defs>
+          <marker id="arr-overlap-yellow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#d29922"/>
+          </marker>
+        </defs>
+
+        <!-- Headers -->
+        <text x="200" y="40" text-anchor="middle" class="group-title">Dreaming (Anthropic)</text>
+        <text x="200" y="58" text-anchor="middle" class="group-sub">agent self-improvement scope</text>
+
+        <text x="600" y="40" text-anchor="middle" class="group-title" fill="#d29922">SHARED MECHANISM</text>
+        <text x="600" y="58" text-anchor="middle" class="group-sub">scheduled async LLM-as-curator</text>
+
+        <text x="1000" y="40" text-anchor="middle" class="group-title">MIKAI</text>
+        <text x="1000" y="58" text-anchor="middle" class="group-sub">user-knowledge-consolidation scope</text>
+
+        <!-- Dividing column backgrounds -->
+        <rect x="40" y="80" width="320" height="600" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+        <rect x="440" y="80" width="320" height="600" rx="8" fill="#1c2128" stroke="#d29922" stroke-width="2"/>
+        <rect x="840" y="80" width="320" height="600" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+
+        <!-- Row 1: input -->
+        <text x="200" y="115" text-anchor="middle" class="box-label" fill="#8b949e">INPUT</text>
+        <rect x="60" y="130" width="280" height="60" rx="6" fill="#0d1117" stroke="#f0883e" stroke-width="1.5"/>
+        <text x="200" y="155" text-anchor="middle" class="box-label">Claude session transcripts</text>
+        <text x="200" y="173" text-anchor="middle" class="box-sublabel">up to 100 per dream</text>
+
+        <text x="600" y="115" text-anchor="middle" class="box-label" fill="#d29922">SHARED</text>
+        <rect x="460" y="130" width="280" height="60" rx="6" fill="#0d1117" stroke="#d29922" stroke-width="1.5"/>
+        <text x="600" y="155" text-anchor="middle" class="box-label">Past content as input</text>
+        <text x="600" y="173" text-anchor="middle" class="box-sublabel">history of what happened</text>
+
+        <text x="1000" y="115" text-anchor="middle" class="box-label" fill="#8b949e">INPUT</text>
+        <rect x="860" y="130" width="280" height="60" rx="6" fill="#0d1117" stroke="#f0883e" stroke-width="1.5"/>
+        <text x="1000" y="155" text-anchor="middle" class="box-label">Cross-source content</text>
+        <text x="1000" y="173" text-anchor="middle" class="box-sublabel">Notes, Claude, Perplexity, Gmail, ...</text>
+
+        <!-- Row 2: process -->
+        <text x="200" y="220" text-anchor="middle" class="box-label" fill="#8b949e">PROCESS</text>
+        <rect x="60" y="235" width="280" height="60" rx="6" fill="#0d1117" stroke="#56d364" stroke-width="1.5"/>
+        <text x="200" y="260" text-anchor="middle" class="box-label">Dreaming async job</text>
+        <text x="200" y="278" text-anchor="middle" class="box-sublabel">3 phases · opus-4-7 / sonnet-4-6</text>
+
+        <text x="600" y="220" text-anchor="middle" class="box-label" fill="#d29922">SHARED</text>
+        <rect x="460" y="235" width="280" height="60" rx="6" fill="#0d1117" stroke="#d29922" stroke-width="1.5"/>
+        <text x="600" y="260" text-anchor="middle" class="box-label">Scheduled async LLM curator</text>
+        <text x="600" y="278" text-anchor="middle" class="box-sublabel">review · extract · consolidate</text>
+
+        <text x="1000" y="220" text-anchor="middle" class="box-label" fill="#8b949e">PROCESS</text>
+        <rect x="860" y="235" width="280" height="60" rx="6" fill="#0d1117" stroke="#56d364" stroke-width="1.5"/>
+        <text x="1000" y="260" text-anchor="middle" class="box-label">mikai-curator skill</text>
+        <text x="1000" y="278" text-anchor="middle" class="box-sublabel">via Routines · Max plan · cron</text>
+
+        <!-- Row 3: output format -->
+        <text x="200" y="325" text-anchor="middle" class="box-label" fill="#8b949e">OUTPUT FORMAT</text>
+        <rect x="60" y="340" width="280" height="60" rx="6" fill="#0d1117" stroke="#58a6ff" stroke-width="1.5"/>
+        <text x="200" y="365" text-anchor="middle" class="box-label">Notes + structured playbooks</text>
+        <text x="200" y="383" text-anchor="middle" class="box-sublabel">Anthropic-internal store</text>
+
+        <text x="600" y="325" text-anchor="middle" class="box-label" fill="#d29922">SHARED</text>
+        <rect x="460" y="340" width="280" height="60" rx="6" fill="#0d1117" stroke="#d29922" stroke-width="1.5"/>
+        <text x="600" y="365" text-anchor="middle" class="box-label">Plain-text notes + structure</text>
+        <text x="600" y="383" text-anchor="middle" class="box-sublabel">human-readable, LLM-consumable</text>
+
+        <text x="1000" y="325" text-anchor="middle" class="box-label" fill="#8b949e">OUTPUT FORMAT</text>
+        <rect x="860" y="340" width="280" height="60" rx="6" fill="#0d1117" stroke="#58a6ff" stroke-width="1.5"/>
+        <text x="1000" y="365" text-anchor="middle" class="box-label">Markdown + YAML frontmatter</text>
+        <text x="1000" y="383" text-anchor="middle" class="box-sublabel">user filesystem · portable</text>
+
+        <!-- Row 4: HITL -->
+        <text x="200" y="430" text-anchor="middle" class="box-label" fill="#8b949e">HUMAN OVERSIGHT</text>
+        <rect x="60" y="445" width="280" height="60" rx="6" fill="#0d1117" stroke="#bc8cff" stroke-width="1.5"/>
+        <text x="200" y="470" text-anchor="middle" class="box-label">Auto or review-before-land</text>
+        <text x="200" y="488" text-anchor="middle" class="box-sublabel">developer review queue</text>
+
+        <text x="600" y="430" text-anchor="middle" class="box-label" fill="#d29922">SHARED</text>
+        <rect x="460" y="445" width="280" height="60" rx="6" fill="#0d1117" stroke="#d29922" stroke-width="1.5"/>
+        <text x="600" y="470" text-anchor="middle" class="box-label">Optional human review</text>
+        <text x="600" y="488" text-anchor="middle" class="box-sublabel">trust gate for autonomous writes</text>
+
+        <text x="1000" y="430" text-anchor="middle" class="box-label" fill="#8b949e">HUMAN OVERSIGHT</text>
+        <rect x="860" y="445" width="280" height="60" rx="6" fill="#0d1117" stroke="#bc8cff" stroke-width="1.5"/>
+        <text x="1000" y="470" text-anchor="middle" class="box-label">Pinned sections + audit</text>
+        <text x="1000" y="488" text-anchor="middle" class="box-sublabel">history/ + dismiss CLI + contradictions.md</text>
+
+        <!-- DIVERGENCE: output ownership -->
+        <text x="200" y="535" text-anchor="middle" class="box-label" fill="#8b949e">OUTPUT OWNERSHIP</text>
+        <rect x="60" y="550" width="280" height="60" rx="6" fill="#0d1117" stroke="#ff7b72" stroke-width="1.5"/>
+        <text x="200" y="575" text-anchor="middle" class="box-label">Anthropic runtime</text>
+        <text x="200" y="593" text-anchor="middle" class="box-sublabel">opaque, platform-locked</text>
+
+        <text x="600" y="535" text-anchor="middle" class="box-label" fill="#ff7b72">DIVERGES</text>
+        <rect x="460" y="550" width="280" height="60" rx="6" fill="#0d1117" stroke="#ff7b72" stroke-width="2"/>
+        <text x="600" y="575" text-anchor="middle" class="box-label">Different ownership</text>
+        <text x="600" y="593" text-anchor="middle" class="box-sublabel">platform-locked vs user-owned</text>
+
+        <text x="1000" y="535" text-anchor="middle" class="box-label" fill="#8b949e">OUTPUT OWNERSHIP</text>
+        <rect x="860" y="550" width="280" height="60" rx="6" fill="#0d1117" stroke="#ff7b72" stroke-width="1.5"/>
+        <text x="1000" y="575" text-anchor="middle" class="box-label">User filesystem</text>
+        <text x="1000" y="593" text-anchor="middle" class="box-sublabel">portable, hand-editable</text>
+
+        <!-- DIVERGENCE: consumer -->
+        <text x="200" y="640" text-anchor="middle" class="box-label" fill="#8b949e">CONSUMER</text>
+        <rect x="60" y="655" width="280" height="60" rx="6" fill="#0d1117" stroke="#ff7b72" stroke-width="1.5"/>
+        <text x="200" y="680" text-anchor="middle" class="box-label">Future Claude agents</text>
+        <text x="200" y="698" text-anchor="middle" class="box-sublabel">same agent class only</text>
+
+        <text x="600" y="640" text-anchor="middle" class="box-label" fill="#ff7b72">DIVERGES</text>
+        <rect x="460" y="655" width="280" height="60" rx="6" fill="#0d1117" stroke="#ff7b72" stroke-width="2"/>
+        <text x="600" y="680" text-anchor="middle" class="box-label">Different consumers</text>
+        <text x="600" y="698" text-anchor="middle" class="box-sublabel">runtime-bound vs platform-agnostic</text>
+
+        <text x="1000" y="640" text-anchor="middle" class="box-label" fill="#8b949e">CONSUMER</text>
+        <rect x="860" y="655" width="280" height="60" rx="6" fill="#0d1117" stroke="#ff7b72" stroke-width="1.5"/>
+        <text x="1000" y="680" text-anchor="middle" class="box-label">Any LLM / agent / human</text>
+        <text x="1000" y="698" text-anchor="middle" class="box-sublabel">Claude, OMC, Letta, Hermes, ...</text>
+
+        <!-- Wedge tag -->
+        <text x="600" y="745" text-anchor="middle" class="group-title" fill="#d29922">Where mechanism is shared, scope and ownership are not</text>
+      </svg>
+    </div>
+
+    <div class="legend">
+      <div>
+        <div class="legend-item"><span class="legend-swatch" style="background:#d29922"></span><span class="legend-label">Shared mechanism</span></div>
+        <div class="legend-desc">Same primitive, different scope</div>
+      </div>
+      <div>
+        <div class="legend-item"><span class="legend-swatch" style="background:#ff7b72"></span><span class="legend-label">Divergence axis</span></div>
+        <div class="legend-desc">Structural difference that cannot be erased by feature parity</div>
+      </div>
+      <div>
+        <div class="legend-item"><span class="legend-swatch" style="background:#f0883e"></span><span class="legend-label">Source</span></div>
+        <div class="legend-desc">Input content</div>
+      </div>
+      <div>
+        <div class="legend-item"><span class="legend-swatch" style="background:#56d364"></span><span class="legend-label">Runtime</span></div>
+        <div class="legend-desc">Async curator process</div>
+      </div>
+      <div>
+        <div class="legend-item"><span class="legend-swatch" style="background:#58a6ff"></span><span class="legend-label">Storage</span></div>
+        <div class="legend-desc">Output substrate</div>
+      </div>
+      <div>
+        <div class="legend-item"><span class="legend-swatch" style="background:#bc8cff"></span><span class="legend-label">Consumer / agent</span></div>
+        <div class="legend-desc">Who reads the output</div>
+      </div>
+    </div>
+
+    <div class="key-takeaways">
+      <h3>What this means strategically</h3>
+      <ul>
+        <li><strong>Mechanism convergence is correct.</strong> Both systems converge on scheduled async LLM-as-curator because that's the right pattern for the problem class. MIKAI's <code>MEMORY_ARCHITECTURE_THESIS.md</code> (March 2026) specced this 11 weeks before Dreaming's research-preview launch.</li>
+        <li><strong>Scope divergence is permanent.</strong> Cross-source ingestion, user-owned files, and platform-agnostic consumers are <code>MIKAI's structural commitments</code> — not feature gaps Anthropic will close because Anthropic's business model doesn't pull it there.</li>
+        <li><strong>Dreaming generalizing to Projects is the risk to watch.</strong> If Anthropic extends Dreaming to ingest a Project's conversation history and curate Project memory, the within-Claude slice of MIKAI's wedge gets absorbed. Monitor for: Apple Notes Connector gaining scheduled ingestion, Claude Projects gaining auto-edit of project files.</li>
+        <li><strong>The hedge is to ship α v1 by Q3 2026.</strong> Cross-source + file-based + recipe library + mentor authoring as the 4-property wedge, established before Anthropic generalizes.</li>
+      </ul>
+    </div>
+  </section>
+
+  <footer>
+    <div>
+      Generated <code>2026-06-22</code>. MIKAI project, Brian Cho.
+    </div>
+    <div>
+      Companion: <a href="COMPARISON_MIKAI_vs_DREAMING.md">COMPARISON_MIKAI_vs_DREAMING.md</a> ·
+      Inventory: <a href="SYSTEM_INVENTORY_2026-06.md">SYSTEM_INVENTORY_2026-06.md</a>
+    </div>
+  </footer>
+
+</div>
+</body>
+</html>
