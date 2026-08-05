@@ -25,5 +25,6 @@ INBOX_PROCESSED = INBOX_DIR / "processed"
 STATE_DIR = BRAIN_ROOT / "state"
 
 BRAIN_MD = BRAIN_ROOT / "BRAIN.md"
-PROGRESS_LOG = STATE_DIR / "progress.json"
+PROGRESS_LOG = STATE_DIR / "progress.jsonl"
+LEGACY_PROGRESS_LOG = STATE_DIR / "progress.json"    # migrated on first use
 DELIVERY_LOG = STATE_DIR / "delivery_events.jsonl"

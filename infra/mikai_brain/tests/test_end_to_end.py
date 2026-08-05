@@ -390,5 +390,77 @@ class TestConsolidate(BrainTestCase):
         self.assertEqual(runs[0]["mode"], "consolidate")
 
 
+class TestProgressJsonlMigration(BrainTestCase):
+    """The progress log lives as line-delimited JSON. Legacy JSON-array
+    files are one-shot migrated on first append."""
+
+    def test_append_writes_one_jsonl_line(self):
+        self.ledger.run(mode="standup", did="first")
+        self.ledger.run(mode="triage", did="second")
+        text = self.brain.PROGRESS_LOG.read_text()
+        lines = [ln for ln in text.splitlines() if ln.strip()]
+        self.assertEqual(len(lines), 2)
+        for line in lines:
+            row = json.loads(line)
+            self.assertIn("mode", row)
+            self.assertIn("did", row)
+
+    def test_read_tolerates_partial_trailing_line(self):
+        """A crash mid-append can leave a truncated final line — the reader
+        must skip it rather than raise."""
+        self.ledger.run(mode="standup", did="ok row")
+        with self.brain.PROGRESS_LOG.open("a") as f:
+            f.write('{"ts":"2026-08-05T00:00:00+00:00","mode":"standup","did":"trunc')
+        runs = self.ledger.read_runs()
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]["did"], "ok row")
+
+    def test_migration_from_legacy_json_array(self):
+        """A pre-existing progress.json array is converted on first append.
+        The old file is renamed with a `.migrated-<ts>` suffix, not deleted."""
+        self.brain.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        legacy = [
+            {"ts": "2026-08-01T00:00:00+00:00", "mode": "standup", "did": "legacy row A"},
+            {"ts": "2026-08-02T00:00:00+00:00", "mode": "triage", "did": "legacy row B"},
+        ]
+        self.brain.LEGACY_PROGRESS_LOG.write_text(json.dumps(legacy))
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.ledger.run(mode="standup", did="new row after migration")
+
+        self.assertFalse(self.brain.LEGACY_PROGRESS_LOG.exists(),
+                         "legacy progress.json should be renamed, not left in place")
+        migrated = list(self.brain.STATE_DIR.glob("progress.migrated-*.json"))
+        self.assertEqual(len(migrated), 1)
+        rows = self.ledger.read_runs()
+        self.assertEqual([r["did"] for r in rows],
+                         ["legacy row A", "legacy row B", "new row after migration"])
+
+    def test_migration_is_idempotent(self):
+        """Once progress.jsonl exists, the migration path never runs again."""
+        self.ledger.run(mode="standup", did="jsonl already exists")
+        legacy = [{"ts": "2026-08-01T00:00:00+00:00", "mode": "triage", "did": "would be lost"}]
+        self.brain.LEGACY_PROGRESS_LOG.write_text(json.dumps(legacy))
+        self.ledger.run(mode="standup", did="another new row")
+        rows = self.ledger.read_runs()
+        self.assertEqual([r["did"] for r in rows],
+                         ["jsonl already exists", "another new row"])
+        self.assertTrue(self.brain.LEGACY_PROGRESS_LOG.exists(),
+                        "legacy file should be left alone when jsonl already exists")
+
+    def test_corrupt_legacy_file_is_quarantined_not_migrated(self):
+        """If the legacy file is unparseable, move it aside and start fresh —
+        never crash the caller."""
+        self.brain.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        self.brain.LEGACY_PROGRESS_LOG.write_text("not valid json at all {")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.ledger.run(mode="standup", did="fresh start after quarantine")
+        self.assertFalse(self.brain.LEGACY_PROGRESS_LOG.exists())
+        corrupt = list(self.brain.STATE_DIR.glob("progress.corrupt-*.json"))
+        self.assertEqual(len(corrupt), 1)
+        rows = self.ledger.read_runs()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["did"], "fresh start after quarantine")
+
+
 if __name__ == "__main__":
     unittest.main()
