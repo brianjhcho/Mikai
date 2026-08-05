@@ -111,6 +111,30 @@ def load_all() -> list[Thread]:
     return [parse_thread(p) for p in sorted(THREADS_DIR.glob("*.md"))]
 
 
+def _append_to_log_section(body: str, bullet: str) -> str:
+    """Insert `bullet` at the end of the ## Log section. Appending to end
+    of file is wrong whenever another section (e.g. ## Content) follows
+    ## Log — the bullet would land there and _extract_log_lines would
+    never see it."""
+    lines = body.splitlines()
+    log_idx: int | None = None
+    insert_at: int | None = None
+    for i, line in enumerate(lines):
+        if line.strip().lower().startswith("## log"):
+            log_idx = i
+            continue
+        if log_idx is not None and line.strip().startswith("## "):
+            insert_at = i
+            break
+    if log_idx is None:
+        return body.rstrip() + f"\n\n## Log\n{bullet}\n"
+    if insert_at is None:
+        return body.rstrip() + f"\n{bullet}\n"
+    while insert_at > log_idx + 1 and not lines[insert_at - 1].strip():
+        insert_at -= 1
+    return "\n".join(lines[:insert_at] + [bullet, ""] + lines[insert_at:]).rstrip() + "\n"
+
+
 def append_log_line(t: Thread, line: str) -> None:
     """Append `- {today} {line}` under the ## Log section of t.path.
     Also bumps last_activity to today in the frontmatter."""
@@ -133,11 +157,7 @@ def append_log_line(t: Thread, line: str) -> None:
     if not seen_last_activity:
         new_fm_lines.append(f"last_activity: {today}")
     new_fm = "\n".join(new_fm_lines)
-    # Append to Log section (create if missing)
-    if "## Log" in body:
-        new_body = body.rstrip() + f"\n- {today} {line}\n"
-    else:
-        new_body = body.rstrip() + f"\n\n## Log\n- {today} {line}\n"
+    new_body = _append_to_log_section(body, f"- {today} {line}")
     t.path.write_text(f"---\n{new_fm}\n---\n{new_body}")
 
 
@@ -174,10 +194,7 @@ def set_state(t: Thread, new_state: str, reason: str) -> None:
             new_fm_lines.append(f"{k}: {v}")
     new_fm = "\n".join(new_fm_lines)
     transition = f"- {today} [{t.state}→{new_state}] {reason}"
-    if "## Log" in body:
-        new_body = body.rstrip() + f"\n{transition}\n"
-    else:
-        new_body = body.rstrip() + f"\n\n## Log\n{transition}\n"
+    new_body = _append_to_log_section(body, transition)
     t.path.write_text(f"---\n{new_fm}\n---\n{new_body}")
     t.state = new_state
     t.state_since = today

@@ -140,9 +140,18 @@ def classify_llm(text: str) -> Classification:
         return Classification(
             kind="fragment", confidence=0.3, rationale="LLM parse failed — defaulted to fragment"
         )
+    kind = obj.get("kind", "fragment")
+    if kind not in ("fragment", "structured_ideation", "processed_reflection"):
+        # An off-schema kind would fall through apply() with no write-back
+        # while the item still gets archived — silent drop. Default down.
+        kind = "fragment"
+    try:
+        confidence = float(obj.get("confidence", 0.5))
+    except (TypeError, ValueError):
+        confidence = 0.5
     return Classification(
-        kind=obj.get("kind", "fragment"),
-        confidence=float(obj.get("confidence", 0.5)),
+        kind=kind,
+        confidence=confidence,
         matched_thread=_match_thread(text),
         rationale=obj.get("rationale", ""),
     )
