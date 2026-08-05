@@ -9,27 +9,27 @@ concrete (src, dst, rationale) moves that would achieve it.
 Single innovation surface (per Brian's directive): the LLM reasoning
 against the substrate. Everything else is stock.
 
-LLM choice: DeepSeek V3 via the OpenAI-compatible endpoint already used
-by the calendar planner + full_corpus_dream. Cheapest known option with
-reliable JSON output.
+LLM routing: through infra.mikai_llm.chat at tier=interactive — this is a
+user-triggered, user-waiting surface, so it gets the best model (claude -p,
+billed to the Max sub). JSON discipline is enforced in-prompt because the
+Claude CLI has no JSON-mode flag.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from urllib import request as urlreq
 
 # Reuse the file-scanner's fact-gathering code.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "decider"))
 from file_scanner import FileFact, walk_facts  # noqa: E402
 
-DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
-DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
-DEEPSEEK_MODEL = "deepseek-chat"
+# Route LLM calls through the provider-swappable shim (repo root on path).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+from infra.mikai_llm import chat as llm_chat  # noqa: E402
+
 LIFE_TIER_PATH = Path.home() / ".mikai" / "life-tier.json"
 
 MAX_FILES_PER_PROMPT = 300  # cap prompt size; more than this needs chunking
@@ -150,29 +150,19 @@ unclear or ambiguous, leave it in place rather than move it.
 # ── LLM call ─────────────────────────────────────────────────────────────────
 
 
-def _call_deepseek(prompt: str, timeout: float = 90.0) -> str:
-    if not DEEPSEEK_API_KEY:
-        raise RuntimeError(
-            "DEEPSEEK_API_KEY not set — source ~/.mikai/launchd.env first"
-        )
-    payload = json.dumps({
-        "model": DEEPSEEK_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "response_format": {"type": "json_object"},
-        "temperature": 0.2,
-        # Manifest can be large (100+ moves × ~120 chars each) — bump ceiling
-        # so DeepSeek doesn't truncate mid-JSON on medium/large scans.
-        "max_tokens": 32000,
-    }).encode()
-    req = urlreq.Request(
-        DEEPSEEK_URL, data=payload, method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-        },
-    )
-    with urlreq.urlopen(req, timeout=timeout) as resp:
-        return resp.read().decode()
+def _strip_fences(text: str) -> str:
+    """Claude sometimes wraps JSON in markdown fences despite instructions."""
+    t = text.strip()
+    if t.startswith("```"):
+        t = t.split("\n", 1)[1] if "\n" in t else t
+        if t.rstrip().endswith("```"):
+            t = t.rstrip()[:-3]
+    return t.strip()
+
+
+# tier=interactive: user-triggered, user-waiting surface — best model, Max sub.
+def _call_llm(prompt: str, timeout: float = 300.0) -> str:
+    return llm_chat(prompt, tier="interactive", json_mode=True, timeout=timeout)
 
 
 # ── Public entry point ───────────────────────────────────────────────────────
@@ -187,12 +177,10 @@ def plan(root: str, user_prompt: str) -> OrganizationPlan:
     life_tier = _load_life_tier_json()
     prompt = _build_prompt(root_abs, facts, user_prompt, life_tier)
 
-    raw = _call_deepseek(prompt)
+    raw = _call_llm(prompt)
     try:
-        outer = json.loads(raw)
-        content = outer["choices"][0]["message"]["content"]
-        obj = json.loads(content)
-    except (KeyError, IndexError, json.JSONDecodeError) as exc:
+        obj = json.loads(_strip_fences(raw))
+    except json.JSONDecodeError as exc:
         raise RuntimeError(f"LLM response unparseable: {exc}\n\n{raw[:500]}") from exc
 
     return OrganizationPlan(
