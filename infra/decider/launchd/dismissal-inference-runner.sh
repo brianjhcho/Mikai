@@ -14,7 +14,7 @@ fi
 
 mkdir -p "$HOME/.mikai/logs"
 
-REPO="$HOME/.superset/worktrees/MIKAI/pear-seashore"
+REPO="$HOME/Desktop/MIKAI"
 cd "$REPO/infra/decider"
 
 exec /usr/bin/env python3 dismissal_inference.py

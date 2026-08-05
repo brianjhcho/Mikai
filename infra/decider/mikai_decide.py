@@ -1505,6 +1505,19 @@ def main() -> int:
                         help="Write today's MIKAI brief into macOS Calendar with the top 3 candidates")
     args = parser.parse_args()
 
+    # Surface Engine toggle (formerly FIGS).
+    # Unattended dispatches are OFF by default — MIKAI stays silent until Brian
+    # turns Surface on. Interactive diagnostics still work.
+    # To enable: `export MIKAI_SURFACE_ENABLED=1` in ~/.mikai/launchd.env, then
+    # `launchctl kickstart -k gui/$(id -u)/com.mikai.figs-decide`.
+    _diagnostic = any([args.init, args.test_ntfy, args.dry_run,
+                       args.show_prompt, args.show_slate, args.force])
+    _enabled = os.environ.get("MIKAI_SURFACE_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+    if not _enabled and not _diagnostic:
+        print("Surface Engine disabled — set MIKAI_SURFACE_ENABLED=1 to enable "
+              "(or pass --dry-run / --force / --show-slate for diagnostics).")
+        return 0
+
     conn = db_connect()
 
     if args.init:

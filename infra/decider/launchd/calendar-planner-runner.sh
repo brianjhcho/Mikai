@@ -21,7 +21,7 @@ fi
 # ~/.mikai/launchd.env, plus MIKAI_NTFY_TOPIC and iCloud creds.
 mkdir -p "$HOME/.mikai/logs"
 
-REPO="$HOME/.superset/worktrees/MIKAI/pear-seashore"
+REPO="$HOME/Desktop/MIKAI"
 cd "$REPO/infra/decider"
 
 exec /usr/bin/env python3 calendar_planner.py

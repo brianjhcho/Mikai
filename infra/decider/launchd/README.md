@@ -44,21 +44,30 @@ MIKAI_GMAIL_APP_PASSWORD="<16-char google app password>"
 
 The runners source this file at every invocation. **They also `unset ANTHROPIC_API_KEY` before calling `claude -p`** — having that env var set causes `claude` to refuse first-party OAuth and fall back to API billing, which fails for Surface Engine' headless prompts. The Graphiti-side runners (sync, claude-threads, dream) need `ANTHROPIC_API_KEY` for the DeepSeek/Voyage path, so the unset must be per-runner, not global.
 
-## Path-dependency to fix on merge to main
+## Path dependency
 
-Both runner scripts hardcode:
-
-```
-REPO="$HOME/.superset/worktrees/MIKAI/pear-seashore"
-```
-
-When Surface Engine lands on `main` (i.e., on `~/Desktop/MIKAI`), update both files:
+Runner scripts hardcode:
 
 ```
 REPO="$HOME/Desktop/MIKAI"
 ```
 
-Then re-run the install steps above. There's no symlink trick to avoid this — launchd-spawned shells don't follow worktrees automatically.
+If Brian ever wants to test a branch under launchd, point REPO at the worktree path and re-run the install steps above. There's no symlink trick to avoid this — launchd-spawned shells don't follow worktrees automatically.
+
+## Surface Engine toggle
+
+`mikai_decide.py` (the Surface Engine tick) checks `MIKAI_SURFACE_ENABLED` at startup. **Default: OFF.** Every scheduled tick exits with "Surface Engine disabled" unless the env var is set to `1`/`true`/`yes`/`on`.
+
+To turn it ON:
+
+```bash
+echo 'export MIKAI_SURFACE_ENABLED=1' >> ~/.mikai/launchd.env
+launchctl kickstart -k "gui/$(id -u)/com.mikai.figs-decide"    # optional: fire now
+```
+
+To turn it OFF: remove that line from `~/.mikai/launchd.env` (or set to `0`).
+
+Diagnostic invocations (`--dry-run`, `--show-slate`, `--show-prompt`, `--force`, `--init`, `--test-ntfy`) bypass the gate and always work.
 
 ## Pause / debug
 

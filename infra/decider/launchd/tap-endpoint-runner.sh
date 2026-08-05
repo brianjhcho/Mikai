@@ -28,7 +28,7 @@ export MIKAI_TAP_HOST="${MIKAI_TAP_HOST:-0.0.0.0}"
 export MIKAI_TAP_PORT="${MIKAI_TAP_PORT:-8210}"
 export MIKAI_DB_PATH="${MIKAI_DB_PATH:-$HOME/.mikai/notification_log.db}"
 
-REPO="$HOME/.superset/worktrees/MIKAI/pear-seashore"
+REPO="$HOME/Desktop/MIKAI"
 cd "$REPO/infra/decider"
 
 exec /usr/bin/env python3 tap_endpoint.py
