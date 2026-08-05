@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.mikai.calendar-planner</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/briancho/Library/Application Support/mikai/launchd/calendar-planner-runner.sh</string>
+    </array>
+
+    <!-- Fires at 08:00 local. Once per day is enough: the block being
+         rewritten is a work window that spans hours; a mid-day
+         re-propose would just churn. Manual re-runs available with
+         `python3 calendar_planner.py --force`. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>8</integer>
+        <key>Minute</key><integer>0</integer>
+    </dict>
+
+    <!-- RunAtLoad=false: avoid firing on install/reboot/login unless
+         the schedule matches. Prevents an unexpected 3am rewrite. -->
+    <key>RunAtLoad</key>
+    <false/>
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/briancho/.mikai/logs/calendar-planner.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/briancho/.mikai/logs/calendar-planner.err.log</string>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/briancho/Library/Application Support/mikai/launchd</string>
+</dict>
+</plist>

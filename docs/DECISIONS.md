@@ -1077,21 +1077,21 @@ Agents and scripts live at `~/Library/Application Support/mikai/launchd/` — **
 
 ---
 
-## D-053: FIGS — LLM-only notification interface (not rules engine + bandit)
+## D-053: Surface Engine — LLM-only notification interface (not rules engine + bandit)
 
 **Date:** 2026-06-26 (naming clarified 2026-06-27)
-**Source:** FIGS V0 build session (`infra/decider/`); supersedes the hybrid rules-engine-plus-bandit direction proposed in the predictive-layer-spec exploratory thread.
+**Source:** Surface Engine V0 build session (`infra/decider/`); supersedes the hybrid rules-engine-plus-bandit direction proposed in the predictive-layer-spec exploratory thread.
 
-**Naming convention (companion decision, 2026-06-27):** **MIKAI** is the backend (L3 graph + L4 reasoning). **FIGS** is the notification interface that consumes MIKAI. Every notification/push/interrupt surface is FIGS; every storage/extraction/reasoning surface is MIKAI. Code currently lives at `infra/decider/` for historical reasons; FIGS is the canonical doc name.
+**Naming convention (companion decision, 2026-06-27):** **MIKAI** is the backend (L3 graph + L4 reasoning). **Surface Engine** is the notification interface that consumes MIKAI. Every notification/push/interrupt surface is Surface Engine; every storage/extraction/reasoning surface is MIKAI. Code currently lives at `infra/decider/` for historical reasons; Surface Engine is the canonical doc name.
 
-**Decision:** FIGS V0 is a single Python script (`infra/decider/mikai_decide.py`) that on each tick:
+**Decision:** Surface Engine V0 is a single Python script (`infra/decider/mikai_decide.py`) that on each tick:
 1. Pulls candidate signals from MIKAI (L3 graph) via Cypher recency lens (last 24h `RELATES_TO` edges) + 5 semantic-search lenses (active threads, contradictions, recurring patterns, urgent/time-sensitive, personal life)
-2. Pulls live cross-source events via FIGS's own per-source adapters (`adapters/imessage.py` via SQLite, `adapters/calendar.py` via Calendar.sqlitedb direct read, `adapters/gmail.py` via IMAP + app password)
+2. Pulls live cross-source events via Surface Engine's own per-source adapters (`adapters/imessage.py` via SQLite, `adapters/calendar.py` via Calendar.sqlitedb direct read, `adapters/gmail.py` via IMAP + app password)
 3. Invokes MIKAI's L4 reasoning by asking Claude (via headless `claude -p`, first-party OAuth — no API credits burned) "send a notification right now? if yes, what and at what interruption level?"
 4. Validates evidence citations against the prompt context (no hallucinated UUIDs), enforces a cooldown window (default 2h), and dispatches via ntfy.sh on send
 5. Logs every decision (sent + silent) to local SQLite at `~/.mikai/notification_log.db` for the dismiss/act feedback loop
 
-The brain is MIKAI's L4 reasoning (the LLM). There is no rules engine, no priority queue, no LightGBM ranker, no contextual bandit, no notification-graph engineering inside FIGS itself. Default is silence; the bar for "send" is structurally high (evidence-citation requirement + cooldown + explicit "default silent" instruction in the prompt).
+The brain is MIKAI's L4 reasoning (the LLM). There is no rules engine, no priority queue, no LightGBM ranker, no contextual bandit, no notification-graph engineering inside Surface Engine itself. Default is silence; the bar for "send" is structurally high (evidence-citation requirement + cooldown + explicit "default silent" instruction in the prompt).
 
 **Why:**
 
@@ -1130,3 +1130,112 @@ The brain is MIKAI's L4 reasoning (the LLM). There is no rules engine, no priori
 - O-028 (reactive→proactive transition) — decider IS the proactive surface. Reactive surface (MCP `search`/`get_source`) remains alongside it.
 
 **Revisit if:** L4 needs typed node/edge attributes (e.g. edge confidence/explanation). Reviving Stage 6 first requires a graphiti-core version that persists custom attributes as flat Neo4j properties; set `MIKAI_TYPED_EXTRACTION=1` only once that holds.
+
+---
+
+## D-054: Surface Engine feedback loop — tap redirect + dismissal inference (Discover-analog)
+**Date:** 2026-07-13
+**Decision:** Every Surface Engine notification carries a 12-char `notif_id` and its ntfy Click header is rewritten from the raw destination URL to `${TAP_BASE_URL}/t/{notif_id}`. A standalone stdlib HTTP server (`infra/decider/tap_endpoint.py`, port 8210) logs a `TAPPED` event and 302s to the real URL; an hourly cron (`infra/decider/dismissal_inference.py`) marks any SENT older than 24h with no matching TAPPED as `DISMISSED_INFERRED`. All events land in a new `notification_events` table alongside `notification_log` in `~/.mikai/notification_log.db`.
+
+**Why:**
+
+1. **Closing the loop is the Pareto move.** Google Discover works because every tap/skip/dwell/hide becomes training data within minutes — that tight loop is what makes its 0.5s decide-or-skip cards convert. Every other Discover mechanism (two-tower retrieval, freshness prior, diversity penalty) is downstream of the loop. Surface Engine today has strong substrate (ontology wiki + LLM synthesis) but zero feedback signal, so ranking quality has a low ceiling until acted/dismissed data starts flowing.
+2. **Redirect wrapper is the minimum-viable capture mechanism.** ntfy is fire-and-forget — there is no callback when the user taps a card. Wrapping the Click URL in a redirect that logs then 302s is the only zero-UX-cost way to get a `TAPPED` row per real interaction. Works for every action_type Surface Engine emits.
+3. **Startup-engineering discipline: build for today's signal, not tomorrow's infra.** The tap URL doesn't need to be publicly reachable to produce useful data. Phase 1 binds LAN only — probably 70–90% of taps happen on home wifi anyway. When the off-wifi tap becomes a real gap, swap to Tailscale (already installed on this Mac). When someone else needs to tap, cloudflared named tunnel. Each upgrade is a one-line env change; the endpoint, schema, and iPhone flow don't move.
+4. **DISMISSED_INFERRED is the negative half of the signal.** Discover treats no-tap as ground truth for "not interested." Without an explicit dismiss button, an SENT that stays untapped after 24h is the closest proxy. Idempotent hourly cron; re-runs are safe. This is the signal that lets ranking know what NOT to surface, which matters as much as what to surface.
+
+**Rejected:**
+
+- **Tap endpoint inside the Graphiti sidecar.** Sidecar's `~/.mikai` mount is read-only (`docker-compose.yml:44`), and every code change forces a container rebuild. Standalone stdlib server on the host writes directly to the Surface Engine SQLite DB, no docker cycle, no dependency additions in the decider path.
+- **FastAPI + uvicorn for the tap endpoint.** Adds a real dependency for what is a ~200-line HTTP server. Stdlib `http.server` with a threading mixin handles the load (personal system, single user) and stays consistent with the decider's stdlib-urllib style.
+- **Cloudflared quick tunnel as Phase 1.** URL rotates on restart, forces re-wiring `~/.mikai/tap_base_url` every reboot. Also premature — LAN captures most taps, and cloudflared adds an install (`brew install cloudflared`) plus an always-on tunnel process that Phase 1 doesn't justify.
+- **Cloudflared named tunnel + stable DNS.** Correct for Phase 3 when sharing beyond N=1; premature for Phase 1 which just needs the first `TAPPED` row.
+- **Tailscale as Phase 1.** Also solid (Tailscale is already installed on this Mac), but requires iPhone Tailscale install first. LAN Phase 1 needs zero user setup, delivers signal today, and Phase 2 promotes to Tailscale in a single env change when off-wifi taps become the real bottleneck.
+- **Discrete dismiss button in ntfy Actions.** Would give explicit negative signal instead of inferred, but forces a click even for the "not interested" case and complicates the card UX. Inferred dismissal at 24h costs nothing and lets us upgrade to explicit later without schema change (both just become `event_type` rows).
+- **In-place `notification_log` extension with `tapped_at` / `dismissed_at` columns.** Simpler at N=1 but wrong shape — a notification can be tapped multiple times, and dismissed-then-tapped-later is a real case. Event-stream table lets ranking compute time-to-tap, tap-count-per-notif, and re-open-after-dismiss without further schema changes.
+
+**Implementation:**
+
+- **Schema** (`infra/decider/mikai_decide.py:104-176`) — `notification_events` table with columns `notif_id`, `event_type CHECK IN ('SENT','TAPPED','DISMISSED_INFERRED')`, `event_ts`, `dimension`, `action_type`, `source_ids`, `next_step_url`. Indexes on `notif_id` and `(event_type, event_ts)`. `notif_id` column added to `notification_log` for correlation.
+- **Dispatch wiring** (`mikai_decide.py:1146-1214, 1490-1516`) — `new_notif_id()` mints 12-char uuid; `log_sent_event()` inserts SENT before dispatch; `build_tap_url()` swaps in `${TAP_BASE_URL}/t/{id}`; `resolve_tap_base_url()` reads env `MIKAI_TAP_BASE_URL` → file `~/.mikai/tap_base_url` → empty (falls back to raw URL untracked); `infer_dimension()` extracts `dim_N` from the LLM's `dimension` field or regex-matches "dim N" in `reasoning` as fallback. The LLM output schema (`mikai_decide.py:793`) now emits an explicit `dimension` field.
+- **Tap endpoint** (`infra/decider/tap_endpoint.py`) — stdlib `http.server` + `socketserver.ThreadingMixIn`. `GET /t/{notif_id}` → 302 with real URL, log TAPPED. `GET /healthz` → 200. Rejects non-hex/non-12-char IDs at 404 (not a general open-redirect), rejects unknown IDs at 404 without inserting phantom rows. Runs as `com.mikai.tap-endpoint` LaunchAgent on port 8210 (port 8200 collides with an unrelated `brain.py` uvicorn on this machine).
+- **Dismissal cron** (`infra/decider/dismissal_inference.py`) — one SQL: SENT older than `MIKAI_DISMISS_AFTER_HOURS` (default 24) with no matching TAPPED or DISMISSED_INFERRED → insert DISMISSED_INFERRED. Runs as `com.mikai.dismissal-inference` LaunchAgent every 3600s. `--dry-run` flag for ad-hoc inspection.
+- **LaunchAgents** — new plists and runners under `infra/decider/launchd/`: `com.mikai.tap-endpoint.plist` + `tap-endpoint-runner.sh` (KeepAlive), `com.mikai.dismissal-inference.plist` + `dismissal-inference-runner.sh` (StartInterval=3600). Install pattern per D-051 (files symlinked into `~/Library/LaunchAgents/`, canonical copies at `~/Library/Application Support/mikai/launchd/`).
+- **Phase 1 tunnel** — LAN binding at `http://192.168.88.228:8210`. `~/.mikai/tap_base_url` holds that URL. Works when iPhone is on home wifi; taps from cellular fail closed (no TAPPED row, DISMISSED_INFERRED after 24h — a false-negative, acceptable at this stage).
+
+**Staged progression (documented separately):**
+
+- **Phase 1 (today):** LAN-only redirect. Zero cost, zero deps. Trigger: first TAPPED row in `notification_events`.
+- **Phase 2:** Swap `MIKAI_TAP_BASE_URL` to a Tailscale hostname when off-wifi taps become the observable gap. Requires iPhone Tailscale install (5 min, free). Endpoint code and iPhone flow don't change.
+- **Phase 3:** Cloudflared named tunnel + stable DNS. Only needed if sharing beyond N=1.
+- **Phase 4 (never for N=1):** Edge/CDN-hosted redirect.
+
+**Revisit if:**
+
+- Tap rate stays below ~5% after 2 weeks of accumulating data → the ranking is worse than random and the LLM prompt needs the aggregate signal fed back in as context. This is the next work item — reading `notification_events` counts and injecting a "last-7-day tap-rate by dimension / action_type" block into `build_prompt()`.
+- Off-wifi missed taps become a visible product bug → promote to Phase 2 (Tailscale) with a one-line `~/.mikai/tap_base_url` change.
+- A real dismiss-button UX becomes worth the friction → add `event_type='DISMISSED_EXPLICIT'` to the CHECK constraint and route via ntfy Actions webhook. Ranking logic treats explicit and inferred the same for now.
+- Ranking benefits from finer-grained events (dwell time, back-swipe, snooze) → the event-stream schema absorbs new `event_type` values without breaking existing analytics.
+
+**Related to:**
+- D-053 (Surface Engine as LLM-only decider) — this is the feedback pipe that closes the "LLM judgment vs empirical outcome" loop D-053 explicitly deferred to a later phase.
+- D-051 (Pattern B) — new LaunchAgents follow the same App Support pattern; secrets from `~/.mikai/launchd.env`.
+- D-041 (L4 above port) — feedback loop lives at L4 alongside Surface Engine, not in the L3 sidecar.
+- ARCH-023 (hybrid ingestion) — future work could ingest `notification_events` into the L3 graph as "user-action edges" (edge type: ACTED_ON, DISMISSED); currently they sit in Surface Engine-local SQLite only.
+
+---
+
+## D-055: Calendar planner — iCloud CalDAV + approval loop
+**Date:** 2026-07-13
+**Decision:** MIKAI reads and writes to Apple/iCloud Calendar via CalDAV (`https://caldav.icloud.com`) using an app-specific password. Once per day at 08:00 local, a LaunchAgent fetches today's editable blocks, gathers a candidate pool spanning engineering + life items, asks DeepSeek V3 to pick 2-3 items per block, and dispatches an ntfy card with Approve/Reject action URLs. The actual CalDAV PATCH only fires when the user taps Approve — routed through the tap-endpoint (which already exists from D-054). Nothing is ever written to the user's calendar without an explicit tap; a proposal that isn't resolved within 4h auto-EXPIREs on the next lookup.
+
+**Why:**
+
+1. **The calendar block is another Surface Engine card.** Same L4 selection logic (LLM ranks in-flight items), different write surface (CalDAV PATCH, not ntfy body). Reuses the Surface Engine pattern instead of inventing a second one.
+2. **CalDAV over EventKit / Calendar.sqlitedb.** The Sumimasen Phase B watcher hit repeated TCC walls trying to read `Calendar.sqlitedb` under launchd. CalDAV is a network protocol with basic auth — no TCC, no Full Disk Access battle, works uniformly whether the LaunchAgent is fired at 08:00 or from a shell. And CalDAV is Apple's own sync backend for iCloud calendars, so a PATCH here is authoritative — direct SQLite writes would be silently overwritten by iCloud on next pull.
+3. **Explicit approval loop, not auto-apply.** Writing to Brian's calendar is a hard-to-undo mutation. An LLM misfire that renames a therapy appointment or overwrites a personal reminder is a real product bug. Requiring one tap to approve costs almost nothing on iOS (ntfy Actions render Approve/Reject buttons in Notification Center) and provides the exact safety property Brian asked for: "prompted of the changes."
+4. **Stdlib CalDAV client, no third-party deps.** iCloud's CalDAV surface is small: PROPFIND for discovery, REPORT for time-range queries, PUT for updates. Around 300 lines of `urllib` + `xml.etree` covers the entire need. Six unit tests over iCal fold/unfold + property replacement guard the highest-risk piece (the property-replace routine must preserve every VEVENT line except SUMMARY, DESCRIPTION, LAST-MODIFIED, DTSTAMP).
+5. **Sole-attendee + ≥90-min editability heuristic.** Brian said "any block where I'm the sole attendee." Adding the duration filter (`MIKAI_PLANNER_MIN_MINUTES`, default 90) rules out reminder alarms and short personal appointments — a work block is at least an hour and a half. Meetings with other attendees are strictly out of scope regardless of duration.
+
+**Rejected:**
+
+- **Google Calendar API.** Brian's calendar is Apple/iCloud. Google Calendar API works only for Google-backed accounts inside Apple Calendar; iCloud calendars aren't reachable that way.
+- **Direct `Calendar.sqlitedb` write.** iCloud sync will overwrite anything MIKAI writes locally on the next round-trip. Not a real write path.
+- **EventKit via osascript.** TCC-gated (Calendar Automation), flaky under launchd (Sumimasen Phase B keeps hitting this). Even when it works, the write goes to Apple Calendar's local view, which then round-trips through CalDAV anyway — an extra hop with less predictable failure modes.
+- **`caldav` PyPI package.** Adds a real dependency for what is ~250 lines of stdlib HTTP + XML. Consistency with the Surface Engine decider's stdlib-only style wins here.
+- **Rich preview page before approval.** Considered a two-tap flow (tap → open detailed diff page → tap Approve). Cut for MVP: ntfy body carries the full title + description preview already, and Notification Center rendering of ntfy Actions gives one-tap Approve. If the ntfy body ever proves insufficient, promote to a `/preview/{id}` route on the tap-endpoint that renders the diff before the Approve button.
+- **Auto-apply after N minutes if no reject.** Would remove the friction of an explicit tap, but flips the safety default in the wrong direction. Silent-safe > convenience for a mutating operation.
+- **Include shared events (with other attendees).** Would let MIKAI rewrite a meeting title, which changes the title *for other attendees* through iCloud's invitation delta. Sole-attendee filter closes that off entirely.
+- **Cron every 3 hours.** The block being rewritten is a work window that spans hours; a mid-day re-propose would just churn. Once a day at 08:00 + `--force` for on-demand refresh is the right cadence.
+
+**Implementation:**
+
+- **Schema** (`infra/decider/mikai_decide.py:150-186`) — new `calendar_proposals` table alongside `notification_events`. Fields: `proposal_id` (12-hex uuid), `event_uid`, `calendar_url`, `event_href`, `event_etag`, `status IN ('PROPOSED','APPLIED','REJECTED','EXPIRED')`, current/proposed title+description, `candidates_json`, `llm_rationale`, `apply_error`. Separate table because SQLite can't ALTER a CHECK constraint on `notification_events`, and the proposal lifecycle (four states, resolvable) is different from the append-only event stream.
+- **CalDAV client** (`infra/decider/caldav_client.py`, ~350 lines) — stdlib HTTP + XML. Public API: `discover_principal()`, `discover_home_set()`, `list_calendars()`, `list_events(cal, start, end, sole_attendee_only)`, `patch_event(event, title, description)`, plus the high-level `todays_events()` convenience. Handles method-preserving redirects (urllib's default drops to GET on 301/302, which breaks PROPFIND). iCal fold/unfold + escape/unescape + property replace inside VEVENT are the six unit-tested primitives; every VEVENT line other than SUMMARY / DESCRIPTION / LAST-MODIFIED / DTSTAMP is preserved verbatim. Optimistic concurrency via `If-Match: <etag>` on PUT.
+- **Planner** (`infra/decider/calendar_planner.py`, ~300 lines) — gathers git activity (branch, uncommitted, last-7-day log, recent branches) + `docs/OPEN.md` + `~/.mikai/inflight.md` + `docs/USER_NEEDS_REGISTRY.md`, injects into a DeepSeek V3 prompt (~10K chars total), receives structured JSON (title, description, picks, rationale), inserts a PROPOSED row, and dispatches an ntfy card with `Actions: view, Approve, ...; view, Reject, ...`. Deduplication: `already_proposed_today()` guards against re-proposing an event that already has a proposal today, regardless of that proposal's status. `--dry-run` prints the pick without writing; `--force` bypasses the dedup.
+- **Approve/Reject routes** on the existing tap-endpoint (`infra/decider/tap_endpoint.py`) — `GET /approve/{proposal_id}` refetches the event by UID (etag may have drifted between propose and approve), calls `client.patch_event()`, marks status APPLIED (with the fresh etag), sends a confirmation ntfy, returns a small HTML success page. `GET /reject/{proposal_id}` just marks REJECTED. Both routes are idempotent — a second tap returns the "already resolved" HTML without side effects, guarded by a `WHERE status = 'PROPOSED'` clause on the UPDATE. Malformed / unknown / expired proposal_ids return 404 or the appropriate resolved-state page.
+- **LaunchAgent** (`infra/decider/launchd/`) — `com.mikai.calendar-planner.plist` fires at 08:00 daily via `StartCalendarInterval`; `RunAtLoad=false` so installs and reboots don't trigger unexpected proposals. Runner script (`calendar-planner-runner.sh`) follows Pattern B (D-051) — sources `~/.mikai/launchd.env`, works from the App Support directory, logs to `~/.mikai/logs/calendar-planner.{out,err}.log`.
+- **Credentials** — `MIKAI_ICLOUD_USER` (Apple ID email) and `MIKAI_ICLOUD_APP_PASSWORD` (app-specific password from appleid.apple.com) added to `~/.mikai/launchd.env`. The Apple ID password itself never enters the system.
+
+**Approval lifecycle:**
+
+1. 08:00 tick → LLM picks → `INSERT INTO calendar_proposals (status='PROPOSED')` → ntfy card fires with Approve/Reject action URLs.
+2. Brian taps **Approve** → tap-endpoint `GET /approve/{id}` → refetch event by UID → `PUT` new SUMMARY + DESCRIPTION → status transitions to APPLIED with the new etag → confirmation ntfy "✓ MIKAI updated your block" → iPhone Calendar refreshes within seconds via CalDAV sync.
+3. Brian taps **Reject** → status transitions to REJECTED → no CalDAV write → tomorrow at 08:00, the planner sees "already proposed today" for this event and skips (until the next day).
+4. Brian taps neither within 4h → next lookup marks EXPIRED — the safe default.
+5. Any failure inside `patch_event` (network / 412 etag drift / 403 auth) records `apply_error` and keeps status PROPOSED so a second tap can retry.
+
+**Revisit if:**
+
+- The rewrite quality is off (too generic, too many stale items) → tighten the prompt or add a git-activity weighting term. The candidate pool `picks[]` array is audited via `candidates_json` in the DB so it's easy to grade retrospectively.
+- Brian wants a mid-day re-propose → drop `StartCalendarInterval` in favor of a 3-hour `StartInterval`; add cooldown logic in the planner so the same event isn't re-proposed within N hours of a Reject.
+- A shared event should be editable (e.g. "family dinner planning" that Brian owns even though a partner is on it) → add a `MIKAI_PLANNER_INCLUDE_SHARED=1` env flag; keep sole-attendee as the default.
+- iCloud CalDAV rate-limits us → back off exponentially in `_request()`; add a token bucket if it becomes a real issue.
+- Explicit dismiss button becomes worth the friction upgrade → promote the ntfy `view` action to `http` action + add a `/dismiss/{id}` route (already ~2 lines of code given the existing pattern).
+
+**Related to:**
+- D-054 (Surface Engine feedback loop) — reuses the tap-endpoint infrastructure. `/approve` and `/reject` sit next to `/t/{notif_id}` on the same host, port, DB. Approval taps and notification taps go through the same LaunchAgent.
+- D-051 (Pattern B) — new LaunchAgent follows the same App-Support pattern; secrets in `~/.mikai/launchd.env`; symlinks in `~/Library/LaunchAgents/`.
+- D-041 (L4 above port) — calendar planner is L4 product code; it does not import graphiti-core or hit the L3Backend port directly. (Future: could pull Surface Engine candidates from the port instead of loading the needs registry markdown by hand.)
+- D-053 (Surface Engine as LLM-only decider) — same LLM shape: candidate pool → structured JSON → dispatch. The planner is essentially Surface Engine with a CalDAV write instead of an ntfy send.
+- Sumimasen Phase B (`sumimasen_watcher.py`) — Sumimasen READS the calendar to warn about MIKAI-created blocks approaching; the planner WRITES to the calendar to fill them. Both are calendar-shaped surfaces of the same L4 reasoning; Sumimasen closes the "you're about to hit this block" loop, the planner closes the "the block is generic, populate it" loop. Future integration: Sumimasen's context bundle for a rewritten block should show the picks the planner made when it fills it.

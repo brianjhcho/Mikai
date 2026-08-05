@@ -2,8 +2,8 @@
 
 > **What this file is:** The volatile state-of-the-world doc. It describes what is actually live on `main` right now — not the long-term vision (`CLAUDE.md`), not the architectural decisions (`docs/DECISIONS.md`), not the intellectual foundations (`docs/EPISTEMIC_*.md`). Update this file as main changes. If it contradicts CLAUDE.md, update CLAUDE.md only if the change is a principle, not a state.
 
-**Last meaningful update:** 2026-06-28 (Claude.ai thread capture + Dream/Wiki runtime live — two new nightly daemons; see new subsection below and `docs/DREAM_WIKI_RUNTIME.md`). Prior: 2026-06-10 (ingestion fixed + automated, graphiti-core pinned per D-052, launchd ingestion live, D-051 Pattern B)
-**Latest commit on main at writing:** `a19a81c` — fix(ingestion): default to native graphiti extraction; pin graphiti-core
+**Last meaningful update:** 2026-08-05 (pure-file Second Brain substrate — `infra/mikai_brain/` + `infra/mikai_llm/` shim — merged with the FIGS/mikai_shell line: D-055 calendar planner, D-054 feedback loop, Claude.ai thread capture + Dream/Wiki nightly daemons)
+**Latest commit on main at writing:** merge of `ac4c731` (file-based L4 substrate) and `339b569` (mikai_shell v1)
 
 ---
 
@@ -59,20 +59,39 @@ Two new nightly daemons turn the graph into a self-maintaining model of the user
 
 ### Repo shape
 - `infra/graphiti/` — MIKAI backend: sidecar, daemon, OAuth, extraction schemas, 341-test suite
-- `infra/decider/` — FIGS notification interface (D-053). Single Python script + 3 source adapters (iMessage SQLite, Calendar SQLite, Gmail IMAP), validates L4's send/silent decision, dispatches via ntfy.sh, logs to local SQLite for the dismiss/act feedback loop. Directory name is historical; FIGS is the canonical doc reference.
+- `infra/decider/` — Surface Engine notification interface (D-053). Single Python script + 3 source adapters (iMessage SQLite, Calendar SQLite, Gmail IMAP), validates L4's send/silent decision, dispatches via ntfy.sh, logs to local SQLite for the dismiss/act feedback loop. Directory name is historical; Surface Engine is the canonical doc reference.
 - `eval/` — Stage 6 harness + labeling CLI
 - `docs/` — architecture, decisions, status, research, stage briefs, eval scorecards
 - `scripts/` — patch automation, eval raters, preflight, dev utilities
 
-### FIGS — notification interface (D-053) — early operational
-> **Naming (2026-06-27):** **MIKAI** = backend (L3 graph + L4 reasoning). **FIGS** = the notification interface that consumes MIKAI. Code currently lives at `infra/decider/` for historical reasons; FIGS is the canonical doc name.
+### Surface Engine — notification interface (D-053) — early operational
+> **Naming (2026-06-27):** **MIKAI** = backend (L3 graph + L4 reasoning). **Surface Engine** = the notification interface that consumes MIKAI. Code currently lives at `infra/decider/` for historical reasons; Surface Engine is the canonical doc name.
 
-- **`infra/decider/mikai_decide.py`** — FIGS V0. Single-script LLM-only notification decider. Per tick: pulls candidate signals from MIKAI (5 semantic lenses via L3 port + a Cypher recency lens for last-24h edges) plus live cross-source events from iMessage/Calendar/Gmail adapters, asks L4 reasoning (Claude via headless `claude -p`, Max-legitimate) whether to send a notification, validates the decision's evidence citations against the prompt context, enforces a cooldown window, and dispatches via ntfy.sh on send.
+- **`infra/decider/mikai_decide.py`** — Surface Engine V0. Single-script LLM-only notification decider. Per tick: pulls candidate signals from MIKAI (5 semantic lenses via L3 port + a Cypher recency lens for last-24h edges) plus live cross-source events from iMessage/Calendar/Gmail adapters, asks L4 reasoning (Claude via headless `claude -p`, Max-legitimate) whether to send a notification, validates the decision's evidence citations against the prompt context, enforces a cooldown window, and dispatches via ntfy.sh on send.
 - **`adapters/imessage.py`** — read-only SQLite query against `~/Library/Messages/chat.db`; requires Full Disk Access (granted).
 - **`adapters/calendar.py`** — direct SQLite read of `~/Library/Calendars/Calendar.sqlitedb`. iCloud Calendars sync verified working.
 - **`adapters/gmail.py`** — IMAP via Google app password (env vars in `.env.local`). Pulls unread + 24h windowed inbox.
 - **Decision log** at `~/.mikai/notification_log.db` — one row per tick (sent or silent), captures prompt hash, decision JSON, reasoning, user response.
 - **Verification status:** end-to-end dry-run confirmed cross-source reasoning over real data. ntfy → iPhone dispatch verified via `--test-ntfy`. Real organic notifications gated on (a) more diverse live signal in MIKAI (claude-thread=0 gap — see O-048), and (b) cron-style scheduling (still manual `--force` invocation).
+
+### Surface Engine feedback loop v1 (D-054, 2026-07-13)
+- **`notification_events` table** in `~/.mikai/notification_log.db` — event stream keyed on 12-char `notif_id` with types `SENT | TAPPED | DISMISSED_INFERRED`, carrying `dimension`, `action_type`, `source_ids`, `next_step_url`. Indexed on `notif_id` and `(event_type, event_ts)`.
+- **Dispatch wiring** in `mikai_decide.py` — every dispatched notification now mints a `notif_id`, logs SENT before ntfy send, and rewrites the ntfy Click header from the raw destination URL to `${TAP_BASE_URL}/t/{notif_id}` so the real URL never leaves this Mac. The LLM output schema now includes an explicit `dimension` field; a `reasoning`-text regex fallback catches tail cases.
+- **Tap endpoint** at `infra/decider/tap_endpoint.py` — standalone stdlib HTTP server, runs as `com.mikai.tap-endpoint` LaunchAgent on `0.0.0.0:8210` (port 8200 has an unrelated collision on this Mac). `GET /t/{notif_id}` looks up the SENT row, inserts TAPPED, 302s to real URL. Rejects malformed/unknown IDs at 404 without inserting phantom rows.
+- **Dismissal inference cron** at `infra/decider/dismissal_inference.py` — runs as `com.mikai.dismissal-inference` LaunchAgent every 3600s. Marks any SENT older than 24h (env `MIKAI_DISMISS_AFTER_HOURS`) with no matching TAPPED or existing DISMISSED_INFERRED. Idempotent; re-runs are safe.
+- **Phase 1 tunnel = LAN only.** `~/.mikai/tap_base_url` holds `http://192.168.88.228:8210`. iPhone taps work on home wifi; cellular taps fall back to no-signal (would-be TAPPED becomes DISMISSED_INFERRED at 24h — false negative, acceptable at this stage). Phase 2 promotes to Tailscale by writing a Tailscale hostname to that same file; no code change.
+- **Not yet wired:** the aggregate `tap-rate by dimension / action_type` query is not yet fed back into the Surface Engine prompt as context. That's the second half of the loop — the LLM currently produces the SENT signal but doesn't yet see the TAPPED/DISMISSED signal on the next tick. Landing this is the next work item once ~2 weeks of empirical data have accumulated.
+- **Verification:** smoke-tested end-to-end via a simulated tap through the LAN URL (SENT row → 302 to real URL preserved exactly → TAPPED row with correct dimension + action_type). Real iPhone tap gated on wifi + the next organic Surface Engine tick.
+
+### Calendar planner v1 (D-055, 2026-07-13)
+- **`calendar_proposals` table** in `~/.mikai/notification_log.db` — separate from `notification_events` because SQLite can't ALTER a CHECK constraint, and the proposal lifecycle (`PROPOSED → APPLIED | REJECTED | EXPIRED`) differs from the append-only event stream. Stores `event_uid`, `calendar_url`, `event_href`, `event_etag`, current/proposed title+description, `candidates_json` (audit of the picks the LLM made), `llm_rationale`, `apply_error`.
+- **`infra/decider/caldav_client.py`** — stdlib iCloud CalDAV client (~350 lines). Handles principal + calendar-home discovery via PROPFIND, time-range event queries via REPORT, and PUT with `If-Match: <etag>` for optimistic-concurrency PATCH. Six unit tests cover the highest-risk piece: iCal fold/unfold, escape/unescape, and property replacement inside VEVENT blocks (every line except SUMMARY / DESCRIPTION / LAST-MODIFIED / DTSTAMP is preserved verbatim).
+- **`infra/decider/calendar_planner.py`** — orchestrator (~300 lines). Once a day at 08:00 local via `com.mikai.calendar-planner` LaunchAgent: (1) discovers today's editable blocks via CalDAV (sole-attendee only, ≥90 min duration), (2) gathers a candidate pool spanning recent git activity on this repo + `docs/OPEN.md` + optional `~/.mikai/inflight.md` + Surface Engine needs registry, (3) calls DeepSeek V3 for a structured JSON pick (title, description, picks[], rationale), (4) inserts a PROPOSED row, (5) dispatches an ntfy card with `Actions: view, Approve, ...; view, Reject, ...`.
+- **Approve/Reject routes** on the existing tap-endpoint (`GET /approve/{proposal_id}` / `GET /reject/{proposal_id}`). Approve refetches the event by UID (etag may drift between propose and approve), PATCHes via CalDAV, marks APPLIED with the new etag, sends confirmation ntfy. Reject just marks REJECTED. Both idempotent by construction — the UPDATE has `WHERE status = 'PROPOSED'`, so a second tap on either route hits 0 rows and returns the resolved-state HTML. Malformed / unknown / expired IDs return 404 or the appropriate confirmation page. Failure inside the CalDAV PATCH records `apply_error` and keeps status PROPOSED so a retry works.
+- **Safety heuristic:** no calendar write ever fires without a tap. Auto-EXPIRE at 4h (`MIKAI_PROPOSAL_EXPIRY_H`) is the default if the user taps neither. Meetings with other attendees are strictly out of scope regardless of duration.
+- **Credentials:** `MIKAI_ICLOUD_USER` (Apple ID email) + `MIKAI_ICLOUD_APP_PASSWORD` (app-specific password from appleid.apple.com) in `~/.mikai/launchd.env` (chmod 0600, gitignored). Regular iCloud password never enters the system.
+- **Verified in isolation:** iCal fold/unfold/escape/property-replace passes 6 unit tests. Tap-endpoint approve/reject routes verified with seeded rows (reject → REJECTED; second reject → "Already rejected"; approve on rejected → "Already rejected"; approve with missing iCloud creds → 500 + apply_error recorded + status stays PROPOSED for retry).
+- **Gated on Brian:** end-to-end iCloud verification (real 8am fire, real Approve tap, real block rewrite on iPhone) requires an app-specific password added to `~/.mikai/launchd.env` under the two keys above. Everything else is running.
 
 ---
 
@@ -104,7 +123,7 @@ Two new nightly daemons turn the graph into a self-maintaining model of the user
 - **Stage 6 quality verification** — label the 200+200 gold set via `eval/label.py`, run `eval/run_l3_eval.py`. Estimated ~30–45 min of keyboard time. Until this lands, the "3.10 → ≥4.3" extraction-quality claim is unverified.
 - **Head-to-head benchmark against Claude.ai's native memory** — carry-over from `mcp_eval_pending` memory. 6 MIKAI answers collected 2026-04-18; Claude.ai baselines never collected. Re-feasible once Stage 6 verification lands.
 - **Claude-thread ingestion gap (O-048).** As of 2026-06-26 the graph has 0 `claude-thread` episodes — the daily Claude.ai web/desktop ingestion never landed (or stopped after 2026-05-21). 1,642 `claude-code` episodes from terminal sessions, and 62 `apple-notes` episodes are healthy. Brian is fixing on a separate branch (cookie-decrypt + internal API, 7-day window). Once landed, the notification decider's fresh-lens will see Claude.ai conversation content directly instead of just meta-references to it.
-- **FIGS calibration (D-053).** FIGS's first ticks ran silent — correctly, given the available signal in MIKAI was mostly newsletters + meta-references. Real validation of "L4 reasoning is the right brain" requires (a) richer signal in MIKAI (the claude-thread fix above), (b) actual dismiss/act data accumulating in `notification_log.db`, and (c) scheduling via Routines or local cron. Plan: re-run dry-runs after the claude-thread fix lands; instrument dismiss/act response capture; promote to scheduled execution.
+- **Surface Engine calibration (D-053).** Surface Engine's first ticks ran silent — correctly, given the available signal in MIKAI was mostly newsletters + meta-references. Real validation of "L4 reasoning is the right brain" requires (a) richer signal in MIKAI (the claude-thread fix above), (b) actual dismiss/act data accumulating in `notification_log.db`, and (c) scheduling via Routines or local cron. Plan: re-run dry-runs after the claude-thread fix lands; instrument dismiss/act response capture; promote to scheduled execution.
 
 ## Future product directions
 

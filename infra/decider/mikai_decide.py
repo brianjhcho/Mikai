@@ -42,6 +42,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib import request as urlreq
@@ -75,6 +76,84 @@ def load_ontology_wiki() -> str:
         return "(ontology wiki not yet generated — run full_corpus_dream.py to seed it)"
     return ONTOLOGY_WIKI_PATH.read_text()
 
+
+# Life-tier config (~/.mikai/life-tier.json). Declares Brian's current top-4
+# themes as an overlay above the 9-dim ontology. See docs/COMPARISON.md — the
+# declarative top-tier is one of MIKAI's differentiators over Hermes/OpenClaw.
+# Missing file = fall back to pure-ontology ranking (no top-4 bias).
+LIFE_TIER_PATH = Path.home() / ".mikai" / "life-tier.json"
+
+
+def load_life_tier() -> str:
+    """Return the life-tier config as a prompt-shaped markdown block.
+    Empty string when the config is missing so build_prompt() can degrade
+    gracefully — the FRAME + wiki still work without top-4 bias."""
+    if not LIFE_TIER_PATH.exists():
+        return "(no life-tier config at ~/.mikai/life-tier.json — falling back to pure-ontology ranking)"
+    try:
+        cfg = json.loads(LIFE_TIER_PATH.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        return f"(life-tier config unreadable: {exc})"
+
+    lines: list[str] = []
+    lines.append(
+        "Brian has declared the following as his TOP-TIER life themes for the "
+        "current period. Every FIGS tick MUST include at least one item from "
+        "each theme when signal is available; when it isn't, name the theme "
+        "and note it as stalled. These outrank the 9-dim ontology's raw "
+        "ordering — dimensions are the classifier, top-tier is the ranker."
+    )
+    lines.append("")
+    lines.append(f"Life-tier config version {cfg.get('version', '?')} "
+                 f"(updated {cfg.get('updated_at', '?')}):")
+    lines.append("")
+    for i, tier in enumerate(cfg.get("top_tier", []), 1):
+        lines.append(f"{i}. **{tier['name']}** (weight {tier.get('weight', 1.0)})")
+        srcs = ", ".join(tier.get("sources", []))
+        if srcs:
+            lines.append(f"   - Sources: {srcs}")
+        also = tier.get("also_pull_from")
+        if also:
+            lines.append(f"   - Also pull from: {', '.join(also)}")
+        filts = tier.get("filter_goals", [])
+        if filts:
+            lines.append(f"   - Include goals matching: {', '.join(repr(f) for f in filts)}")
+        rejs = tier.get("reject_goals", [])
+        if rejs:
+            lines.append(f"   - Reject goals matching: {', '.join(repr(r) for r in rejs)}")
+        why = tier.get("why_now")
+        if why:
+            lines.append(f"   - Why now: {why}")
+        lines.append("")
+
+    resolved = cfg.get("resolved", [])
+    if resolved:
+        lines.append("RESOLVED (do not surface — user has closed these):")
+        for r in resolved:
+            lines.append(f"  - {r}")
+        lines.append("")
+
+    reject = cfg.get("reject_universally", [])
+    if reject:
+        lines.append(
+            "REJECT UNIVERSALLY (never surface as a top-tier item — these are "
+            "MIKAI's own tooling, not the user's life): "
+            + ", ".join(repr(r) for r in reject)
+        )
+        lines.append("")
+
+    guardrails = cfg.get("guardrails", {})
+    if guardrails:
+        lines.append("Guardrails:")
+        for k, v in guardrails.items():
+            if k == "notes":
+                continue
+            lines.append(f"  - {k}: {v}")
+        if guardrails.get("notes"):
+            lines.append(f"  Notes: {guardrails['notes']}")
+
+    return "\n".join(lines)
+
 # ── Config ─────────────────────────────────────────────────────────────
 
 GRAPHITI_URL = os.environ.get("MIKAI_GRAPHITI_URL", "http://localhost:8100")
@@ -94,6 +173,28 @@ NTFY_TOPIC = os.environ.get("MIKAI_NTFY_TOPIC", "")
 DB_PATH = Path(os.environ.get("MIKAI_DB_PATH", str(Path.home() / ".mikai" / "notification_log.db")))
 COOLDOWN_HOURS = float(os.environ.get("MIKAI_COOLDOWN_HOURS", "2"))
 RECENT_DECISIONS_N = 15
+
+# Tap-redirect base URL. Every ntfy Click URL is rewritten to
+# `${TAP_BASE_URL}/t/${notif_id}` so we can log the tap event before
+# 302-ing to the real destination. Resolution order:
+#   1. env MIKAI_TAP_BASE_URL (explicit override)
+#   2. ~/.mikai/tap_base_url (written by cloudflared runner on tunnel start)
+#   3. empty → dispatch raw URLs untracked (feedback loop off)
+TAP_BASE_FILE = Path.home() / ".mikai" / "tap_base_url"
+
+
+def resolve_tap_base_url() -> str:
+    env = os.environ.get("MIKAI_TAP_BASE_URL", "").strip()
+    if env:
+        return env.rstrip("/")
+    if TAP_BASE_FILE.exists():
+        try:
+            v = TAP_BASE_FILE.read_text().strip().rstrip("/")
+            if v:
+                return v
+        except OSError:
+            pass
+    return ""
 
 CLAUDE_TIMEOUT_S = 360  # bumped from 180 — full ontology wiki + graph context
                         # pushes the prompt to ~70K chars, which needs longer
@@ -120,6 +221,57 @@ CREATE TABLE IF NOT EXISTS notification_log (
 
 CREATE INDEX IF NOT EXISTS idx_notification_log_tick ON notification_log(tick_ts);
 CREATE INDEX IF NOT EXISTS idx_notification_log_sent ON notification_log(sent);
+
+-- Event stream for the feedback loop. Each notification generates a SENT
+-- row at dispatch, then a TAPPED row when the redirect endpoint hits, or
+-- a DISMISSED_INFERRED row if the hourly job finds no tap within 24h.
+-- The next_step_url is stored server-side only so the real destination
+-- never leaves this DB; ntfy only ever sees the tap-redirect URL.
+CREATE TABLE IF NOT EXISTS notification_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    notif_id TEXT NOT NULL,
+    event_type TEXT NOT NULL CHECK (event_type IN ('SENT','TAPPED','DISMISSED_INFERRED')),
+    event_ts TEXT NOT NULL,
+    dimension TEXT,
+    action_type TEXT,
+    source_ids TEXT,
+    next_step_url TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_notification_events_notif ON notification_events(notif_id);
+CREATE INDEX IF NOT EXISTS idx_notification_events_type_ts ON notification_events(event_type, event_ts);
+
+-- Calendar rewrite proposals (D-055). Kept in a separate table from
+-- notification_events because (a) SQLite can't ALTER a CHECK constraint,
+-- and (b) proposals have a different lifecycle (PROPOSED → APPLIED |
+-- REJECTED | EXPIRED) than the append-only event stream.
+--
+-- A proposal represents: MIKAI wants to rewrite iCloud CalDAV event
+-- `event_uid` on calendar `calendar_url` from (current_title, current_description)
+-- to (proposed_title, proposed_description). It sits PROPOSED until the user
+-- taps Approve or Reject (via tap-endpoint /approve/{proposal_id} or
+-- /reject/{proposal_id}), or the hourly expiry job marks it EXPIRED at 4h.
+CREATE TABLE IF NOT EXISTS calendar_proposals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    proposal_id TEXT NOT NULL UNIQUE,
+    event_uid TEXT NOT NULL,
+    calendar_url TEXT NOT NULL,
+    event_href TEXT NOT NULL,
+    event_etag TEXT,
+    status TEXT NOT NULL CHECK (status IN ('PROPOSED','APPLIED','REJECTED','EXPIRED')),
+    proposed_at TEXT NOT NULL,
+    resolved_at TEXT,
+    current_title TEXT,
+    current_description TEXT,
+    proposed_title TEXT,
+    proposed_description TEXT,
+    candidates_json TEXT,
+    llm_rationale TEXT,
+    apply_error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_calendar_proposals_status ON calendar_proposals(status, proposed_at);
+CREATE INDEX IF NOT EXISTS idx_calendar_proposals_pid ON calendar_proposals(proposal_id);
 """
 
 # Columns added after the initial schema landed. SQLite doesn't support
@@ -130,6 +282,7 @@ EXTRA_COLUMNS = [
     ("slate_size", "INTEGER"),
     ("next_step_url", "TEXT"),
     ("action_type", "TEXT"),
+    ("notif_id", "TEXT"),
 ]
 
 
@@ -143,6 +296,10 @@ def db_connect() -> sqlite3.Connection:
             conn.execute(f"ALTER TABLE notification_log ADD COLUMN {col} {decl}")
         except sqlite3.OperationalError:
             pass  # already added
+    # Index on the newly-added notif_id column (idempotent).
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_notification_log_notif ON notification_log(notif_id)"
+    )
     conn.commit()
     return conn
 
@@ -578,6 +735,9 @@ You are MIKAI, Brian's notification decider. Your job this tick: surface 2 to 5 
 
 CURRENT TIME: {now} (UTC), {weekday}, hour {hour} UTC
 
+== TOP-TIER — Brian's declared life-tier themes (OUTRANKS ontology ordering) ==
+{life_tier_content}
+
 == FRAME — Brian's life-dimensions ontology (highest level) ==
 Below is Brian's personal ontology: 9 dimensions of his life, each with concrete
 goals and evidence concepts. Use this as the ROUTING SCHEMA when ranking
@@ -745,6 +905,7 @@ Shape (notifications is an array of 2-5 items, OR 0 only if everything is genuin
       "needs_slug": "<slug from needs registry if applicable, else null>",
       "action_type": "<one of: transaction | communication | search | capture | decision | physical | user_response — see RULE 11>",
       "next_step_url": "<URL routed by action_type per RULE 11; for `decision`, a Google Calendar quick-add URL with the full context bundle in details=; null only for physical/user_response>",
+      "dimension": "<dim_1 | dim_2 | ... | dim_9 — the life-dimension slug this item belongs to (from the FRAME section above); required so the feedback loop can score tap-rate by dimension>",
       "reasoning": "<one sentence: why this item, why now, naming the 4 factors>"
     }},
     ...
@@ -791,6 +952,7 @@ def build_prompt(context: dict, recent_decisions: list[dict]) -> str:
         needs_summary=format_needs(context.get("needs_ranked", []), context.get("needs_registry")),
         dimensions_content=load_dimensions(),
         ontology_wiki_content=load_ontology_wiki(),
+        life_tier_content=load_life_tier(),
     )
 
 
@@ -945,26 +1107,24 @@ def format_decisions(decisions: list[dict]) -> str:
 
 # ── Claude invocation ──────────────────────────────────────────────────
 
+# tier=interactive: the decide tick drafts user-facing notification copy —
+# best-model territory. Already claude -p before the shim existed; routing
+# through mikai_llm centralizes provider policy (and the shim strips
+# ANTHROPIC_API_KEY from the subprocess env, which the launchd runner
+# previously had to do by hand).
 def invoke_claude(prompt: str) -> str | None:
-    """Invoke Claude via the `claude` CLI in headless mode (Max-legitimate)."""
     try:
-        result = subprocess.run(
-            ["claude", "-p", prompt, "--output-format", "text"],
-            capture_output=True,
-            text=True,
-            timeout=CLAUDE_TIMEOUT_S,
-        )
-        if result.returncode != 0:
-            print(f"ERROR: `claude` CLI returned {result.returncode}", file=sys.stderr)
-            if result.stderr:
-                print(f"  stderr: {result.stderr.strip()[:500]}", file=sys.stderr)
-            return None
-        return result.stdout.strip()
-    except FileNotFoundError:
-        print("ERROR: `claude` CLI not found. Install Claude Code first.", file=sys.stderr)
-        return None
+        from infra.mikai_llm import chat as _chat
+    except ImportError:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+        from infra.mikai_llm import chat as _chat
+    try:
+        return _chat(prompt, tier="interactive", timeout=CLAUDE_TIMEOUT_S)
     except subprocess.TimeoutExpired:
-        print(f"ERROR: `claude` CLI timed out after {CLAUDE_TIMEOUT_S}s", file=sys.stderr)
+        print(f"ERROR: LLM call timed out after {CLAUDE_TIMEOUT_S}s", file=sys.stderr)
+        return None
+    except Exception as e:
+        print(f"ERROR: LLM call failed: {e}", file=sys.stderr)
         return None
 
 
@@ -1137,6 +1297,81 @@ def validate_decision(decision: dict | None, context: dict) -> tuple[bool, str]:
     return True, "ok"
 
 
+# ── Feedback loop primitives ───────────────────────────────────────────
+#
+# Every dispatched notification carries a short `notif_id` (12-char uuid).
+# The ntfy Click URL is rewritten from the raw destination
+# (e.g. https://mail.google.com/...) to `${TAP_BASE_URL}/t/${notif_id}`
+# so we can log the TAPPED event before 302-ing to the real URL.
+# The raw URL never leaves the local DB.
+#
+# If TAP_BASE_URL is empty (no tunnel running yet), we fall back to the
+# raw URL — the feedback loop is off but the notification still works.
+
+
+def new_notif_id() -> str:
+    return uuid.uuid4().hex[:12]
+
+
+# Match "dim 3", "dim_3", "dimension 3", "dim-3" — the LLM tends to phrase
+# dimensions loosely in reasoning even when the explicit field is empty.
+_DIM_RE = re.compile(r"\bdim(?:ension)?[\s_\-]*([1-9])\b", re.IGNORECASE)
+
+
+def infer_dimension(notif: dict) -> str | None:
+    """Return the life-dimension slug (dim_1..dim_9) for a notification,
+    or None. Prefers the explicit `dimension` field; falls back to a
+    regex over `reasoning` for the tail case where the LLM omitted it.
+    """
+    explicit = (notif.get("dimension") or "").strip().lower()
+    if explicit.startswith("dim_") or explicit.startswith("dim-"):
+        # Normalize to dim_N form.
+        digits = "".join(c for c in explicit if c.isdigit())
+        if digits:
+            return f"dim_{digits}"
+    m = _DIM_RE.search(notif.get("reasoning", "") or "")
+    if m:
+        return f"dim_{m.group(1)}"
+    return None
+
+
+def build_tap_url(notif_id: str, real_url: str) -> str:
+    """Wrap real_url in the tap-redirect endpoint, or return raw if no base."""
+    base = resolve_tap_base_url()
+    if not base:
+        return real_url
+    return f"{base}/t/{notif_id}"
+
+
+def log_sent_event(
+    conn: sqlite3.Connection,
+    notif_id: str,
+    notif: dict,
+    real_url: str | None,
+) -> None:
+    """Insert a SENT event. Called BEFORE ntfy dispatch so a crash mid-loop
+    still leaves a redirectable row — a stale SENT is a rare, self-heals via
+    DISMISSED_INFERRED at 24h.
+    """
+    conn.execute(
+        """
+        INSERT INTO notification_events
+            (notif_id, event_type, event_ts, dimension, action_type,
+             source_ids, next_step_url)
+        VALUES (?, 'SENT', ?, ?, ?, ?, ?)
+        """,
+        (
+            notif_id,
+            datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            infer_dimension(notif),
+            notif.get("action_type"),
+            json.dumps(notif.get("evidence_edge_uuids", []) or []),
+            real_url,
+        ),
+    )
+    conn.commit()
+
+
 # ── ntfy dispatch ──────────────────────────────────────────────────────
 
 # ntfy priority levels: 1 (min) to 5 (max); default 3
@@ -1220,14 +1455,15 @@ def log_silent(conn: sqlite3.Connection, tick_ts: str, prompt: str,
 
 
 def log_sent(conn: sqlite3.Connection, tick_ts: str, prompt: str,
-             notif: dict, slate_index: int, slate_size: int) -> None:
+             notif: dict, slate_index: int, slate_size: int,
+             notif_id: str | None = None) -> None:
     conn.execute(
         """
         INSERT INTO notification_log
             (tick_ts, prompt_hash, decision_json, sent, title, body, priority,
              evidence_edge_uuids, reasoning, decision_point,
-             slate_index, slate_size, next_step_url, action_type)
-        VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             slate_index, slate_size, next_step_url, action_type, notif_id)
+        VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             tick_ts,
@@ -1243,6 +1479,7 @@ def log_sent(conn: sqlite3.Connection, tick_ts: str, prompt: str,
             slate_size,
             notif.get("next_step_url"),
             notif.get("action_type"),
+            notif_id,
         ),
     )
     conn.commit()
@@ -1267,6 +1504,19 @@ def main() -> int:
     parser.add_argument("--write-brief", action="store_true",
                         help="Write today's MIKAI brief into macOS Calendar with the top 3 candidates")
     args = parser.parse_args()
+
+    # Surface Engine toggle (formerly FIGS).
+    # Unattended dispatches are OFF by default — MIKAI stays silent until Brian
+    # turns Surface on. Interactive diagnostics still work.
+    # To enable: `export MIKAI_SURFACE_ENABLED=1` in ~/.mikai/launchd.env, then
+    # `launchctl kickstart -k gui/$(id -u)/com.mikai.figs-decide`.
+    _diagnostic = any([args.init, args.test_ntfy, args.dry_run,
+                       args.show_prompt, args.show_slate, args.force])
+    _enabled = os.environ.get("MIKAI_SURFACE_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+    if not _enabled and not _diagnostic:
+        print("Surface Engine disabled — set MIKAI_SURFACE_ENABLED=1 to enable "
+              "(or pass --dry-run / --force / --show-slate for diagnostics).")
+        return 0
 
     conn = db_connect()
 
@@ -1439,14 +1689,30 @@ def main() -> int:
     slate_size = len(notifs)
     fail_count = 0
 
+    tap_base = resolve_tap_base_url()
+    if not tap_base:
+        print("NOTE: MIKAI_TAP_BASE_URL not set — feedback loop OFF; "
+              "ntfy will get raw next_step_url (no TAPPED tracking).",
+              file=sys.stderr)
+
     for i, n in enumerate(notifs):
+        notif_id = new_notif_id()
+        real_url = n.get("next_step_url") or None
+        # Log SENT before dispatch so the redirect can serve the tap even
+        # if we crash between here and log_sent below.
+        if real_url:
+            log_sent_event(conn, notif_id, n, real_url)
+        dispatch_url = build_tap_url(notif_id, real_url) if real_url else None
+
         sent_ok, dispatch_msg = dispatch_via_ntfy(
             n["title"], n["body"], n["priority"],
-            next_step_url=n.get("next_step_url"),
+            next_step_url=dispatch_url,
         )
         if sent_ok:
-            log_sent(conn, now_ts, prompt, n, slate_index=i, slate_size=slate_size)
-            print(f"  ✓ [{i+1}/{slate_size}] SENT: {n['title']}")
+            log_sent(conn, now_ts, prompt, n, slate_index=i,
+                     slate_size=slate_size, notif_id=notif_id)
+            print(f"  ✓ [{i+1}/{slate_size}] SENT: {n['title']} "
+                  f"(notif_id={notif_id})")
         else:
             log_silent(conn, now_ts, prompt, n, f"dispatch_failed: {dispatch_msg}")
             print(f"  ✗ [{i+1}/{slate_size}] FAILED: {dispatch_msg}", file=sys.stderr)

@@ -24,9 +24,8 @@ fi
 
 mkdir -p "$HOME/.mikai/logs"
 
-# Until Sumimasen lands on main, canonical code lives in pear-seashore.
 # Update REPO to "$HOME/Desktop/MIKAI" after the merge.
-REPO="$HOME/.superset/worktrees/MIKAI/pear-seashore"
+REPO="$HOME/Desktop/MIKAI"
 cd "$REPO/infra/decider"
 
 exec /usr/bin/env python3 sumimasen_watcher.py

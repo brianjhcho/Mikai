@@ -22,7 +22,7 @@ unset ANTHROPIC_API_KEY
 
 mkdir -p "$HOME/.mikai/logs"
 
-REPO="$HOME/.superset/worktrees/MIKAI/pear-seashore"
+REPO="$HOME/Desktop/MIKAI"
 cd "$REPO/infra/decider"
 
 exec /usr/bin/env python3 mikai_decide.py --write-brief
