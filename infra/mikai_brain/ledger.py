@@ -46,18 +46,36 @@ class RunEntry:
 
 def append_run(entry: RunEntry) -> None:
     _ensure_state_dir()
-    rows = read_runs()
+    # A corrupt file must never be silently clobbered: read_runs() returning
+    # [] would otherwise rewrite the whole history as just this row.
+    if PROGRESS_LOG.exists() and PROGRESS_LOG.stat().st_size > 0:
+        try:
+            rows = json.loads(PROGRESS_LOG.read_text())
+        except json.JSONDecodeError:
+            backup = PROGRESS_LOG.with_name(
+                f"progress.corrupt-{_now().replace(':', '')}.json"
+            )
+            PROGRESS_LOG.rename(backup)
+            print(f"WARN: progress.json unparseable — moved to {backup.name}, starting fresh")
+            rows = []
+        if not isinstance(rows, list):
+            rows = []
+    else:
+        rows = []
     rows.append(asdict(entry))
-    PROGRESS_LOG.write_text(json.dumps(rows, indent=2) + "\n")
+    tmp = PROGRESS_LOG.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(rows, indent=2) + "\n")
+    tmp.replace(PROGRESS_LOG)
 
 
 def read_runs() -> list[dict]:
     if not PROGRESS_LOG.exists():
         return []
     try:
-        return json.loads(PROGRESS_LOG.read_text())
+        rows = json.loads(PROGRESS_LOG.read_text())
     except json.JSONDecodeError:
         return []
+    return rows if isinstance(rows, list) else []
 
 
 def run(mode: str, did: str, **kw: Any) -> RunEntry:
