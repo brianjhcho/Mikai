@@ -169,3 +169,31 @@ missed its target — caught and documented below).
    reflect today's work; the rewrite will be accurate this time.
 5. **Migrate progress.json → JSONL** behind `ledger.py`'s API (no callers
    change) — closes concerns 2 and 4 in one small PR.
+
+## Cockpit T1+T2 shipped (2026-08-05, Fable 5 second pass)
+
+`infra/cockpit/` renders the brain as a dark constellation instrument —
+SURFACE (the intervention gate) at center, the seven life/infra
+departments on an ellipse around it, threads as state-styled sub-nodes
+(hollow = exploring/evaluating, solid = decided/acting with pulse,
+warm = stalled, gray+check = completed, warm 2-o'clock dot = overdue).
+Hover/focus any node → left detail panel (thread: chips, next step,
+last 3 log bullets, Sumimasen reason; hub: breakdown, latest matching
+decision, top next step; center: dismiss rate, pending, gate status).
+
+- **T1 (snapshot):** `make cockpit` →
+  `~/.mikai/brain/state/dashboard.json` + `~/.mikai/brain/cockpit.html`
+  with the state embedded inline — works offline over `file://`.
+- **T2 (refresh-on-load):** on open the page fetches
+  `./state/dashboard.json` and re-renders if newer; manual refresh
+  button top-right. No polling (that's T3). Falls back silently to the
+  embedded snapshot when fetch is blocked.
+- Threads whose `department:` isn't in the canonical seven land in a
+  muted `misc` hub (today: `monstera-moss-pole`, filed as `domestic`).
+- Mobile <900px collapses to stacked department cards; pulses respect
+  `prefers-reduced-motion`; dark-only this pass (light-theme seam noted
+  in `render.py`).
+- Verified: build + all CLI flags (`--dry-run`, `--output`,
+  `--refresh-only`), scratch-brain stall thread renders, UTF-8 clean,
+  no absolute paths embedded, JS `node --check` clean, live refresh
+  exercised in Safari over `http.server`.

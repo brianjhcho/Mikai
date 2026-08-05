@@ -4,7 +4,7 @@
 
 PY := python3
 
-.PHONY: standup standup-dry triage triage-no-llm consolidate-dry test smoke
+.PHONY: standup standup-dry triage triage-no-llm consolidate-dry test smoke cockpit
 
 standup:
 	$(PY) -m infra.mikai_brain.standup
@@ -24,6 +24,10 @@ consolidate-dry:
 
 test:
 	$(PY) -m unittest discover -s infra/mikai_brain/tests -t . -v
+
+# Second Brain constellation view: writes state/dashboard.json + cockpit.html.
+cockpit:
+	$(PY) -m infra.cockpit.main
 
 # Read-only health check: no state writes, no LLM calls, no file moves.
 smoke:
