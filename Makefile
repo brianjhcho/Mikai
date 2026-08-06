@@ -4,7 +4,7 @@
 
 PY := python3
 
-.PHONY: standup standup-dry triage triage-no-llm consolidate-dry consolidate consolidate-brain-md test test-writeback test-exec smoke cockpit install-consolidate-cron install-dream-crons install-health-check act act-dry
+.PHONY: standup standup-dry triage triage-no-llm consolidate-dry consolidate consolidate-brain-md test test-writeback test-exec smoke cockpit install-consolidate-cron install-dream-crons install-health-check act act-dry ask ask-dry test-ask
 
 standup:
 	$(PY) -m infra.mikai_brain.standup
@@ -87,3 +87,15 @@ smoke:
 	print('smoke: store.recall ok —', len(hits), 'hit(s)'); \
 	from infra.mikai_brain import ledger; \
 	print('smoke: ledger ok —', len(ledger.read_events()), 'delivery event(s),', len(ledger.read_runs()), 'run(s)')"
+
+# mikai_ask — free text in, substrate-grounded answer out. Real
+# interactive-tier LLM call; logs a mode="ask" row to progress.jsonl.
+ask:
+	$(PY) -m infra.mikai_ask "$(Q)"
+
+# Assemble + print the composed prompt and size stats. No LLM call, no log.
+ask-dry:
+	$(PY) -m infra.mikai_ask --dry-run "$(Q)"
+
+test-ask:
+	$(PY) -m unittest discover -s infra/mikai_ask/tests -t . -v
