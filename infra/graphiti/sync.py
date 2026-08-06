@@ -524,6 +524,30 @@ async def run_sync_pass(
     return apple, code
 
 
+def _ledger_trace(notes: int, turns: int) -> None:
+    """Heartbeat row for infra.mikai_brain.health. Best-effort — never
+    allowed to fail a sync pass. Rate-guarded: empty passes (debounce
+    noise) write at most one row per hour."""
+    try:
+        from infra.mikai_brain import ledger
+
+        if notes + turns == 0:
+            rows = [r for r in ledger.read_runs() if r.get("mode") == "ingestion"]
+            if rows:
+                last = datetime.fromisoformat(rows[-1]["ts"])
+                if last.tzinfo is None:
+                    last = last.replace(tzinfo=timezone.utc)
+                age_s = (_utc_now() - last).total_seconds()
+                if age_s < 3600:
+                    return
+        ledger.run(
+            mode="ingestion",
+            did=f"Sync pass: apple-notes={notes} claude-code-turns={turns}",
+        )
+    except Exception:
+        logger.exception("ledger trace failed (non-fatal)")
+
+
 # ── Daemon (watchdog + debounce) ──────────────────────────────────────────────
 
 
@@ -555,7 +579,8 @@ async def daemon_loop(
     observer.start()
     try:
         # One pass immediately so we catch anything queued during downtime.
-        await run_sync_pass(ingest_fn=ingest_fn, state_path=state_path)
+        _n, _t = await run_sync_pass(ingest_fn=ingest_fn, state_path=state_path)
+        _ledger_trace(_n, _t)
 
         while True:
             await event.wait()
@@ -567,7 +592,8 @@ async def daemon_loop(
                 except asyncio.TimeoutError:
                     break
             logger.info("Filesystem events settled; running sync pass.")
-            await run_sync_pass(ingest_fn=ingest_fn, state_path=state_path)
+            _n, _t = await run_sync_pass(ingest_fn=ingest_fn, state_path=state_path)
+            _ledger_trace(_n, _t)
     finally:
         observer.stop()
         observer.join()
@@ -618,6 +644,8 @@ async def _main_async(args: argparse.Namespace) -> None:
         logger.info(
             f"{label} pass complete. apple-notes={notes} claude-code-turns={turns}"
         )
+        if not (args.dry_run or args.seed_only):
+            _ledger_trace(notes, turns)
         return
 
     await daemon_loop(ingest_fn=ingest_fn)

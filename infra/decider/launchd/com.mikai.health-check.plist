@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.mikai.health-check</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/briancho/Library/Application Support/mikai/launchd/health-check-runner.sh</string>
+    </array>
+
+    <!-- 08:15 daily — 15 min after the consolidate window (Sunday
+         08:00), so a Sunday consolidate has already left its ledger row
+         by the time we assert on it. See docs/HEALTH_CHECK.md. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>8</integer>
+        <key>Minute</key><integer>15</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/briancho/.mikai/logs/health-check.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/briancho/.mikai/logs/health-check.err.log</string>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/briancho/Library/Application Support/mikai/launchd</string>
+</dict>
+</plist>
