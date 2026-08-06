@@ -85,6 +85,7 @@ WIKI_INDEX = WIKI_DIR / "wiki.index"
 NARRATIVE_OUT = WIKI_DIR / "wiki-narrative.md"
 ONTOLOGY_OUT = WIKI_DIR / "wiki-ontology.md"
 CHECKPOINT = WIKI_DIR / ".dream-bootstrap-ontology.checkpoint.jsonl"
+NARRATIVE_STATE = WIKI_DIR / ".narrative-state.json"
 
 CHUNK_CHAR_BUDGET = 150_000   # safe LLM context margin per call
 NARRATIVE_TARGET_CHUNKS = 5   # aim for <= this many Pass A calls
@@ -302,6 +303,170 @@ def run_narrative(
         print(f"[pass A] backed up prior narrative -> {bak.name}")
     NARRATIVE_OUT.write_text(header + "\n\n".join(pieces) + "\n", encoding="utf-8")
     print(f"[pass A] wrote {NARRATIVE_OUT} ({NARRATIVE_OUT.stat().st_size:,} bytes)")
+    # A full rebuild covers everything up to now — reset the incremental
+    # watermark so the next nightly delta starts from here (the rebuild
+    # replaces any dated deltas the file previously carried).
+    _save_narrative_state(datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    print(f"[pass A] reset incremental watermark ({NARRATIVE_STATE.name})")
+
+
+# ── Pass A′ — incremental (nightly) narrative delta ───────────────────────
+
+
+INCR_MIN_SECTIONS = 5          # fewer new sections than this -> nothing to say
+INCR_CHAR_BUDGET = 300_000     # single-call prompt ceiling (~75K tokens)
+INCR_RETENTION_DAYS = 30       # dated deltas older than this are truncated
+INCR_DEFAULT_LOOKBACK_H = 24   # first run ever: cover the last day
+
+_DELTA_HEADER_RE = re.compile(r"^## Δ (\d{4}-\d{2}-\d{2})", re.MULTILINE)
+
+
+def _load_narrative_state() -> str | None:
+    """-> last_run_ts (ISO) or None if no state yet."""
+    if not NARRATIVE_STATE.exists():
+        return None
+    try:
+        return json.loads(NARRATIVE_STATE.read_text(encoding="utf-8"))["last_run_ts"]
+    except (json.JSONDecodeError, KeyError, OSError):
+        return None
+
+
+def _save_narrative_state(last_run_ts: str) -> None:
+    NARRATIVE_STATE.write_text(
+        json.dumps(
+            {
+                "last_run_ts": last_run_ts,
+                "updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _split_deltas(text: str) -> tuple[str, list[tuple[str, str]]]:
+    """-> (base_text, [(date, delta_block), ...]). base = everything
+    before the first `## Δ YYYY-MM-DD` header (bootstrap/weekly body)."""
+    matches = list(_DELTA_HEADER_RE.finditer(text))
+    if not matches:
+        return text, []
+    base = text[: matches[0].start()]
+    deltas: list[tuple[str, str]] = []
+    for i, m in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        deltas.append((m.group(1), text[m.start():end].rstrip() + "\n"))
+    return base, deltas
+
+
+_INCR_PROMPT = """\
+You are appending today's entry to Brian's private activity journal.
+Below are dated excerpts from his personal knowledge wiki covering only
+what is NEW since the last journal entry ({since}) — notes, Claude
+sessions, research, messages. Each excerpt starts with a
+`### <timestamp> — <source> — <title>` header.
+
+Write a 200-500 word FIRST-PERSON delta narrative (Brian's voice, "I")
+of what happened since then: what I worked on, decided, researched,
+worried about, and left unfinished. Name the specific threads, projects,
+people, and decisions that actually appear in the excerpts — no generic
+filler. Ground every claim in the excerpts; if something is ambiguous,
+hedge or omit it. Never invent people, events, or decisions.
+
+Output: the narrative prose only. No preamble, no headers, no bullet
+lists.
+
+EXCERPTS:
+{body}
+"""
+
+
+def run_narrative_incremental(
+    idx: WikiIndex, budget: Budget, dry_run: bool, verbose: bool
+) -> str:
+    """Nightly delta: one LLM call over sections newer than the last run,
+    APPENDED to wiki-narrative.md under a dated `## Δ` header. Dated
+    deltas older than INCR_RETENTION_DAYS are truncated. Returns a
+    one-line summary (for the ledger trace)."""
+    last_ts = _load_narrative_state()
+    if last_ts is None:
+        since = datetime.now(timezone.utc) - timedelta(hours=INCR_DEFAULT_LOOKBACK_H)
+        last_ts = since.isoformat(timespec="seconds")
+        print(f"[pass A-incr] no state file — defaulting to last "
+              f"{INCR_DEFAULT_LOOKBACK_H}h (since {last_ts})")
+    records = [
+        r for r in idx.sections_matching(since=last_ts)
+        if r["header_ts"] > last_ts
+    ]
+    print(f"[pass A-incr] {len(records)} new section(s) since {last_ts}")
+
+    if len(records) < INCR_MIN_SECTIONS:
+        msg = (f"skipped: only {len(records)} new section(s) since {last_ts} "
+               f"(< {INCR_MIN_SECTIONS}) — nothing to say")
+        print(f"[pass A-incr] {msg}")
+        # Watermark intentionally NOT advanced: the trickle accumulates
+        # until there is enough to narrate.
+        return msg
+
+    cap = max(300, min(4000, INCR_CHAR_BUDGET // len(records)))
+    if dry_run:
+        est = sum(min(r["byte_end"] - r["byte_start"], cap + 200) for r in records)
+        newest = max(r["header_ts"] for r in records)
+        print(
+            f"[pass A-incr] dry-run: would send 1 LLM call "
+            f"(~{est:,} prompt chars, ~{est // 4:,} tokens, per-section "
+            f"cap {cap}), append '## Δ "
+            f"{datetime.now(timezone.utc).date().isoformat()}' to "
+            f"{NARRATIVE_OUT.name}, advance watermark {last_ts} -> {newest}"
+        )
+        return "dry-run"
+
+    body = "\n\n".join(
+        excerpt(WikiIndex.read_section(WIKI_MD, r), cap) for r in records
+    )
+    if len(body) > INCR_CHAR_BUDGET:
+        body = body[:INCR_CHAR_BUDGET] + "\n…[window truncated]"
+    if verbose:
+        print(f"[pass A-incr] prompt body: {len(body):,} chars, "
+              f"per-section cap {cap}")
+    out = budget.chat(
+        _INCR_PROMPT.format(since=last_ts, body=body), "incremental narrative"
+    )
+    if not out:
+        print("[pass A-incr] LLM call FAILED — no write, watermark unchanged")
+        return "FAILED: LLM call returned nothing"
+
+    today = datetime.now(timezone.utc).date().isoformat()
+    existing = (
+        NARRATIVE_OUT.read_text(encoding="utf-8")
+        if NARRATIVE_OUT.exists()
+        else f"# Wiki Narrative — as of {today}\n\n_(started by nightly "
+             f"incremental dream — no full bootstrap narrative yet)_\n"
+    )
+    base, deltas = _split_deltas(existing)
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=INCR_RETENTION_DAYS)
+    ).date().isoformat()
+    kept = [(d, block) for d, block in deltas if d >= cutoff]
+    dropped = len(deltas) - len(kept)
+    if dropped:
+        print(f"[pass A-incr] truncated {dropped} delta(s) older than {cutoff}")
+
+    new_block = (
+        f"## Δ {today} — nightly delta (since {last_ts}, "
+        f"{len(records)} sections)\n\n{out.strip()}\n"
+    )
+    text = base.rstrip() + "\n\n" + "\n\n".join(
+        [block.rstrip() for _, block in kept] + [new_block]
+    ) + "\n"
+    NARRATIVE_OUT.write_text(text, encoding="utf-8")
+    print(f"[pass A-incr] appended '## Δ {today}' to {NARRATIVE_OUT} "
+          f"({NARRATIVE_OUT.stat().st_size:,} bytes)")
+
+    newest = max(r["header_ts"] for r in records)
+    _save_narrative_state(newest)
+    print(f"[pass A-incr] watermark -> {newest}")
+    return (f"nightly delta: {len(records)} sections since {last_ts}, "
+            f"{dropped} old delta(s) truncated")
 
 
 # ── Pass B — ontology (map-reduce) ────────────────────────────────────────
@@ -728,6 +893,23 @@ def _write_compact_report(
     print(f"[pass C] report -> {report}")
 
 
+# ── Ledger trace (health-check heartbeat) ─────────────────────────────────
+
+
+def _ledger_trace(mode: str, did: str, budget: Budget) -> None:
+    """Best-effort progress.jsonl row so infra.mikai_brain.health can see
+    the scheduled job fired. Never allowed to fail the dream run."""
+    try:
+        from infra.mikai_brain import ledger
+
+        ledger.run(mode=mode, did=did,
+                   extra={"llm_calls": budget.calls,
+                          "llm_failures": budget.failures})
+        print(f"[ledger] trace written: mode={mode}")
+    except Exception as exc:
+        print(f"[ledger] trace failed (non-fatal): {exc}", file=sys.stderr)
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────
 
 
@@ -743,6 +925,14 @@ def main() -> None:
              "compact runs only when named explicitly)",
     )
     ap.add_argument("--narrative-days", type=int, default=30)
+    ap.add_argument("--incremental", action="store_true",
+                    help="narrative only: nightly delta since the last "
+                         "incremental run (state: wiki/.narrative-state.json), "
+                         "APPENDED as a dated '## Δ' entry; 1 LLM call")
+    ap.add_argument("--ledger-mode", default=None, metavar="MODE",
+                    help="on success, write a ledger.run(mode=MODE, ...) row "
+                         "to progress.jsonl (used by scheduled runners so the "
+                         "health check can see the job fired)")
     ap.add_argument("--batch-sections", type=int, default=300,
                     help="max sections per ontology batch (default 300)")
     ap.add_argument("--max-calls", type=int, default=50,
@@ -753,21 +943,32 @@ def main() -> None:
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
+    if args.incremental and args.which != "narrative":
+        sys.exit("--incremental only applies to the narrative pass")
     if not WIKI_MD.exists():
         sys.exit(f"{WIKI_MD} not found")
     idx = load_index()
     budget = Budget(args.max_calls)
     t0 = time.monotonic()
+    summary = ""
 
     try:
-        if args.which in ("all", "narrative"):
+        if args.which == "narrative" and args.incremental:
+            summary = run_narrative_incremental(idx, budget,
+                                                args.dry_run, args.verbose)
+        elif args.which in ("all", "narrative"):
             run_narrative(idx, args.narrative_days, budget,
                           args.dry_run, args.verbose)
+            summary = f"full narrative rebuild (last {args.narrative_days}d)"
         if args.which in ("all", "ontology"):
             run_ontology(idx, args.batch_sections, budget,
                          args.dry_run, args.verbose, args.resume)
+            summary = (summary + "; " if summary else "") + "ontology rebuild"
         if args.which == "compact":
+            summary = "wiki compaction"
             run_compact(idx, args.dry_run, args.verbose)
+        if args.ledger_mode and not args.dry_run:
+            _ledger_trace(args.ledger_mode, summary or "completed", budget)
     except BudgetExceeded as exc:
         print(f"[stop] {exc}", file=sys.stderr)
         sys.exit(2)

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Install (or re-install) the dream LaunchAgents:
+#   com.mikai.dream-nightly — incremental narrative delta, 03:00 daily
+#                             (Sundays: full-window narrative rebuild)
 #   com.mikai.dream-weekly  — ontology rebuild, Sunday 06:00 local
 #   com.mikai.dream-monthly — wiki compaction, 1st of month 05:00 local
 # Idempotent: unloads any existing job before loading the new one.
@@ -33,13 +35,16 @@ install_job() {
   echo "  runner: $DEST_DIR/$runner"
 }
 
+install_job "com.mikai.dream-nightly" "dream-nightly-runner.sh"
 install_job "com.mikai.dream-weekly"  "dream-weekly-runner.sh"
 install_job "com.mikai.dream-monthly" "dream-monthly-runner.sh"
 
 echo
 echo "verify:  launchctl list | grep com.mikai.dream"
-echo "trigger: launchctl kickstart -k gui/\$(id -u)/com.mikai.dream-weekly"
+echo "trigger: launchctl kickstart -k gui/\$(id -u)/com.mikai.dream-nightly"
+echo "         launchctl kickstart -k gui/\$(id -u)/com.mikai.dream-weekly"
 echo "         launchctl kickstart -k gui/\$(id -u)/com.mikai.dream-monthly"
-echo "logs:    ~/.mikai/logs/dream-{weekly,monthly}.{out,err}.log"
-echo "unload:  launchctl bootout gui/\$(id -u) '$DEST_DIR/com.mikai.dream-weekly.plist'"
+echo "logs:    ~/.mikai/logs/dream-{nightly,weekly,monthly}.{out,err}.log"
+echo "unload:  launchctl bootout gui/\$(id -u) '$DEST_DIR/com.mikai.dream-nightly.plist'"
+echo "         launchctl bootout gui/\$(id -u) '$DEST_DIR/com.mikai.dream-weekly.plist'"
 echo "         launchctl bootout gui/\$(id -u) '$DEST_DIR/com.mikai.dream-monthly.plist'"

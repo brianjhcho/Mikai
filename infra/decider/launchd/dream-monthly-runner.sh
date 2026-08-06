@@ -24,4 +24,5 @@ mkdir -p "$HOME/.mikai/logs"
 REPO="$HOME/Desktop/MIKAI"
 cd "$REPO"
 
-exec /usr/bin/env python3 -m infra.graphiti.dream_bootstrap compact
+exec /usr/bin/env python3 -m infra.graphiti.dream_bootstrap compact \
+  --ledger-mode dream-monthly
