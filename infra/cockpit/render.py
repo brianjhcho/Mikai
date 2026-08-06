@@ -238,6 +238,44 @@ _TEMPLATE = r"""<!doctype html>
   #panel .stat b{font-size:20px;font-weight:500}
   #panel hr{border:0;border-top:1px solid var(--rule);margin:18px 0 0}
 
+  /* do-next card — the one operator affordance; deliberately modest */
+  #panel .donext{
+    border:1px solid color-mix(in srgb,var(--warm) 28%,var(--rule));
+    border-radius:10px;padding:13px 15px 12px;margin:16px 0 2px;
+    background:rgba(228,167,118,.045);
+  }
+  #panel .donext .eyebrow{margin-top:0}
+  #panel .donext p.step{font-size:16px;line-height:1.45;margin:2px 0 11px}
+  #panel .did-it{
+    font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;
+    border:1px solid #E4A77666;border-radius:999px;padding:5px 12px;color:var(--warm);
+    transition:color .2s,border-color .2s;
+  }
+  #panel .did-it:hover{color:var(--ink);border-color:var(--warm)}
+  #panel .did-it.queued{
+    border-color:var(--rule);color:var(--faint);cursor:default;
+    text-transform:none;letter-spacing:.03em;
+  }
+  #panel .did-hint{font-family:var(--mono);font-size:8.5px;color:var(--faint);
+    letter-spacing:.04em;margin-top:8px;line-height:1.5}
+
+  /* timeline micro-strip */
+  #panel .tl{display:block;width:100%;height:auto;margin-top:2px}
+
+  /* log show-older toggle */
+  #panel .log-toggle{
+    font-family:var(--mono);font-size:8.5px;letter-spacing:.12em;text-transform:uppercase;
+    color:var(--faint);margin:9px 0 0 15px;padding:2px 0;
+    border-bottom:1px dotted var(--rule);transition:color .2s;
+  }
+  #panel .log-toggle:hover{color:var(--ink)}
+  #panel .log.older{margin-top:9px}
+
+  /* linked decisions */
+  #panel .dec{list-style:none;display:flex;flex-direction:column;gap:8px}
+  #panel .dec li{font-size:12.5px;line-height:1.5;color:var(--faint)}
+  #panel .dec li b{font-family:var(--mono);font-size:10px;color:var(--ink);font-weight:500}
+
   /* ── mobile: stacked cards ── */
   #cards{display:none}
   @media (max-width:899px){
@@ -354,19 +392,145 @@ function openPanel(html){ panelBody.innerHTML = html; panel.classList.add("open"
 function closePanel(){ panel.classList.remove("open"); }
 panel.querySelector(".close").addEventListener("click", closePanel);
 document.addEventListener("keydown", function(e){ if (e.key === "Escape") closePanel(); });
+// Click anywhere that isn't the panel itself or a panel-opening control
+// dismisses the panel. Hover-open, click-outside-close. Openers (nodes,
+// hubs, center, mobile cards) are excluded so their click still means
+// "open/refresh", and the reload button stays a reload.
+document.addEventListener("click", function(e){
+  if (!panel.classList.contains("open")) return;
+  if (e.target.closest("#panel, .node, .hub, #center, .card, #reload")) return;
+  closePanel();
+});
 
 function chip(txt, cls, color){
   return '<span class="chip ' + (cls||"") + '"' +
     (color ? ' style="color:' + color + '"' : "") + ">" + esc(txt) + "</span>";
 }
+function logLine(l){
+  var m = /^-\s*(\d{4}-\d{2}-\d{2})\s*(\[[^\]]*\])?\s*(.*)$/.exec(l);
+  if (m) return "<li><b>" + esc(m[1]) + "</b> " + esc(m[2]||"") + " " + esc(m[3]) + "</li>";
+  return "<li>" + esc(l.replace(/^-\s*/, "")) + "</li>";
+}
+// Full log, newest first. First three visible; the rest behind a
+// "show older" toggle — the path is the value, but on demand.
 function logHTML(lines){
   if (!lines || !lines.length) return '<p class="soft">no log entries.</p>';
-  return '<ul class="log">' + lines.map(function(l){
-    var m = /^-\s*(\d{4}-\d{2}-\d{2})\s*(\[[^\]]*\])?\s*(.*)$/.exec(l);
-    if (m) return "<li><b>" + esc(m[1]) + "</b> " + esc(m[2]||"") + " " + esc(m[3]) + "</li>";
-    return "<li>" + esc(l.replace(/^-\s*/, "")) + "</li>";
-  }).join("") + "</ul>";
+  var rev = lines.slice().reverse();
+  var html = '<ul class="log">' + rev.slice(0, 3).map(logLine).join("") + "</ul>";
+  var older = rev.slice(3);
+  if (older.length){
+    html += '<ul class="log older" hidden>' + older.map(logLine).join("") + "</ul>" +
+      '<button type="button" class="log-toggle" data-n="' + older.length +
+      '">show ' + older.length + " older ↓</button>";
+  }
+  return html;
 }
+// Timeline micro-strip: one dot per log entry along a date axis from
+// first entry to today; stalled entries warm, completed grey, the rest
+// in the department tint. Due date drawn as a ring (filled when overdue).
+function timelineHTML(t, tint){
+  var entries = [];
+  (t.log_full || t.log_recent || []).forEach(function(l){
+    var m = /^-\s*(\d{4}-\d{2}-\d{2})\s*(?:\[([^\]]*)\])?/.exec(l);
+    if (m){
+      var ms = Date.parse(m[1] + "T00:00:00");
+      if (!isNaN(ms)) entries.push({ms: ms, s: m[2] || ""});
+    }
+  });
+  if (!entries.length) return "";
+  var DAY = 86400000, now = Date.now();
+  var lo = Math.min(entries[0].ms, now - 14 * DAY), hi = now;
+  var due = t.next_step_due ? Date.parse(t.next_step_due + "T00:00:00") : NaN;
+  if (!isNaN(due)){ lo = Math.min(lo, due); hi = Math.max(hi, due); }
+  var W = 320, H = 34, P = 8, Y = 16;
+  function X(ms){ return P + (ms - lo) / (hi - lo || 1) * (W - 2 * P); }
+  var SC = {stalled: "#E4A776", completed: "#4A545E"};
+  var s = '<svg class="tl" viewBox="0 0 ' + W + " " + H + '" aria-hidden="true">' +
+    '<line x1="' + P + '" y1="' + Y + '" x2="' + (W - P) + '" y2="' + Y +
+      '" stroke="var(--rule)" stroke-width="1"/>' +
+    '<line x1="' + X(now) + '" y1="' + (Y - 7) + '" x2="' + X(now) + '" y2="' + (Y + 7) +
+      '" stroke="var(--faint)" stroke-width="1" opacity=".55"/>';
+  if (!isNaN(due) && t.state !== "completed")
+    s += '<circle cx="' + X(due) + '" cy="' + Y + '" r="3.4" fill="' +
+      (t.overdue ? WARM : "none") + '" stroke="' + WARM + '" stroke-width="1.1"/>';
+  entries.forEach(function(e){
+    s += '<circle cx="' + X(e.ms) + '" cy="' + Y + '" r="2.4" fill="' +
+      (SC[e.s] || tint) + '" opacity=".92"/>';
+  });
+  var f = "font-family:IBM Plex Mono,monospace;font-size:7.5px;fill:var(--faint)";
+  s += '<text x="' + P + '" y="' + (H - 3) + '" style="' + f + '">' +
+      new Date(entries[0].ms).toISOString().slice(0, 10) + "</text>" +
+    '<text x="' + (W - P) + '" y="' + (H - 3) + '" text-anchor="end" style="' + f + '">today</text></svg>';
+  return '<div class="eyebrow">trajectory</div>' + s;
+}
+function decisionsHTML(t){
+  if (!t.decisions || !t.decisions.length) return "";
+  return '<div class="eyebrow">decisions touching this thread</div><ul class="dec">' +
+    t.decisions.map(function(d){
+      return "<li><b>" + esc(d.id) + "</b> · " + esc(d.date) + " — " + esc(d.summary) + "</li>";
+    }).join("") + "</ul>";
+}
+// "Mark done" queues an action for triage: browser JS cannot append to
+// a file on disk, so the click copies a ready-to-run shell append
+// targeting state/pending_actions.jsonl and remembers the queue in
+// localStorage until triage advances the thread (next_step changes).
+function doneKey(slug){ return "mikai.done." + slug; }
+function queuedFor(t){
+  try {
+    var v = JSON.parse(localStorage.getItem(doneKey(t.slug)) || "null");
+    if (v && v.next_step === t.next_step) return v;
+    if (v) localStorage.removeItem(doneKey(t.slug));
+  } catch (err) {}
+  return null;
+}
+function doNextHTML(t){
+  if (!t.next_step || t.state === "completed") return "";
+  var q = queuedFor(t);
+  return '<div class="donext"><div class="eyebrow">do next</div>' +
+    '<p class="step">' + esc(t.next_step) +
+    (t.next_step_due ? ' <span class="chip' + (t.overdue ? " warm" : "") +
+      '" style="margin-left:6px">due ' + esc(t.next_step_due) + "</span>" : "") + "</p>" +
+    '<button type="button" class="did-it' + (q ? " queued" : "") +
+      '" data-slug="' + esc(t.slug) + '" data-step="' + esc(t.next_step) + '"' +
+      (q ? " disabled" : "") + ">" +
+      (q ? "queued " + esc((q.ts || "").slice(0, 10)) + " — awaiting triage" : "I did it") +
+    "</button></div>";
+}
+panelBody.addEventListener("click", function(e){
+  var tog = e.target.closest(".log-toggle");
+  if (tog){
+    var older = panelBody.querySelector(".log.older");
+    if (older){
+      older.hidden = !older.hidden;
+      tog.textContent = older.hidden ? "show " + tog.dataset.n + " older ↓" : "hide older ↑";
+    }
+    return;
+  }
+  var did = e.target.closest(".did-it");
+  if (did && !did.classList.contains("queued")){
+    var act = JSON.stringify({
+      ts: new Date().toISOString(), thread: did.dataset.slug,
+      type: "next_step_done", next_step: did.dataset.step, source: "cockpit"
+    });
+    var path = (data.paths && data.paths.pending_actions) ||
+      "$HOME/.mikai/brain/state/pending_actions.jsonl";
+    var cmd = "printf '%s\\n' '" + act.replace(/'/g, "'\\''") + "' >> \"" + path + '"';
+    var mark = function(copied){
+      try { localStorage.setItem(doneKey(did.dataset.slug),
+        JSON.stringify({ts: new Date().toISOString(), next_step: did.dataset.step})); } catch (err) {}
+      did.classList.add("queued"); did.disabled = true;
+      did.textContent = "queued — awaiting triage";
+      var hint = h("p", "did-hint", copied
+        ? "append command copied — paste in a terminal to queue it for triage."
+        : "copy failed — run this to queue it: <code>" + esc(cmd) + "</code>");
+      did.parentNode.appendChild(hint);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText)
+      navigator.clipboard.writeText(cmd).then(
+        function(){ mark(true); }, function(){ mark(false); });
+    else mark(false);
+  }
+});
 function entangledHTML(slug){
   var edges = (data.entity_edges || []).filter(function(e){
     return e.a === slug || e.b === slug;
@@ -393,15 +557,13 @@ function threadPanel(t, dept){
       (t.days_since != null ? chip(t.days_since + "d since activity") : "") +
       (t.overdue ? chip("overdue", "warm") : "") +
     "</div>";
-  if (t.next_step)
-    html += '<div class="eyebrow">next step</div><p>' + esc(t.next_step) +
-      (t.next_step_due ? ' <span class="chip' + (t.overdue ? " warm" : "") +
-        '" style="margin-left:6px">due ' + esc(t.next_step_due) + "</span>" : "") + "</p>";
+  html += doNextHTML(t);
+  if (t.next_step && t.state === "completed")
+    html += '<div class="eyebrow">next step</div><p class="soft">' + esc(t.next_step) + "</p>";
+  html += timelineHTML(t, tint);
   html += entangledHTML(t.slug);
-  html += '<div class="eyebrow">last activity</div>' +
-    '<p class="soft">' + esc(t.last_activity || "—") +
-    (t.last_log ? " — " + esc(t.last_log.replace(/^-\s*\d{4}-\d{2}-\d{2}\s*(\[[^\]]*\])?\s*/, "")) : "") + "</p>";
-  html += '<div class="eyebrow">recent log</div>' + logHTML(t.log_recent);
+  html += '<div class="eyebrow">log</div>' + logHTML(t.log_full || t.log_recent);
+  html += decisionsHTML(t);
   if (t.reason)
     html += '<div class="eyebrow">reason</div><div class="reason">' + esc(t.reason) + "</div>";
   return html;

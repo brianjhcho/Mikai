@@ -31,7 +31,7 @@ DEPARTMENTS: list[tuple[str, str, str, str]] = [
     ("ai_work", "AI Work", "primary", "product · shipping · code · ideas"),
     ("body", "Body", "primary", "breathing · posture · movement · sleep"),
     ("domestic", "Home", "primary", "monstera · marble table · chairs · space"),
-    ("love", "Love", "primary", "Bethany · ring · venue · vow"),
+    ("love", "Love", "primary", "Germaine · ring · venue · vow"),
 ]
 
 MISC = ("misc", "Misc", "misc", "unfiled · awaiting a department")
@@ -75,6 +75,7 @@ def thread_dict(t: threads.Thread, reason: str | None) -> dict:
         "next_step_due": t.next_step_due,
         "overdue": overdue,
         "log_recent": log[-3:],
+        "log_full": log,
         "last_log": log[-1] if log else "",
         "reason": reason or "",
         "entities": list(t.entities),
@@ -135,6 +136,18 @@ def parse_decisions() -> list[dict]:
     return out
 
 
+def decisions_for_thread(slug: str, decisions: list[dict], cap: int = 4) -> list[dict]:
+    """Decisions whose summary or body mentions this thread's slug,
+    newest first, capped. Anytype-style linked references for the panel."""
+    out: list[dict] = []
+    for d in reversed(decisions):
+        if slug in (d["summary"] + d["body"]):
+            out.append({"id": d["id"], "date": d["date"], "summary": d["summary"]})
+            if len(out) >= cap:
+                break
+    return out
+
+
 def decision_for_department(dept_id: str, slugs: list[str], decisions: list[dict]) -> dict | None:
     """Most recent decision that mentions the department id or any of its
     thread slugs in summary or body."""
@@ -178,6 +191,7 @@ def collect_departments() -> list[dict]:
     by_dept["misc"] = []
     for t in all_threads:
         td = thread_dict(t, notes.get(t.slug))
+        td["decisions"] = decisions_for_thread(t.slug, decisions)
         key = t.department if t.department in known_ids else "misc"
         by_dept[key].append(td)
 

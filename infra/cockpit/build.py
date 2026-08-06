@@ -34,6 +34,12 @@ def build_dashboard() -> dict:
         "departments": departments,
         "entity_edges": collect_entity_edges(departments),
         "center": collect_center(),
+        # Absolute paths the static page can only reference, never write:
+        # the "mark done" affordance copies a shell append targeting this
+        # file; triage (or a future apply-actions) is the consumer.
+        "paths": {
+            "pending_actions": str(STATE_DIR / "pending_actions.jsonl"),
+        },
     }
 
 
