@@ -111,6 +111,45 @@ def load_all() -> list[Thread]:
     return [parse_thread(p) for p in sorted(THREADS_DIR.glob("*.md"))]
 
 
+def match_threads_in_text(text: str, threads: list[Thread] | None = None) -> list[Thread]:
+    """Conservative thread matching for action-scenario write-back.
+
+    A thread matches only when the text clearly names it:
+      1. its exact slug appears ("proposal-timing"), or
+      2. its slug with hyphens as spaces appears ("proposal timing"), or
+      3. its full title appears (titles < 6 chars are too generic — ignored), or
+      4. a distinctive slug component (>= 6 chars) appears as a whole word
+         AND exactly one thread owns that component ("proposal" matches
+         proposal-timing — but not if proposal-venue also exists).
+
+    False appends pollute thread logs, so ties and short/generic tokens
+    never match. Returns [] rather than guessing.
+    """
+    if threads is None:
+        threads = load_all()
+    t = (text or "").lower()
+    if not t.strip():
+        return []
+    matched: dict[str, Thread] = {}
+    for th in threads:
+        slug = th.slug.lower()
+        title = (th.title or "").strip().lower()
+        if slug in t or slug.replace("-", " ") in t:
+            matched[th.slug] = th
+        elif len(title) >= 6 and title in t:
+            matched[th.slug] = th
+    component_owners: dict[str, list[Thread]] = {}
+    for th in threads:
+        for comp in set(th.slug.lower().split("-")):
+            if len(comp) >= 6:
+                component_owners.setdefault(comp, []).append(th)
+    words = set(re.findall(r"[a-z0-9]+", t))
+    for comp, owners in component_owners.items():
+        if len(owners) == 1 and comp in words:
+            matched[owners[0].slug] = owners[0]
+    return [matched[k] for k in sorted(matched)]
+
+
 def _append_to_log_section(body: str, bullet: str) -> str:
     """Insert `bullet` at the end of the ## Log section. Appending to end
     of file is wrong whenever another section (e.g. ## Content) follows
