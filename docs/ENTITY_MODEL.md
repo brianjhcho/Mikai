@@ -1,7 +1,9 @@
 # MIKAI Entity Model
 
 Convention for `~/.mikai/brain/entities/`. Entities are what threads share; cross-thread
-"entangled with" edges in the cockpit are drawn only when two threads list the same entity.
+"entangled with" edges in the cockpit are drawn only when two threads list the same entity
+in `entities:` frontmatter — which is why frontmatter listing is a **causal claim**, not a
+mention index (§5).
 
 ## 1. Definition
 
@@ -53,7 +55,46 @@ Promote when it **appears in ≥ 2 threads, or clearly will** (named in
 leave it as prose. Under-promotion is cheap to fix; over-promotion creates hub
 entities that edge every thread to every thread — noise, the Roam hairball.
 
-## 5. Prior art
+## 5. When an entity belongs in `entities:` frontmatter — edge semantics
+
+An entity being *present* in a thread's world is a weak signal; an entity being
+*causally central* to the thread's open decision is a strong one. The cockpit draws an
+"entangled with" edge between any two threads that share a frontmatter entity, so every
+name in `entities:` must survive this test:
+
+> **Would removing this entity change the thread's `next_step`?**
+> If the next step reads the same without them, the entity is **ambient** — record it in
+> prose (thread body, or the entity's own file), never in frontmatter.
+
+Roles that pass: **decision-object** (bethany in `proposal-timing` — the thread *is about*
+her), **blocker**, **direct collaborator**, **instrument-of-record** (a jeweler in both a
+buy-ring thread and a ring-insurance thread — that edge is operational). Roles that fail:
+co-owner of shared space, household member, anyone who merely shares the room with the
+decision.
+
+This is role-typed entity linking collapsed to a binary, with the role encoded by
+presence/absence in frontmatter. The write-time convention does all the work; the edge
+code stays a set intersection (zero code change). Alternatives considered and rejected
+(2026-08-05):
+
+- **Minimum shared-entity count (≥ 2) before drawing an edge** — wrong axis: kills the
+  strongest single-entity edges (the jeweler case) while still firing on pairs of
+  co-occurring ambient entities.
+- **One primary entity per thread, edges only between primaries** — too strict: a thread
+  can have two causal entities, and a legitimately shared *secondary* entity (jeweler,
+  when bethany is primary) would never edge.
+- **FrameNet/OntoNotes semantic roles per reference** — heavy write-time friction for a
+  hand-maintained brain, and same-role matching drops good edges (jeweler as Agent in
+  one thread, Instrument in another).
+
+Cautionary case, recorded: bethany was briefly listed on `monstera-moss-pole` because
+"domestic decisions are joint." True — and still recorded as prose in `bethany.md` — but
+her removal wouldn't change "Decide: DIY sphagnum wrap vs pre-made coco pole," so she was
+ambient there. The resulting edge connected the proposal thread to a houseplant thread
+"via bethany": a person-hub edge carrying no insight. Delisted 2026-08-05. A fake edge is
+worse than none; zero edges is an honest state for a small brain.
+
+## 6. Prior art
 
 | Tool | Entity handling |
 |---|---|
