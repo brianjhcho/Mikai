@@ -1,6 +1,6 @@
 # Cockpit content strategy — survey, stress-test, ranked recommendations
 
-*2026-08-06 · Fable 5. Inputs: `COCKPIT_STRUCTURE_RESEARCH.md`, `COCKPIT_ORGANIZATION_TRADEOFF.md`, `COCKPIT_INPUT_FEATURE.md`, `HARNESS_ARCHITECTURE.md` — settled, not reopened. Under test: Brian's intuition — "show the most important things in my life, where the progress is; clickable → detail panel" — against a substrate (8,049 sections, 375 entities, ask) currently invisible in the cockpit.*
+*2026-08-06 · Fable 5. Inputs: `COCKPIT_STRUCTURE_RESEARCH.md`, `COCKPIT_ORGANIZATION_TRADEOFF.md`, `COCKPIT_INPUT_FEATURE.md`, `HARNESS_ARCHITECTURE.md` — settled, not reopened. Under test: Brian's intuition — "show the most important things in my life, where the progress is; clickable → detail panel" — against a substrate (8,049 sections, 375 entities, ask) invisible in the cockpit.*
 
 ## 1. What primary views actually show — categories the first survey missed
 
@@ -36,7 +36,7 @@ Four convergences:
 
 Shared framework: **primary view = attention trigger; detail = context on demand.** Brian's "clickable → detail panel" is exactly this. The contested half is what triggers attention.
 
-## 3. Five attacks on the intuition
+## 3. Five attacks
 
 **Attack 1 — who defines "important"?** *Steelman:* someone must rank, and MIKAI's thesis is that the substrate can. *Counter:* no surveyed product infers importance from scratch. All split the job — humans *declare* the set (Sunsama's ritual, Motion's deadlines), machines *rank within it* by urgency and decay. Silent LLM reordering of a life is unaccountable, and MIKAI's consent moat (`HARNESS_ARCHITECTURE` §1) already rejects it. **Verdict: modified.** The hubs and threads Brian created *are* the declaration; MIKAI ranks within them by state and staleness. Anything it wants to *add* to the set is an `inbox/` proposal, never a silent insertion.
 
