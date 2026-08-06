@@ -295,6 +295,24 @@ def _send_confirmation_ntfy(title: str, body: str) -> None:
 MAX_ASK_BYTES = 4096
 
 
+def _ensure_user_path() -> None:
+    """launchd jobs get a bare PATH (/usr/bin:/bin:...), but mikai_llm
+    resolves the `claude` CLI via shutil.which. Append the user's usual
+    bin dirs so an in-process ask finds the same CLI an interactive
+    shell would. Append — an already-correct PATH wins."""
+    extra = (
+        Path.home() / ".local" / "bin",
+        Path.home() / ".superset" / "bin",
+        Path("/opt/homebrew/bin"),
+        Path("/usr/local/bin"),
+    )
+    parts = os.environ.get("PATH", "").split(os.pathsep)
+    for p in extra:
+        if p.is_dir() and str(p) not in parts:
+            parts.append(str(p))
+    os.environ["PATH"] = os.pathsep.join(parts)
+
+
 def _run_ask(query: str) -> dict:
     """Invoke mikai_ask in-process and return its debug-shaped dict.
 
@@ -302,6 +320,7 @@ def _run_ask(query: str) -> dict:
     the mikai_ask stack is broken, and so startup stays instant. Module
     indirection also gives tests a clean seam to mock.
     """
+    _ensure_user_path()
     repo = Path(__file__).resolve().parents[2]
     if str(repo) not in sys.path:
         sys.path.insert(0, str(repo))
