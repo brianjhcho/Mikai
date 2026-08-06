@@ -381,6 +381,19 @@ async def run_once(*, dry_run: bool, since_days: int | None, max_convs: int | No
         "DRY-RUN" if dry_run else "Claude-thread", touched_convs, ingested_msgs,
     )
 
+    # Heartbeat trace for infra.mikai_brain.health — best-effort, never
+    # allowed to fail the ingestion pass.
+    if not dry_run:
+        try:
+            from infra.mikai_brain import ledger
+            ledger.run(
+                mode="claude-threads",
+                did=(f"Pass complete: {ingested_msgs} message(s) across "
+                     f"{touched_convs} conversation(s)."),
+            )
+        except Exception:
+            logger.exception("ledger trace failed (non-fatal)")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Ingest Claude.ai threads into Graphiti.")

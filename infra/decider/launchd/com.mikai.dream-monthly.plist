@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.mikai.dream-monthly</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/briancho/Library/Application Support/mikai/launchd/dream-monthly-runner.sh</string>
+    </array>
+
+    <!-- 1st of each month at 05:00 local — before the day's other jobs
+         touch the wiki. Deterministic dedup, zero LLM calls; monthly is
+         plenty since duplicates accrue slowly (retry artifacts, watcher
+         glitches). -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Day</key><integer>1</integer>
+        <key>Hour</key><integer>5</integer>
+        <key>Minute</key><integer>0</integer>
+    </dict>
+
+    <!-- RunAtLoad=false: compaction rewrites wiki.md — only on the
+         scheduled tick or an explicit kickstart. -->
+    <key>RunAtLoad</key>
+    <false/>
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/briancho/.mikai/logs/dream-monthly.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/briancho/.mikai/logs/dream-monthly.err.log</string>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/briancho/Library/Application Support/mikai/launchd</string>
+</dict>
+</plist>

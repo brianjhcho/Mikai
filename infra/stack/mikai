@@ -1,0 +1,231 @@
+#!/bin/bash
+# MIKAI stack CLI — on-command control for the local backend.
+#
+# Subcommands:
+#   mikai up       start Docker Desktop + Neo4j + sidecar (idempotent)
+#   mikai down     stop the sidecar containers (leaves Docker Desktop running)
+#   mikai status   print a colored table of all layer states
+#   mikai restart  down + up
+#   mikai logs [service]   tail logs (default: sidecar)
+#                          services: sidecar | neo4j | figs | dream |
+#                          ingestion | claude-threads | health-probe
+#   mikai help
+
+set -u
+
+MIKAI_DIR="$HOME/Library/Application Support/mikai/launchd"
+REPO="${MIKAI_REPO:-/Users/briancho/Desktop/MIKAI}"
+DOCKER="${DOCKER_BIN:-/usr/local/bin/docker}"
+SIDECAR_HEALTH="http://localhost:8100/health"
+NEO4J_HTTP="http://localhost:7474"
+LOG_DIR="$HOME/.mikai/logs"
+
+# Color helpers (only when stdout is a TTY)
+if [ -t 1 ]; then
+    GREEN='\033[0;32m'
+    RED='\033[0;31m'
+    YELLOW='\033[0;33m'
+    DIM='\033[2m'
+    RESET='\033[0m'
+else
+    GREEN=''; RED=''; YELLOW=''; DIM=''; RESET=''
+fi
+
+green() { printf "${GREEN}%s${RESET}" "$1"; }
+red()   { printf "${RED}%s${RESET}" "$1"; }
+yellow(){ printf "${YELLOW}%s${RESET}" "$1"; }
+
+usage() {
+    cat <<EOF
+mikai — MIKAI stack CLI
+
+USAGE:
+    mikai <command> [args]
+
+COMMANDS:
+    up              Start Docker Desktop + sidecar containers (idempotent)
+    down            Stop sidecar containers (Docker Desktop stays running)
+    status          Print state of each stack layer
+    restart         Down then up
+    logs [service]  Tail logs. Services:
+                    sidecar (default) | neo4j | figs | dream |
+                    ingestion | claude-threads | health-probe
+    help            Show this message
+
+ENV OVERRIDES:
+    MIKAI_REPO   (default: /Users/briancho/Desktop/MIKAI)
+    DOCKER_BIN   (default: /usr/local/bin/docker)
+EOF
+}
+
+# ── health checks ─────────────────────────────────────────────────────
+
+docker_desktop_running() {
+    pgrep -f "Docker Desktop" >/dev/null 2>&1
+}
+
+docker_daemon_up() {
+    "$DOCKER" info >/dev/null 2>&1
+}
+
+container_running() {
+    "$DOCKER" ps --filter "name=^${1}$" --format '{{.Names}}' 2>/dev/null | grep -q "^${1}$"
+}
+
+http_ok() {
+    curl -fsS --max-time 3 "$1" >/dev/null 2>&1
+}
+
+launchd_loaded() {
+    launchctl list 2>/dev/null | grep -q "$1"
+}
+
+# ── subcommands ──────────────────────────────────────────────────────
+
+cmd_up() {
+    echo "→ starting MIKAI stack…"
+    if http_ok "$SIDECAR_HEALTH"; then
+        echo "  already running (sidecar healthy)"
+        return 0
+    fi
+    if [ -x "$MIKAI_DIR/start-stack.sh" ]; then
+        bash "$MIKAI_DIR/start-stack.sh"
+    else
+        # Fall back to the in-repo copy if not deployed yet
+        local repo_start="$REPO/infra/stack/start-stack.sh"
+        if [ -x "$repo_start" ]; then
+            bash "$repo_start"
+        else
+            echo "ERROR: start-stack.sh not found in either deployed or repo location" >&2
+            return 1
+        fi
+    fi
+    # Wait up to 90s for sidecar to come up
+    echo -n "  waiting for sidecar"
+    for _ in {1..18}; do
+        sleep 5
+        if http_ok "$SIDECAR_HEALTH"; then
+            echo ""
+            echo "  $(green ✓) sidecar healthy at $SIDECAR_HEALTH"
+            return 0
+        fi
+        echo -n "."
+    done
+    echo ""
+    echo "  $(red ✗) sidecar still not responding after 90s"
+    return 1
+}
+
+cmd_down() {
+    echo "→ stopping sidecar containers…"
+    cd "$REPO/infra/graphiti" || return 1
+    if [ -f "$REPO/.env.local" ]; then
+        "$DOCKER" compose --env-file "$REPO/.env.local" down
+    else
+        "$DOCKER" compose down
+    fi
+    echo "  $(green ✓) stopped (Docker Desktop still running)"
+}
+
+cmd_restart() {
+    cmd_down
+    cmd_up
+}
+
+status_row() {
+    # $1 label, $2 pass/fail string
+    printf "  %-32s %s\n" "$1" "$2"
+}
+
+cmd_status() {
+    echo "MIKAI stack status:"
+
+    if docker_desktop_running; then
+        status_row "Docker Desktop process" "$(green up)"
+    else
+        status_row "Docker Desktop process" "$(red down)"
+    fi
+
+    if docker_daemon_up; then
+        status_row "Docker daemon" "$(green reachable)"
+    else
+        status_row "Docker daemon" "$(red unreachable)"
+    fi
+
+    if container_running "mikai-neo4j"; then
+        status_row "Neo4j container" "$(green up)"
+    else
+        status_row "Neo4j container" "$(red down)"
+    fi
+
+    if http_ok "$NEO4J_HTTP"; then
+        status_row "Neo4j HTTP (7474)" "$(green responsive)"
+    else
+        status_row "Neo4j HTTP (7474)" "$(red unresponsive)"
+    fi
+
+    if container_running "mikai-graphiti"; then
+        status_row "Graphiti container" "$(green up)"
+    else
+        status_row "Graphiti container" "$(red down)"
+    fi
+
+    if http_ok "$SIDECAR_HEALTH"; then
+        status_row "Sidecar /health (8100)" "$(green responsive)"
+    else
+        status_row "Sidecar /health (8100)" "$(red unresponsive)"
+    fi
+
+    echo "  ${DIM}── LaunchAgents ──${RESET}"
+    for label in \
+        "com.mikai.docker-compose" \
+        "com.mikai.health-probe" \
+        "com.mikai.claude-threads" \
+        "com.mikai.dream" \
+        "com.mikai.ingestion" \
+        "com.mikai.figs-decide" \
+        "com.mikai.figs-brief"; do
+        if launchd_loaded "$label"; then
+            status_row "$label" "$(green loaded)"
+        else
+            status_row "$label" "$(yellow not loaded)"
+        fi
+    done
+}
+
+cmd_logs() {
+    local service="${1:-sidecar}"
+    case "$service" in
+        sidecar)
+            "$DOCKER" logs -f mikai-graphiti 2>&1 ;;
+        neo4j)
+            "$DOCKER" logs -f mikai-neo4j 2>&1 ;;
+        figs)
+            tail -f "$LOG_DIR/figs-decide.out.log" "$LOG_DIR/figs-decide.err.log" \
+                    "$LOG_DIR/figs-brief.out.log" "$LOG_DIR/figs-brief.err.log" 2>&1 ;;
+        dream)
+            tail -f "$LOG_DIR/dream.out.log" "$LOG_DIR/dream.err.log" 2>&1 ;;
+        ingestion)
+            tail -f "$LOG_DIR/ingestion.out.log" "$LOG_DIR/ingestion.err.log" 2>&1 ;;
+        claude-threads)
+            tail -f "$LOG_DIR/claude-threads.out.log" "$LOG_DIR/claude-threads.err.log" 2>&1 ;;
+        health-probe)
+            tail -f "$MIKAI_DIR/logs/health-probe.log" 2>&1 ;;
+        *)
+            echo "unknown service: $service" >&2
+            echo "valid: sidecar | neo4j | figs | dream | ingestion | claude-threads | health-probe" >&2
+            return 2 ;;
+    esac
+}
+
+# ── entry point ──────────────────────────────────────────────────────
+
+case "${1:-help}" in
+    up)         shift; cmd_up "$@" ;;
+    down)       shift; cmd_down "$@" ;;
+    status)     shift; cmd_status "$@" ;;
+    restart)    shift; cmd_restart "$@" ;;
+    logs)       shift; cmd_logs "$@" ;;
+    help|-h|--help) usage ;;
+    *)          echo "unknown command: $1" >&2; usage; exit 2 ;;
+esac
