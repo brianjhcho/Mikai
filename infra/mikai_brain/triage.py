@@ -25,7 +25,7 @@ from datetime import date
 from pathlib import Path
 from typing import Literal
 
-from . import INBOX_DIR, INBOX_PROCESSED, THREADS_DIR, DECISIONS_LOG, ledger
+from . import INBOX_DIR, INBOX_PROCESSED, THREADS_DIR, DECISIONS_LOG, ENTITIES_DIR, ledger
 from . import threads as thread_mod
 
 Epistemic = Literal["fragment", "structured_ideation", "processed_reflection"]
@@ -248,10 +248,57 @@ def _append_decision(num: int, date_iso: str, summary: str, body: str, source: s
         f.write(entry)
 
 
+# ── Entity proposals (from hydrator) ────────────────────────────────────
+
+
+def _entity_proposal_meta(text: str) -> dict[str, str] | None:
+    """Return frontmatter dict if this is a `proposal_kind: entity` item."""
+    if not text.startswith("---\n"):
+        return None
+    end = text.find("\n---", 4)
+    if end == -1:
+        return None
+    meta = {}
+    for line in text[4:end].splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            meta[k.strip()] = v.strip()
+    return meta if meta.get("proposal_kind") == "entity" else None
+
+
+def _handle_entity_proposal(item: Path, meta: dict[str, str],
+                            auto_accept: set[str], verbose: bool) -> str:
+    """Entity proposals are NOT fragments/ideation/reflections. Default:
+    surface for Brian's manual review and leave in inbox — never auto-create
+    entity files. Only an explicit --auto-accept-entity <slug> creates the
+    stub and archives the proposal."""
+    slug = meta.get("slug", "")
+    if slug not in auto_accept:
+        if verbose:
+            print(f"  {item.name}  →  entity proposal '{slug}' "
+                  f"({meta.get('type', '?')}, {meta.get('mentions', '?')} mentions) "
+                  "— review manually or rerun with --auto-accept-entity")
+        return "held"
+    entity_path = ENTITIES_DIR / f"{slug}.md"
+    if not entity_path.exists():
+        ENTITIES_DIR.mkdir(parents=True, exist_ok=True)
+        entity_path.write_text(
+            f"---\nname: {slug}\ntype: {meta.get('type', 'thing')}\n"
+            f"status: active\nowner_thread: \n---\n\n"
+            f"_(Accepted from hydrator proposal on {date.today().isoformat()}. "
+            "Backfill body facts from Brian's actual data only.)_\n"
+        )
+    shutil.move(str(item), str(INBOX_PROCESSED / f"{date.today().isoformat()}__{item.name}"))
+    if verbose:
+        print(f"  {item.name}  →  entity '{slug}' accepted → {entity_path}")
+    return "accepted"
+
+
 # ── Main entry ───────────────────────────────────────────────────────────
 
 
-def run(*, use_llm: bool = True, verbose: bool = True) -> int:
+def run(*, use_llm: bool = True, verbose: bool = True,
+        auto_accept_entities: set[str] | None = None) -> int:
     if not INBOX_DIR.exists():
         INBOX_DIR.mkdir(parents=True, exist_ok=True)
     INBOX_PROCESSED.mkdir(parents=True, exist_ok=True)
@@ -267,6 +314,11 @@ def run(*, use_llm: bool = True, verbose: bool = True) -> int:
             text = item.read_text(errors="replace")
         except Exception as exc:
             print(f"  ! skip {item.name}: {exc}")
+            continue
+        meta = _entity_proposal_meta(text)
+        if meta is not None:
+            if _handle_entity_proposal(item, meta, auto_accept_entities or set(), verbose) == "accepted":
+                n_done += 1
             continue
         cls = classify_heuristic(text)
         if cls is None:
@@ -293,9 +345,12 @@ def run(*, use_llm: bool = True, verbose: bool = True) -> int:
 def _cli() -> int:
     ap = argparse.ArgumentParser(prog="mikai_brain.triage", description="Process ~/.mikai/brain/inbox/")
     ap.add_argument("--no-llm", action="store_true", help="Skip LLM tie-break; treat ambiguous items as fragments")
+    ap.add_argument("--auto-accept-entity", action="append", default=[], metavar="SLUG",
+                    help="Accept an entity proposal by slug: create the entity stub and archive the proposal (repeatable)")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
-    run(use_llm=not args.no_llm, verbose=not args.quiet)
+    run(use_llm=not args.no_llm, verbose=not args.quiet,
+        auto_accept_entities=set(args.auto_accept_entity))
     return 0
 
 
