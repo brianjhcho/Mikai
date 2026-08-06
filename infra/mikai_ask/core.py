@@ -229,11 +229,11 @@ def _matching_entities(query: str, hits: list[dict]) -> list[tuple[str, str]]:
     return (query_matched + hit_matched)[:ENTITY_CAP]
 
 
-def _active_thread_summaries() -> list[str]:
-    """Frontmatter + first log line for every thread in an active state.
-    Never the body — this is a 'what Brian is in the middle of' signal,
-    not a content dump."""
-    out: list[str] = []
+def _active_thread_summaries() -> list[tuple[str, str]]:
+    """(slug, frontmatter + first log line) for every thread in an active
+    state. Never the body — this is a 'what Brian is in the middle of'
+    signal, not a content dump."""
+    out: list[tuple[str, str]] = []
     for t in brain_threads.load_all():
         if t.state not in ACTIVE_STATES:
             continue
@@ -252,7 +252,7 @@ def _active_thread_summaries() -> list[str]:
             lines.append(f"department: {t.department}")
         if t.log_lines:
             lines.append(f"last log: {t.log_lines[0]}")
-        out.append("\n".join(lines))
+        out.append((t.slug, "\n".join(lines)))
     return out
 
 
@@ -295,7 +295,8 @@ def compose(query: str) -> tuple[str, dict]:
         hits = hits + fill
 
     entities = _matching_entities(query, hits)
-    thread_blocks = _active_thread_summaries()
+    thread_pairs = _active_thread_summaries()
+    thread_blocks = [block for _, block in thread_pairs]
 
     fts_blocks = [_format_hit(h) for h in hits]
     entity_blocks = [f"### entity: {slug}\n\n{body}" for slug, body in entities]
@@ -326,6 +327,7 @@ def compose(query: str) -> tuple[str, dict]:
         "fallback_fill": fallback_fill,
         "entities": [slug for slug, _ in entities][: len(entity_blocks)],
         "threads": len(thread_blocks),
+        "thread_slugs": [slug for slug, _ in thread_pairs][: len(thread_blocks)],
         "trimmed": trimmed,
         "profile_chars": len(profile),
         "priorities_chars": len(priorities),
@@ -352,9 +354,22 @@ def _print_stats(stats: dict, stream=None) -> None:
     )
 
 
-def ask(query: str, *, verbose: bool = False, dry_run: bool = False) -> str:
+def ask(
+    query: str,
+    *,
+    verbose: bool = False,
+    dry_run: bool = False,
+    return_debug: bool = False,
+) -> str | dict:
     """One ask: compose the prompt, call the interactive tier, log the
-    run. dry_run returns the composed prompt — no LLM call, no log row."""
+    run. dry_run returns the composed prompt — no LLM call, no log row.
+
+    return_debug=True changes the return type to a dict
+    ``{"answer": str, "retrieved": {...}}`` where ``retrieved`` reports
+    what the composer actually pulled (wiki_hits, entity slugs, active
+    thread slugs, prompt chars). return_debug=False preserves the plain
+    string contract for existing callers. dry_run wins over return_debug.
+    """
     query = (query or "").strip()
     if not query:
         raise ValueError("empty query")
@@ -383,4 +398,14 @@ def ask(query: str, *, verbose: bool = False, dry_run: bool = False) -> str:
             "trimmed": stats["trimmed"],
         },
     )
+    if return_debug:
+        return {
+            "answer": answer,
+            "retrieved": {
+                "wiki_hits": stats["fts_hits"],
+                "entities": stats["entities"],
+                "threads": stats["thread_slugs"],
+                "prompt_chars": stats["prompt_chars"],
+            },
+        }
     return answer

@@ -25,6 +25,12 @@ Design notes:
   insert a TAPPED row for them because it would skew the ranking signal
   (a bot could inflate any dimension by hitting random IDs).
 - Health: `GET /healthz` returns 200 for cloudflared/monitoring.
+- `POST /ask` bridges the cockpit (file:// HTML) to mikai_ask: JSON in
+  `{"query": ...}`, JSON out `{"answer": ..., "retrieved": {...}}`.
+  Synchronous — the LLM call takes 30–60s; ThreadingMixIn keeps tap
+  redirects responsive meanwhile. CORS is wildcard on purpose: the
+  server binds 127.0.0.1 and the only client is Brian's own browser
+  opening cockpit.html via file:// (Origin: null).
 """
 
 from __future__ import annotations
@@ -282,6 +288,27 @@ def _send_confirmation_ntfy(title: str, body: str) -> None:
         logger.warning("confirmation ntfy failed: %s", exc)
 
 
+# ── Cockpit /ask bridge (mikai_ask) ────────────────────────────────────
+
+# Reject bodies over this size before parsing — an ask is a question,
+# not a document upload.
+MAX_ASK_BYTES = 4096
+
+
+def _run_ask(query: str) -> dict:
+    """Invoke mikai_ask in-process and return its debug-shaped dict.
+
+    Imported lazily so the tap endpoint keeps serving redirects even if
+    the mikai_ask stack is broken, and so startup stays instant. Module
+    indirection also gives tests a clean seam to mock.
+    """
+    repo = Path(__file__).resolve().parents[2]
+    if str(repo) not in sys.path:
+        sys.path.insert(0, str(repo))
+    from infra.mikai_ask.core import ask
+    return ask(query, verbose=False, return_debug=True)
+
+
 # ── Approval / rejection HTML confirmation pages ───────────────────────
 
 
@@ -337,7 +364,64 @@ class TapHandler(http.server.BaseHTTPRequestHandler):
 
         self._reply(404, "text/plain", b"not found\n")
 
+    def do_POST(self) -> None:  # noqa: N802 — stdlib API
+        path = self.path.split("?", 1)[0]
+        if path == "/ask":
+            self._handle_ask()
+            return
+        self._reply_json(404, {"error": "not found"})
+
+    def do_OPTIONS(self) -> None:  # noqa: N802 — stdlib API
+        # CORS preflight for the file:// cockpit (Origin: null). Wildcard
+        # is intentional — 127.0.0.1-bound, single local user.
+        self.send_response(204)
+        self._send_cors_headers()
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     # ── Route handlers ────────────────────────────────────────────────
+
+    def _handle_ask(self) -> None:
+        try:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+        except (TypeError, ValueError):
+            length = 0
+        if length <= 0:
+            self._reply_json(400, {"error": "empty request body"})
+            return
+        if length > MAX_ASK_BYTES:
+            self._reply_json(
+                413, {"error": f"payload too large (>{MAX_ASK_BYTES} bytes)"})
+            return
+
+        try:
+            body = self.rfile.read(length)
+            payload = json.loads(body.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+            self._reply_json(400, {"error": f"invalid JSON body: {exc}"})
+            return
+
+        query = payload.get("query") if isinstance(payload, dict) else None
+        if not isinstance(query, str) or not query.strip():
+            self._reply_json(400, {"error": "missing or empty 'query'"})
+            return
+        query = query.strip()
+
+        # Synchronous on purpose: the cockpit shows a loading pulse and
+        # waits. The LLM call takes 30–60s; each request runs on its own
+        # thread (ThreadingMixIn), so tap redirects stay unaffected.
+        logger.info("ASK %r", query[:120])
+        try:
+            result = _run_ask(query)
+        except Exception as exc:  # noqa: BLE001 — surface any failure as JSON
+            logger.exception("ask failed for %r", query[:120])
+            self._reply_json(500, {"error": f"ask failed: {exc}"})
+            return
+
+        answer = result.get("answer", "") if isinstance(result, dict) else str(result)
+        retrieved = result.get("retrieved", {}) if isinstance(result, dict) else {}
+        logger.info("ASK done (%d chars answer)", len(answer))
+        self._reply_json(200, {"answer": answer, "retrieved": retrieved})
 
     def _handle_tap(self, notif_id: str) -> None:
         if not NOTIF_ID_RE.match(notif_id):
@@ -467,6 +551,26 @@ class TapHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_cors_headers(self) -> None:
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Max-Age", "86400")
+
+    def _reply_json(self, status: int, obj: dict) -> None:
+        body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self._send_cors_headers()
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            # Browser gave up on a long ask — nothing to salvage.
+            logger.warning("client disconnected before /ask response was sent")
 
     # Route BaseHTTPServer's noisy default logs through our logger at DEBUG,
     # so INFO logs stay clean.
