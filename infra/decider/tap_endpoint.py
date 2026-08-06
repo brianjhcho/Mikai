@@ -47,6 +47,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib import request as urlreq
+from urllib.parse import parse_qs, urlsplit
 
 # caldav_client is stdlib-only, so importing it at module load is safe even
 # if iCloud creds aren't configured. The client constructor is the layer
@@ -328,6 +329,20 @@ def _run_ask(query: str) -> dict:
     return ask(query, verbose=False, return_debug=True)
 
 
+def _run_ask_stream(query: str):
+    """Yield event dicts from mikai_ask.ask_stream() lazily.
+
+    Same import strategy as _run_ask (lazy so the tap endpoint keeps
+    serving even if mikai_ask is broken; module seam so tests can mock).
+    """
+    _ensure_user_path()
+    repo = Path(__file__).resolve().parents[2]
+    if str(repo) not in sys.path:
+        sys.path.insert(0, str(repo))
+    from infra.mikai_ask.core import ask_stream
+    yield from ask_stream(query, verbose=False)
+
+
 # ── Approval / rejection HTML confirmation pages ───────────────────────
 
 
@@ -360,10 +375,15 @@ class TapHandler(http.server.BaseHTTPRequestHandler):
     server_version = "MikaiTap/1.0"
 
     def do_GET(self) -> None:  # noqa: N802 — stdlib API
-        path = self.path.split("?", 1)[0]
+        parts = urlsplit(self.path)
+        path = parts.path
 
         if path == "/healthz":
             self._reply(200, "text/plain", b"ok\n")
+            return
+
+        if path == "/ask/stream":
+            self._handle_ask_stream(parts.query)
             return
 
         m = re.match(r"^/t/([^/]+)$", path)
@@ -387,6 +407,14 @@ class TapHandler(http.server.BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path == "/ask":
             self._handle_ask()
+            return
+        if path == "/ask/stream":
+            # SSE is GET-only (EventSource); reject POST cleanly.
+            self.send_response(405)
+            self.send_header("Allow", "GET")
+            self._send_cors_headers()
+            self.send_header("Content-Length", "0")
+            self.end_headers()
             return
         self._reply_json(404, {"error": "not found"})
 
@@ -441,6 +469,83 @@ class TapHandler(http.server.BaseHTTPRequestHandler):
         retrieved = result.get("retrieved", {}) if isinstance(result, dict) else {}
         logger.info("ASK done (%d chars answer)", len(answer))
         self._reply_json(200, {"answer": answer, "retrieved": retrieved})
+
+    def _handle_ask_stream(self, raw_query: str) -> None:
+        """SSE bridge: `GET /ask/stream?q=<url-encoded-query>`.
+
+        Yields `retrieved`, then `chunk` events as the LLM produces text,
+        then a final `done` (or `error`) event. The client-side
+        EventSource in the cockpit parses these into progressive UI.
+        """
+        # Query-string length cap — the URL itself is the payload. Same
+        # 4KB budget as the POST body for consistency.
+        if len(raw_query) > MAX_ASK_BYTES:
+            self._reply_json(
+                413, {"error": f"query string too large (>{MAX_ASK_BYTES} bytes)"})
+            return
+
+        params = parse_qs(raw_query, keep_blank_values=False)
+        q = params.get("q") or params.get("query") or []
+        query = (q[0] if q else "").strip()
+        if not query:
+            self._reply_json(400, {"error": "missing or empty 'q'"})
+            return
+
+        logger.info("ASK STREAM %r", query[:120])
+
+        # Open SSE response. We flush headers immediately so browsers
+        # move out of "pending" state; then walk the generator and
+        # flush each event as it arrives.
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-transform")
+            # Use Connection: close so the browser (and curl -N) see EOF
+            # when the generator finishes. HTTP/1.0 semantics let us skip
+            # Content-Length and Transfer-Encoding entirely; the server
+            # closes the socket on handler return.
+            self.send_header("Connection", "close")
+            self.send_header("X-Accel-Buffering", "no")  # in case a proxy shows up later
+            self._send_cors_headers()
+            self.end_headers()
+            self.wfile.flush()
+            # Signal to the connection layer that we do not want keep-alive
+            # on this response (matters for HTTP/1.1-capable clients).
+            self.close_connection = True
+        except (BrokenPipeError, ConnectionResetError):
+            logger.warning("client disconnected before SSE headers sent")
+            return
+
+        n_chunks = 0
+        try:
+            for event in _run_ask_stream(query):
+                if not isinstance(event, dict):
+                    continue
+                etype = event.get("type", "message")
+                # SSE frame: `event: <name>\ndata: <json>\n\n`
+                frame = (
+                    f"event: {etype}\n"
+                    f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                ).encode("utf-8")
+                try:
+                    self.wfile.write(frame)
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    logger.warning("client hung up mid-stream after %d chunks",
+                                   n_chunks)
+                    return
+                if etype == "chunk":
+                    n_chunks += 1
+        except Exception as exc:  # noqa: BLE001 — surface as an SSE error
+            logger.exception("ask_stream failed for %r", query[:120])
+            try:
+                self.wfile.write(
+                    ("event: error\n"
+                     f"data: {json.dumps({'error': str(exc)})}\n\n").encode())
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+        logger.info("ASK STREAM done (%d chunks)", n_chunks)
 
     def _handle_tap(self, notif_id: str) -> None:
         if not NOTIF_ID_RE.match(notif_id):
@@ -573,7 +678,7 @@ class TapHandler(http.server.BaseHTTPRequestHandler):
 
     def _send_cors_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.send_header("Access-Control-Max-Age", "86400")
 

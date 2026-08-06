@@ -126,6 +126,104 @@ class AskRouteTest(unittest.TestCase):
         self.assertIn("model exploded", out["error"])
         self.assertEqual(resp.getheader("Access-Control-Allow-Origin"), "*")
 
+    # ── /ask/stream (SSE) ────────────────────────────────────────────
+
+    def _get_stream(self, path: str):
+        """Open a raw HTTP GET, return (resp, full body bytes). The
+        server closes the connection when the generator finishes, so
+        rfile.read() on the response drains the whole SSE stream."""
+        conn = HTTPConnection("127.0.0.1", self.port, timeout=10)
+        conn.request("GET", path)
+        resp = conn.getresponse()
+        data = resp.read()
+        conn.close()
+        return resp, data
+
+    def test_get_ask_stream_emits_retrieved_chunks_done_in_order(self):
+        events = [
+            {"type": "retrieved",
+             "data": {"wiki_hits": 2, "entities": ["germaine"],
+                      "threads": ["wedding-venue"], "prompt_chars": 4321}},
+            {"type": "chunk", "text": "Hello "},
+            {"type": "chunk", "text": "Brian, "},
+            {"type": "chunk", "text": "here you go."},
+            {"type": "done", "answer": "Hello Brian, here you go."},
+        ]
+        with mock.patch.object(tap_endpoint, "_run_ask_stream",
+                               return_value=iter(events)):
+            resp, data = self._get_stream("/ask/stream?q=who+is+Germaine")
+
+        self.assertEqual(resp.status, 200)
+        self.assertIn("text/event-stream",
+                      resp.getheader("Content-Type") or "")
+        self.assertEqual(resp.getheader("Cache-Control"),
+                         "no-cache, no-transform")
+
+        body = data.decode("utf-8")
+        # Every event appears in order as an SSE frame
+        for ev in events:
+            self.assertIn("event: " + ev["type"] + "\n", body,
+                          f"missing SSE event for {ev['type']}")
+        # Order preserved: retrieved before first chunk before done
+        idx_retrieved = body.index("event: retrieved")
+        idx_first_chunk = body.index("event: chunk")
+        idx_done = body.index("event: done")
+        self.assertLess(idx_retrieved, idx_first_chunk)
+        self.assertLess(idx_first_chunk, idx_done)
+        # Data payload for the chunk parses back to the same text
+        chunk_line = [ln for ln in body.splitlines()
+                      if ln.startswith("data: ")
+                      and '"type": "chunk"' in ln][0]
+        parsed = json.loads(chunk_line[len("data: "):])
+        self.assertEqual(parsed["text"], "Hello ")
+
+    def test_get_ask_stream_sets_cors_header(self):
+        with mock.patch.object(tap_endpoint, "_run_ask_stream",
+                               return_value=iter([{"type": "done"}])):
+            resp, _ = self._get_stream("/ask/stream?q=hi")
+        self.assertEqual(resp.getheader("Access-Control-Allow-Origin"), "*")
+
+    def test_get_ask_stream_oversize_query_413(self):
+        big_q = "x" * (tap_endpoint.MAX_ASK_BYTES + 10)
+        with mock.patch.object(tap_endpoint, "_run_ask_stream") as run:
+            resp, data = self._get_stream("/ask/stream?q=" + big_q)
+        self.assertEqual(resp.status, 413)
+        self.assertIn("error", json.loads(data.decode()))
+        run.assert_not_called()
+
+    def test_get_ask_stream_missing_query_400(self):
+        with mock.patch.object(tap_endpoint, "_run_ask_stream") as run:
+            resp, data = self._get_stream("/ask/stream")
+            self.assertEqual(resp.status, 400)
+            self.assertIn("error", json.loads(data.decode()))
+            resp2, _ = self._get_stream("/ask/stream?q=%20%20")
+            self.assertEqual(resp2.status, 400)
+        run.assert_not_called()
+
+    def test_post_ask_stream_returns_405(self):
+        with mock.patch.object(tap_endpoint, "_run_ask_stream") as run:
+            resp, _ = self._request(
+                "POST", "/ask/stream", body=b'{"query":"hi"}')
+        self.assertEqual(resp.status, 405)
+        self.assertIn("GET", resp.getheader("Allow") or "")
+        run.assert_not_called()
+
+    def test_get_ask_stream_provider_error_becomes_sse_error_event(self):
+        def blowup(_q):
+            yield {"type": "retrieved", "data": {"wiki_hits": 0}}
+            raise RuntimeError("model exploded mid-stream")
+        with mock.patch.object(tap_endpoint, "_run_ask_stream",
+                               side_effect=blowup):
+            resp, data = self._get_stream("/ask/stream?q=please+break")
+        self.assertEqual(resp.status, 200)  # SSE already opened OK
+        body = data.decode("utf-8")
+        self.assertIn("event: retrieved", body)
+        self.assertIn("event: error", body)
+        err_line = [ln for ln in body.splitlines()
+                    if ln.startswith("data: ") and "exploded" in ln][0]
+        parsed = json.loads(err_line[len("data: "):])
+        self.assertIn("model exploded", parsed["error"])
+
     def test_existing_routes_still_work(self):
         resp, data = self._request("GET", "/healthz")
         self.assertEqual(resp.status, 200)

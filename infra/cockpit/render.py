@@ -948,7 +948,8 @@ function tryRefresh(manual){
 document.getElementById("reload").addEventListener("click", function(){ tryRefresh(true); });
 
 /* ── ask bar → tap endpoint → detail panel ─────────────────────────── */
-var ASK_URL = "http://localhost:8210/ask";
+var ASK_BASE = "http://localhost:8210";
+var ASK_STREAM_URL = ASK_BASE + "/ask/stream";
 var askQ = document.getElementById("askq");
 var askSend = document.getElementById("asksend");
 var askLoad = document.getElementById("askload");
@@ -994,17 +995,28 @@ function mdHTML(text){
   flushPara(); flushList();
   return out.join("");
 }
-function askPanel(query, resp){
-  var r = resp.retrieved || {};
+function askFootHTML(r){
+  r = r || {};
   var ents = (r.entities || []).join(", ") || "—";
   var thrs = (r.threads || []).join(", ") || "—";
+  return 'Retrieved: ' + (r.wiki_hits != null ? r.wiki_hits : "?") +
+    " wiki sections · entities: " + esc(ents) + " · threads: " + esc(thrs) +
+    " · prompt: " + (r.prompt_chars != null ? r.prompt_chars.toLocaleString() : "?") +
+    " chars";
+}
+// Skeleton for a streaming ask: header + empty answer body + retrieved
+// footnote slot + status pill. Chunks append into #ask-answer-body; the
+// foot is populated the instant the 'retrieved' event arrives; the
+// pulsing dot in the pill vanishes on 'done'.
+function askSkeletonHTML(query){
   return '<div class="eyebrow">ask · grounded in your substrate</div>' +
     "<h2>" + esc(query) + "</h2>" +
-    '<div class="ask-answer">' + mdHTML(resp.answer) + "</div>" +
-    '<div class="ask-foot">Retrieved: ' + (r.wiki_hits != null ? r.wiki_hits : "?") +
-      " wiki sections · entities: " + esc(ents) + " · threads: " + esc(thrs) +
-      " · prompt: " + (r.prompt_chars != null ? r.prompt_chars.toLocaleString() : "?") +
-      " chars</div>";
+    '<div id="ask-status" class="soft" style="font-family:var(--mono);font-size:10px;letter-spacing:.08em;margin:0 0 12px">' +
+      '<span id="ask-status-dot" style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--warm);margin-right:6px;animation:askpulse 1.1s ease-in-out infinite;vertical-align:middle"></span>' +
+      '<span id="ask-status-text">retrieving substrate…</span>' +
+    "</div>" +
+    '<div class="ask-answer" id="ask-answer-body"></div>' +
+    '<div class="ask-foot" id="ask-foot">…</div>';
 }
 function askErrPanel(query, msg){
   return '<div class="eyebrow">ask · error</div>' +
@@ -1014,37 +1026,99 @@ function askErrPanel(query, msg){
     '<code style="font-family:var(--mono);font-size:10.5px">launchctl kickstart -k gui/$UID/com.mikai.tap-endpoint</code></p>';
 }
 var askBusy = false;
+var askES = null;
+function closeES(){
+  if (askES){ try { askES.close(); } catch (e) {} askES = null; }
+}
 function submitAsk(){
   var q = askQ.value.trim();
   if (!q || askBusy) return;
   askBusy = true; askSend.disabled = true; askLoad.hidden = false;
-  var ctrl = ("AbortController" in window) ? new AbortController() : null;
-  // The ask is synchronous server-side (30–60s LLM call) — allow 3 min.
-  var timer = ctrl ? setTimeout(function(){ ctrl.abort(); }, 180000) : null;
-  fetch(ASK_URL, {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({query: q}),
-    signal: ctrl ? ctrl.signal : undefined
-  })
-  .then(function(res){
-    return res.json()
-      .catch(function(){ throw new Error("bad response from ask endpoint (HTTP " + res.status + ")"); })
-      .then(function(j){
-        if (!res.ok || j.error) throw new Error(j.error || ("HTTP " + res.status));
-        return j;
-      });
-  })
-  .then(function(j){ openPanel(askPanel(q, j)); })
-  .catch(function(err){
-    var msg = (err && err.name === "AbortError")
-      ? "timed out after 3 minutes — the model may still be chewing; try again"
-      : ((err && err.message) || "could not reach the ask endpoint");
-    openPanel(askErrPanel(q, msg));
-  })
-  .then(function(){
-    if (timer) clearTimeout(timer);
+
+  openPanel(askSkeletonHTML(q));
+  var body = document.getElementById("ask-answer-body");
+  var foot = document.getElementById("ask-foot");
+  var statusText = document.getElementById("ask-status-text");
+  var statusDot = document.getElementById("ask-status-dot");
+  var raw = "";
+
+  function stopUI(){
     askBusy = false; askSend.disabled = false; askLoad.hidden = true;
+    if (statusDot) statusDot.style.animation = "none";
+  }
+  function finish(msg){
+    if (statusText) statusText.textContent = msg;
+    if (statusDot) statusDot.style.display = "none";
+    stopUI();
+    closeES();
+  }
+  function fail(msg){
+    closeES();
+    openPanel(askErrPanel(q, msg));
+    stopUI();
+  }
+
+  if (!("EventSource" in window)){
+    fail("this browser has no EventSource — streaming ask is unavailable");
+    return;
+  }
+
+  closeES();
+  var url = ASK_STREAM_URL + "?q=" + encodeURIComponent(q);
+  try {
+    askES = new EventSource(url);
+  } catch (err){
+    fail("could not open stream: " + (err && err.message ? err.message : err));
+    return;
+  }
+
+  // Watchdog: if nothing arrives in 30s we bail. The server side has its
+  // own 5-min hard timeout on the LLM subprocess.
+  var watchdog = setTimeout(function(){
+    if (askBusy) fail("no response from the ask endpoint after 30s");
+  }, 30000);
+  function ping(){ clearTimeout(watchdog); watchdog = setTimeout(function(){
+    if (askBusy) fail("stream stalled — the LLM stopped emitting text");
+  }, 60000); }
+
+  askES.addEventListener("retrieved", function(ev){
+    ping();
+    try {
+      var payload = JSON.parse(ev.data || "{}");
+      if (foot) foot.innerHTML = askFootHTML(payload.data || {});
+      if (statusText) statusText.textContent = "MIKAI is thinking…";
+    } catch (err){}
+  });
+  askES.addEventListener("chunk", function(ev){
+    ping();
+    try {
+      var payload = JSON.parse(ev.data || "{}");
+      if (typeof payload.text === "string" && payload.text){
+        raw += payload.text;
+        if (body) body.innerHTML = mdHTML(raw);
+      }
+    } catch (err){}
+  });
+  askES.addEventListener("done", function(ev){
+    clearTimeout(watchdog);
+    try {
+      var payload = JSON.parse(ev.data || "{}");
+      // Prefer the server's final `answer` (already stripped) so trailing
+      // whitespace across the stream doesn't affect the rendered version.
+      if (typeof payload.answer === "string" && payload.answer){
+        raw = payload.answer;
+        if (body) body.innerHTML = mdHTML(raw);
+      }
+    } catch (err){}
+    finish("done");
+  });
+  askES.addEventListener("error", function(ev){
+    clearTimeout(watchdog);
+    var msg = "";
+    try { msg = (JSON.parse(ev.data || "{}") || {}).error || ""; } catch (e){}
+    // EventSource fires a plain 'error' event on network drop too — no data.
+    if (!msg) msg = "the stream ended unexpectedly (endpoint down, or CORS?)";
+    fail(msg);
   });
 }
 document.getElementById("askform").addEventListener("submit", function(e){
