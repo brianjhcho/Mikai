@@ -19,14 +19,19 @@ from infra.mikai_brain import ledger, threads
 
 # Canonical departments. Order is render order around the constellation.
 # (id, display name, tier, sub-label)
+#
+# Ids match thread frontmatter vocabulary (body, love, domestic, ai_work —
+# see docs/ENTITY_MODEL.md); "domestic" displays as "Home". The former
+# Signal/Cortex/Threshold infrastructure hubs were removed 2026-08-05:
+# they held zero threads and rendered as chrome, and Threshold's content
+# (gate status, dismiss rate, pending) already lives on the center
+# Surface node. Re-add an infrastructure hub only when it has a real,
+# always-available data source behind it.
 DEPARTMENTS: list[tuple[str, str, str, str]] = [
     ("ai_work", "AI Work", "primary", "product · shipping · code · ideas"),
     ("body", "Body", "primary", "breathing · posture · movement · sleep"),
-    ("home", "Home", "primary", "monstera · marble table · chairs · space"),
+    ("domestic", "Home", "primary", "monstera · marble table · chairs · space"),
     ("love", "Love", "primary", "Bethany · ring · venue · vow"),
-    ("signal", "Signal", "secondary", "apple notes · imessage · gmail · claude threads"),
-    ("cortex", "Cortex", "secondary", "wiki · graph · episodes · decisions"),
-    ("threshold", "Threshold", "secondary", "intervention · silence · consent · timing"),
 ]
 
 MISC = ("misc", "Misc", "misc", "unfiled · awaiting a department")

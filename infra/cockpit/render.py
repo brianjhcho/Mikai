@@ -307,18 +307,15 @@ _TEMPLATE = r"""<!doctype html>
 "use strict";
 
 var TINT = {
-  ai_work:"#5C7FBE", body:"#5EBFA9", home:"#7BB98F", love:"#D4816F",
-  signal:"#C9A46B", cortex:"#9B93D6", threshold:"#B08654", misc:"#7B8790"
+  ai_work:"#5C7FBE", body:"#5EBFA9", domestic:"#7BB98F", love:"#D4816F",
+  misc:"#7B8790"
 };
 var WARM = "#E4A776";
 var GLYPH = {
   ai_work:'<path d="M8 5l-5 7 5 7M16 5l5 7-5 7"/>',
   body:'<path d="M12 4v7M12 11c-2 1-5 3-5 7M12 11c2 1 5 3 5 7"/>',
-  home:'<path d="M12 20C6.5 16 6.5 8 12 4c5.5 4 5.5 12 0 16zM12 8v10"/>',
+  domestic:'<path d="M12 20C6.5 16 6.5 8 12 4c5.5 4 5.5 12 0 16zM12 8v10"/>',
   love:'<circle cx="12" cy="14.5" r="5.5"/><path d="M9.4 9.4L12 5l2.6 4.4"/>',
-  signal:'<path d="M8.5 14a5 5 0 0 1 7 0M5.5 10.5a10 10 0 0 1 13 0"/><circle cx="12" cy="17.5" r="1.3" fill="currentColor" stroke="none"/>',
-  cortex:'<circle cx="6.5" cy="8" r="2"/><circle cx="17.5" cy="8" r="2"/><circle cx="12" cy="17" r="2"/><path d="M8 9.5l2.8 5M16 9.5l-2.8 5M8.5 8h7"/>',
-  threshold:'<path d="M7.5 4v16M16.5 4v16M7.5 9h3.5M16.5 9h-3.5"/>',
   misc:'<circle cx="12" cy="12" r="2.6"/>',
   center:'<circle cx="12" cy="12" r="3.2"/><circle cx="12" cy="12" r="8.5" stroke-dasharray="2.4 3.4"/>'
 };
