@@ -15,6 +15,17 @@ Usage:
 
 Once this proves the mechanism, the logic folds into calendar_planner.py
 as the recurring-block path.
+
+WRITES BACK (SPEC §5.1 — an action that leaves no trace never happened):
+- The master Recommendations .ics on iCloud (CalDAV PUT, --apply only) —
+  5 override VEVENTs spliced in.
+- `/tmp/mikai_weekplan_failed.ics` — debug dump, only on a failed PUT.
+- `~/.mikai/brain/state/progress.jsonl` — one `mode="week_planner"` entry
+  per successful --apply PUT. Preview runs, LLM failures, and failed PUTs
+  log nothing.
+- Thread log lines under `~/.mikai/brain/threads/` when a day plan's
+  title/description/branch clearly names a thread (conservative heuristic
+  match on slug / title / distinctive slug component).
 """
 
 from __future__ import annotations
@@ -304,6 +315,48 @@ def _preview_desc(desc: str, width: int = 80) -> str:
     return "\n".join("    " + ln for ln in desc.splitlines())
 
 
+def _write_back(plan: dict, days: list[date_type]) -> None:
+    """Record a successful --apply PUT into the brain substrate (SPEC §5.1).
+
+    Never raises — a write-back failure must not undo the fact that the
+    calendar was already written. Thread appends are conservative: a day
+    plan must clearly name a thread; no match → no append."""
+    try:
+        from infra.mikai_brain import ledger
+        from infra.mikai_brain import threads as thread_mod
+
+        day_rows = plan.get("days", [])
+        titles = "; ".join(
+            f"{d.get('weekday', '?')[:3]} {d.get('title', '?')}" for d in day_rows
+        )
+        did = (f"Wrote {len(day_rows)} week-plan overrides to iCloud "
+               f"({days[0].isoformat()}→{days[-1].isoformat()}): {titles}")[:400]
+
+        all_threads = thread_mod.load_all()
+        touched: dict[str, tuple] = {}
+        for d in day_rows:
+            text = (f"{d.get('title', '')}\n{d.get('description', '')}\n"
+                    f"{d.get('primary_branch', '')}")
+            for th in thread_mod.match_threads_in_text(text, all_threads):
+                touched.setdefault(th.slug, (th, []))[1].append(d)
+
+        ledger.run(mode="week_planner", did=did,
+                   threads_touched=sorted(touched),
+                   extra={"uid": TARGET_UID,
+                          "dates": [d.get("date", "") for d in day_rows]})
+
+        for slug in sorted(touched):
+            th, hits = touched[slug]
+            for d in hits:
+                thread_mod.append_log_line(
+                    th,
+                    f"[week_planner] Planned {d.get('weekday', '?')} "
+                    f"{d.get('date', '?')}: {d.get('title', '?')!r}",
+                )
+    except Exception as exc:  # noqa: BLE001 — write-back must never kill the run
+        print(f"WARN: brain write-back failed: {exc}", file=sys.stderr)
+
+
 def main() -> int:
     user = os.environ.get("MIKAI_ICLOUD_USER", "")
     pw = os.environ.get("MIKAI_ICLOUD_APP_PASSWORD", "")
@@ -401,6 +454,10 @@ def main() -> int:
     print(f"✓ PUT status={status} new_etag={new_etag}")
     print("  5 overrides applied. Check iPhone Calendar in a few seconds "
           "(pull-to-refresh may help).")
+
+    # 8. Write-back: the brain must know this happened (SPEC §5.1).
+    #    Only reached after a successful PUT — failures return above.
+    _write_back(plan, days)
     return 0
 
 

@@ -18,7 +18,7 @@ from pathlib import Path
 
 from infra.mikai_brain import BRAIN_ROOT, STATE_DIR
 
-from . import collect_center, collect_departments
+from . import collect_center, collect_departments, collect_entity_edges
 from .render import render_html
 
 DASHBOARD_JSON = STATE_DIR / "dashboard.json"
@@ -27,10 +27,12 @@ COCKPIT_HTML = BRAIN_ROOT / "cockpit.html"
 
 def build_dashboard() -> dict:
     now = datetime.now(timezone.utc)
+    departments = collect_departments()
     return {
         "generated_at": now.isoformat(timespec="seconds"),
         "generated_at_human": now.strftime("%Y-%m-%d %H:%M UTC"),
-        "departments": collect_departments(),
+        "departments": departments,
+        "entity_edges": collect_entity_edges(departments),
         "center": collect_center(),
     }
 

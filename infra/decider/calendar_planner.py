@@ -25,6 +25,18 @@ dismissal_inference.py, or a dedicated cron; see D-055).
 
 Runs as com.mikai.calendar-planner LaunchAgent, once a day at 08:00
 local, plus manual --force for on-demand refresh.
+
+WRITES BACK (SPEC §5.1 — an action that leaves no trace never happened):
+- `calendar_proposals` table in `~/.mikai/notification_log.db` — one
+  PROPOSED row per dispatched proposal (the mutation this module owns;
+  the actual calendar write happens later in tap_endpoint.py).
+- ntfy topic — one Approve/Reject card per proposal.
+- `~/.mikai/brain/state/progress.jsonl` — one `mode="calendar_planner"`
+  entry per run that dispatched >= 1 proposal. Dry runs, LLM failures,
+  and zero-dispatch ticks log nothing.
+- Thread log lines under `~/.mikai/brain/threads/` when a proposal's
+  title/description clearly names a thread (conservative heuristic match
+  on slug / title / distinctive slug component).
 """
 
 from __future__ import annotations
@@ -299,6 +311,46 @@ def dispatch_proposal(proposal_id: str, current: str, proposed_title: str,
         return False, f"ntfy_error: {e}"
 
 
+# ── Brain write-back (SPEC §5.1) ───────────────────────────────────────
+
+
+def _write_back(dispatched: list[tuple[str, str, str]]) -> None:
+    """Record dispatched proposals into the brain substrate.
+
+    `dispatched` is [(proposal_id, title, description), ...] for proposals
+    that were BOTH stored and successfully sent via ntfy. Never raises —
+    a write-back failure must not break a completed tick. Thread appends
+    are conservative: no clear match → no append."""
+    try:
+        from infra.mikai_brain import ledger
+        from infra.mikai_brain import threads as thread_mod
+
+        titles = "; ".join(t for _, t, _ in dispatched)
+        did = (f"Proposed {len(dispatched)} calendar block rewrite(s) "
+               f"for approval: {titles}")[:300]
+
+        all_threads = thread_mod.load_all()
+        touched: dict[str, tuple] = {}
+        for pid, title, desc in dispatched:
+            for th in thread_mod.match_threads_in_text(f"{title}\n{desc}", all_threads):
+                touched.setdefault(th.slug, (th, []))[1].append((pid, title))
+
+        ledger.run(mode="calendar_planner", did=did,
+                   threads_touched=sorted(touched),
+                   extra={"proposal_ids": [p for p, _, _ in dispatched]})
+
+        for slug in sorted(touched):
+            th, hits = touched[slug]
+            for pid, title in hits:
+                thread_mod.append_log_line(
+                    th,
+                    f"[calendar_planner] Proposed block rewrite {pid}: "
+                    f"{title!r} (awaiting approval)",
+                )
+    except Exception as exc:  # noqa: BLE001 — write-back must never kill the tick
+        print(f"WARN: brain write-back failed: {exc}", file=sys.stderr)
+
+
 # ── Main tick ──────────────────────────────────────────────────────────
 
 
@@ -356,6 +408,7 @@ def run_once(dry_run: bool = False, force: bool = False) -> int:
     needs = gather_needs_registry()
 
     fired = 0
+    dispatched: list[tuple[str, str, str]] = []
     for event in editable:
         if not force and already_proposed_today(conn, event):
             print(f"  ⏭  already proposed today: {event.title!r}")
@@ -406,9 +459,15 @@ def run_once(dry_run: bool = False, force: bool = False) -> int:
         )
         if ok:
             fired += 1
+            dispatched.append((proposal_id, new_title, new_desc))
             print(f"  ✓ proposal {proposal_id}: {new_title!r} ({msg})")
         else:
             print(f"  ✗ dispatch failed for {proposal_id}: {msg}", file=sys.stderr)
+
+    # Write-back: the brain must know this happened (SPEC §5.1).
+    # Only successfully dispatched proposals count; zero dispatched → no row.
+    if dispatched and not dry_run:
+        _write_back(dispatched)
 
     if fired == 0 and not dry_run:
         print("OK: 0 proposals dispatched this tick.")

@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.mikai.consolidate</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/briancho/Library/Application Support/mikai/launchd/consolidate-runner.sh</string>
+    </array>
+
+    <!-- Sunday at 08:00 local. Weekly cadence is deliberate: BRAIN.md
+         priorities settle over days, not hours. Firing more often would
+         churn the front page without adding signal. Manual re-runs
+         available with `make consolidate` (target=inbox) or
+         `make consolidate-brain-md` (autonomous overwrite). -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key><integer>0</integer>
+        <key>Hour</key><integer>8</integer>
+        <key>Minute</key><integer>0</integer>
+    </dict>
+
+    <!-- RunAtLoad=false: no surprise consolidation on install/reboot;
+         wait for the scheduled Sunday tick. -->
+    <key>RunAtLoad</key>
+    <false/>
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/briancho/.mikai/logs/consolidate.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/briancho/.mikai/logs/consolidate.err.log</string>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/briancho/Library/Application Support/mikai/launchd</string>
+</dict>
+</plist>
