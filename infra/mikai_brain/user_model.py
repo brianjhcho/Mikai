@@ -51,7 +51,11 @@ USER_MODEL_JSON = STATE_DIR / "user_model.json"
 # Hermes USER.md lesson: bounded so it can ride in every downstream
 # prompt without eating context. Overflow errors; never silently
 # truncates. Downstream would score against a mutilated model.
-MARKDOWN_BYTE_CAP = 2000
+# 4000B is generous vs Hermes' 1375-char USER.md but leaves headroom
+# for 5 rich lists + provenance signals without needing single-word
+# bullets. Still < 3% of the ~150K interactive-tier prompt budget.
+# Overflow errors — silent truncation would corrupt downstream ranking.
+MARKDOWN_BYTE_CAP = 4000
 
 # Input budget for the synthesizer call. Wiki narrative + ontology can
 # be large; we sample rather than truncate blindly. Kept well under the
@@ -252,8 +256,8 @@ Rules:
   every open todo — the ones that keep showing up undecided.
 - Source signals are audit rows so a human can check your work. Cite
   the file kind (PROFILE / ontology / thread / ledger) briefly.
-- Total output MUST fit in about 1500 characters when rendered as
-  markdown bullets. Be tight.
+- Total output MUST fit in about 2500 characters when rendered as
+  markdown bullets. Be tight — prefer 5 sharp items to 8 fluffy ones.
 
 SUBSTRATE FOLLOWS:
 """
