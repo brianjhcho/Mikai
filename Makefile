@@ -4,7 +4,7 @@
 
 PY := python3
 
-.PHONY: standup standup-dry triage triage-no-llm consolidate-dry consolidate consolidate-brain-md test test-writeback test-exec smoke cockpit install-consolidate-cron install-dream-crons install-health-check act act-dry ask ask-dry test-ask
+.PHONY: standup standup-dry triage triage-no-llm consolidate-dry consolidate consolidate-brain-md test test-writeback test-exec smoke cockpit install-consolidate-cron install-dream-crons install-health-check act act-dry ask ask-dry test-ask latent-threads latent-threads-dry
 
 standup:
 	$(PY) -m infra.mikai_brain.standup
@@ -99,3 +99,11 @@ ask-dry:
 
 test-ask:
 	$(PY) -m unittest discover -s infra/mikai_ask/tests -t . -v
+
+# Latent-thread detector: wiki ontology → filter → one LLM call per
+# candidate → proposed-thread-*.md in inbox. See docs/LATENT_THREADS.md.
+latent-threads:
+	$(PY) -m infra.mikai_brain.latent_threads --verbose
+
+latent-threads-dry:
+	$(PY) -m infra.mikai_brain.latent_threads --dry-run --verbose
