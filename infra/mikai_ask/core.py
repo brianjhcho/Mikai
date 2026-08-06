@@ -29,6 +29,7 @@ import sys
 import types
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Iterator
 
 _REPO = Path(__file__).resolve().parents[2]
 if str(_REPO) not in sys.path:
@@ -409,3 +410,80 @@ def ask(
             },
         }
     return answer
+
+
+def _retrieved_from_stats(stats: dict) -> dict:
+    return {
+        "wiki_hits": stats["fts_hits"],
+        "entities": stats["entities"],
+        "threads": stats["thread_slugs"],
+        "prompt_chars": stats["prompt_chars"],
+    }
+
+
+def ask_stream(
+    query: str,
+    *,
+    verbose: bool = False,
+) -> Iterator[dict]:
+    """Streaming variant of ask(): compose the prompt, then yield events.
+
+    Event shapes (all dicts, one per yield):
+      * ``{"type": "retrieved", "data": {...}}`` — retrieval metadata,
+        yielded FIRST so the client can render the "Retrieved N wiki
+        sections…" footnote before any Claude tokens arrive.
+      * ``{"type": "chunk", "text": "..."}`` — a text delta from the
+        interactive-tier provider (Claude today). Emitted zero or more
+        times, in order.
+      * ``{"type": "done", "answer": "<full>"}`` — sentinel emitted after
+        the provider finishes cleanly. ``answer`` is the concatenated
+        stream, handy for callers that want both.
+      * ``{"type": "error", "error": "<msg>"}`` — provider failure.
+        Yielded in place of ``done``. The generator ends after this.
+
+    Also writes a ledger row on successful completion, mirroring ask().
+    Errors do not write a ledger row (matches ask() behavior — a raised
+    exception in ask() aborts before ledger.run()).
+    """
+    query = (query or "").strip()
+    if not query:
+        raise ValueError("empty query")
+
+    prompt, stats = compose(query)
+    if verbose:
+        _print_stats(stats)
+
+    # First event: retrieval metadata. Client can paint immediately.
+    yield {"type": "retrieved", "data": _retrieved_from_stats(stats)}
+
+    chunks: list[str] = []
+    try:
+        for piece in mikai_llm.chat_stream(prompt, tier="interactive"):
+            if not piece:
+                continue
+            chunks.append(piece)
+            yield {"type": "chunk", "text": piece}
+    except Exception as exc:  # noqa: BLE001 — surface to the client
+        yield {"type": "error", "error": str(exc)}
+        return
+
+    answer = "".join(chunks).strip()
+
+    ledger.run(
+        mode="ask",
+        did=(
+            f"ask: {_summarize_query(query)} | fts={stats['fts_hits']} "
+            f"entities={len(stats['entities'])} threads={stats['threads']}"
+        ),
+        extra={
+            "prompt_chars": stats["prompt_chars"],
+            "fts_hits": stats["fts_hits"],
+            "fallback_fill": stats["fallback_fill"],
+            "entities": stats["entities"],
+            "threads": stats["threads"],
+            "trimmed": stats["trimmed"],
+            "streamed": True,
+        },
+    )
+
+    yield {"type": "done", "answer": answer}
