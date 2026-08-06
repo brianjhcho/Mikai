@@ -205,3 +205,52 @@ The two-adapter architecture (ARCH-024, ARCH-025) makes this claim enforceable:
 - Switching modes is a single env var. No code changes. No rebuild. This is what makes it a product commitment rather than a fork.
 
 **The two-adapter architecture is a product-level commitment, not just a technical design choice.** See ARCH-025 for the scope of what "local" means, the tradeoffs accepted (model quality gap, feature gap), and the sequencing (port extraction → GraphitiAdapter stabilization → LocalAdapter implementation).
+
+---
+
+## §5 — The four disciplines MIKAI is built to serve
+
+_Added 2026-08-06 from operator-writing Brian bookmarked. These are the disciplines high-functioning executives already practice by hand — MIKAI's product intent is to make them the default for someone who doesn't have nine years of watching them at close range._
+
+### D1 · One single system
+
+> *"The rest of their work lived in one single system. Not in their head, not in a notebook, not across six apps."*
+
+Every scattered surface — a note here, a Claude thread there, an email flag, a Slack star, a browser tab, a calendar block — is a cognitive tax paid every time attention returns to the topic. MIKAI's substrate exists so nothing about Brian's life lives in six places. The wiki is the single system. The `L3Backend` port is what makes it credible — every ingestion source, every surface, every retrieval consumer talks to *one* substrate. If MIKAI ever grows a "MIKAI has its own notes and also here's an integration with Notion" surface, it has failed this discipline. **The default question for any new capability: does it move data INTO the single system or does it create a seventh one?**
+
+### D2 · Visual weight must match importance
+
+> *"'Reply to Dave' is sitting on the same line as 'restructure the division,' written in the same pen, given the same weight. Your list treats a 2-minute task and a 2-week project like they're the same size. So your brain has to re-decide what actually matters every single time you look at it."*
+
+A uniform list is a hidden cost paid on every glance. The cockpit's salience budget (≤4 loud nodes at any render), the attention-head line at the top of the sky, and the staleness dimming of resolved threads are not decoration — they are visual weight becoming synonymous with importance. **The default question for any new render: is a 2-minute task and a 2-week project rendered at the same weight? If yes, reject the design.**
+
+### D3 · Priority = calendar time + duration + protection
+
+> *"Anything that mattered went straight into the calendar with a time, a duration, and protection around it. If it didn't earn those three things, it wasn't a priority. It was a wish."*
+
+This is the load-bearing principle for MIKAI's `calendar_planner` + `week_planner` + Sumimasen gate. A decision without a calendar block is not a commitment. A commitment without duration is not a plan. A plan without protection (blocked time, defended against interruption) does not survive contact with the week. The pipeline is designed so that when MIKAI surfaces a thread as owed attention, the next step it proposes is *put it on the calendar with duration and protection* — not *add it to a list*. **The default question for the L5 execution layer: does this action put a decision on the calendar with time, duration, and protection? If not, it's producing wishes.**
+
+### D4 · The week is already decided
+
+> *"These people were not more disciplined than you. Same energy dips, same avoidance, same 'I'll get to it later.' The difference was that their week was already decided."*
+
+This is why weekly `consolidate` runs Sunday morning, why `week_planner` writes five day-blocks in advance, and why the "one planning hour" from the same source is the boring most-valuable hour of MIKAI's operator week. Willpower does not survive an undecided week. A pre-decided week does not require willpower — it requires only follow-through, which the cockpit + Attention Engine's gate exist to make trivial. **The default question for the weekly cadence: after Sunday's ritual, does Brian know what Monday–Friday look like without having to decide again?**
+
+---
+
+## §6 — Naming: from FIGS to Attention Engine
+
+The L4 gate — the layer that decides *when to interrupt* the operator and *what to surface* — has cycled through names: **FIGS** (First Intent Grounded Surface, internal-only acronym from an early build), then **Surface Engine** (published in `docs/GLOSSARY.md`, current default in code), and now, adopting the framing that emerged from `docs/COCKPIT_CONTENT_STRATEGY.md`, **Attention Engine**.
+
+The rename is deliberate and industry-standard by lineage — *attention* is the shared vocabulary across three literatures MIKAI depends on:
+
+- **Behavioral science** — Thaler/Sunstein (2008) *Nudge*; BJ Fogg's Behavior Model (B = MAP: Motivation, Ability, Prompt) uses "prompt" but "prompt" collides with LLM prompts.
+- **HCI proactive-assistance** — Cowan (2001) working-memory bound (~4 items); ProMemAssist (UIST 2025) "utility = value − displacement − interference"; Inner Thoughts (CHI 2025) trigger→retrieve→form→**evaluate**→participate — all optimize the *attention* budget explicitly.
+- **MIKAI's own doctrine** — `docs/COCKPIT_CONTENT_STRATEGY.md` §3 (Attack 3): "show where **attention is owed** — 'state just changed' ∪ 'state should have changed and didn't'." The Attention Engine is what implements this.
+
+**Migration:**
+
+- Code modules stay at `mikai_decide.py`, `figs-decide-runner.sh`, `com.mikai.figs-decide` — launchctl label continuity per the earlier rename note in `docs/GLOSSARY.md`. User-facing prose in docs uses **Attention Engine** going forward.
+- The old **FIGS** acronym is deprecated; the transitional **Surface Engine** name is retained in `SURFACE_ENGINE_LOSS_FUNCTION.md` (technical spec, no rewrite required) but new writing uses **Attention Engine**.
+- The loss-function file's V2 pass should be renamed `ATTENTION_ENGINE_LOSS_FUNCTION.md` when it materially changes; until then, one alias line at the top is enough.
+
