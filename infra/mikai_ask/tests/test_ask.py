@@ -245,6 +245,30 @@ class TestAsk(AskTestCase):
         self.assertIn("log me please", rows[0]["did"])
         self.assertIn("prompt_chars", rows[0]["extra"])
 
+    def test_ask_return_debug_returns_answer_and_retrieved(self):
+        self.write_entity("germaine", "GERMAINE-BODY partner facts here.")
+        self.write_thread("some-build", state="acting")
+        hits = [self.fake_hit(f"hit-{i}", f"snippet {i}") for i in range(3)]
+        with mock.patch("infra.mikai_llm.chat", return_value="debug answer"):
+            with mock.patch.object(self.core, "_fts_hits", return_value=hits):
+                out = self.core.ask("how is germaine?", return_debug=True)
+        self.assertIsInstance(out, dict)
+        self.assertEqual(out["answer"], "debug answer")
+        r = out["retrieved"]
+        self.assertEqual(r["wiki_hits"], 3)
+        self.assertEqual(r["entities"], ["germaine"])
+        self.assertEqual(r["threads"], ["some-build"])
+        self.assertGreater(r["prompt_chars"], 0)
+        self.assertEqual(len(self.progress_rows()), 1,
+                         "return_debug must still log the run")
+
+    def test_ask_return_debug_false_preserves_string_contract(self):
+        with mock.patch("infra.mikai_llm.chat", return_value="plain answer"):
+            with mock.patch.object(self.core, "_fts_hits", return_value=[]):
+                out = self.core.ask("anything at all")
+        self.assertIsInstance(out, str)
+        self.assertEqual(out, "plain answer")
+
     def test_ask_stdin_input_works(self):
         from infra.mikai_ask import main as ask_main
         with mock.patch("infra.mikai_llm.chat", return_value="STDIN-ANSWER"):
