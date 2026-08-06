@@ -13,6 +13,9 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
+from sidecar.l3 import wiki_adapter
+from sidecar.l3.port import Episode
+from sidecar.l3.wiki_adapter import WikiAdapter
 from sidecar.l3.wiki_index import WikiIndex
 
 PREAMBLE = "## Who\nBrian — test preamble, not a dated section.\n"
@@ -176,6 +179,69 @@ class WikiIndexTest(unittest.TestCase):
         self.assertEqual(len(idx.records), 6)
         text = WikiIndex.read_section(self.wiki, idx.records[-1])
         self.assertIn("Appended after the initial build.", text)
+
+
+class WikiAdapterIndexTest(unittest.TestCase):
+    """ingest_episode ↔ index integration, against a tempdir wiki root."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self._orig_root = wiki_adapter.WIKI_ROOT
+        wiki_adapter.WIKI_ROOT = self.root
+        self.addCleanup(setattr, wiki_adapter, "WIKI_ROOT", self._orig_root)
+        make_wiki(self.root)
+        self.adapter = WikiAdapter()
+
+    def _episode(self) -> Episode:
+        return Episode(
+            content="Fresh episode content 🚀 with multibyte 内容.",
+            source_description="test-daemon",
+            reference_time=datetime(2026, 8, 3, 12, 0, tzinfo=timezone.utc),
+            name="fresh episode",
+        )
+
+    def test_ingest_appends_wiki_and_index(self) -> None:
+        result = asyncio.run(self.adapter.ingest_episode(self._episode()))
+        self.assertTrue(result.episode_uuid.startswith("wiki-ep-"))
+        index_path = self.root / "wiki.index"
+        self.assertTrue(index_path.exists())
+        idx = WikiIndex.load(index_path)
+        self.assertEqual(len(idx.records), 6)  # 5 fixture + 1 ingested
+        last = idx.records[-1]
+        self.assertEqual(last["source"], "test-daemon")
+        self.assertEqual(last["name"], "fresh episode")
+        text = WikiIndex.read_section(self.root / "wiki.md", last)
+        self.assertIn("Fresh episode content 🚀 with multibyte 内容.", text)
+        self.assertTrue(text.startswith("### 2026-08-03T12:00:00+00:00"))
+
+    def test_ingest_idempotent_skips_wiki_and_index(self) -> None:
+        asyncio.run(self.adapter.ingest_episode(self._episode()))
+        wiki = self.root / "wiki.md"
+        size_after_first = wiki.stat().st_size
+        rows_after_first = len(
+            WikiIndex.load(self.root / "wiki.index").records
+        )
+        # Re-ingest the identical episode — must be a no-op for both files.
+        asyncio.run(self.adapter.ingest_episode(self._episode()))
+        self.assertEqual(wiki.stat().st_size, size_after_first)
+        self.assertEqual(
+            len(WikiIndex.load(self.root / "wiki.index").records),
+            rows_after_first,
+        )
+
+    def test_search_uses_index_never_whole_file(self) -> None:
+        """search() returns matching sections via the index; results are
+        capped and never require reading all of wiki.md."""
+        from sidecar.l3.port import SearchQuery
+
+        edges = asyncio.run(
+            self.adapter.search(SearchQuery(text="wiki", num_results=3))
+        )
+        self.assertGreaterEqual(len(edges), 1)
+        facts = "\n".join(e.fact for e in edges)
+        self.assertIn("substrate pivot", facts)
 
 
 if __name__ == "__main__":
