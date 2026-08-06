@@ -33,6 +33,14 @@ sections. A safety net caps the total bytes returned to any caller
 (MIKAI_WIKI_MAX_RETURN_BYTES, default 1MB) so LLM callers never receive
 27MB by accident. The legacy whole-bundle path survives only as a
 fallback for wikis with no dated sections.
+
+Ranking layer (docs/RETRIEVAL_STACK.md): free-text queries route through
+WikiFTS (sidecar/l3/wiki_fts.py) — a disposable SQLite FTS5 companion at
+~/.mikai/wiki/wiki.fts.db giving BM25-ranked full-text hits over section
+name+body — then fall back to the index-metadata match when FTS is
+unavailable, disabled (MIKAI_WIKI_FTS_DISABLED=1), or hitless. WikiIndex
+stays the source of truth for section boundaries; FTS rows map back to
+index records by byte_start before any content is read.
 """
 
 from __future__ import annotations
@@ -56,6 +64,7 @@ from sidecar.l3.port import (
     SourceEpisode,
     Subgraph,
 )
+from sidecar.l3.wiki_fts import WikiFTS
 from sidecar.l3.wiki_index import WikiIndex, _parse_ts
 
 logger = logging.getLogger("mikai-graphiti.wiki-adapter")
@@ -95,6 +104,19 @@ def _index_path() -> Path:
 
 def _episode_log() -> Path:
     return WIKI_ROOT / "wiki-episodes.log"
+
+
+def _fts_db() -> Path:
+    env = os.environ.get("MIKAI_WIKI_FTS_DB")
+    if env:
+        return Path(env)
+    return WIKI_ROOT / "wiki.fts.db"
+
+
+def _fts_disabled() -> bool:
+    """Kill switch: MIKAI_WIKI_FTS_DISABLED=1 skips all FTS paths and
+    restores pure index-metadata retrieval."""
+    return os.environ.get("MIKAI_WIKI_FTS_DISABLED", "") == "1"
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -243,6 +265,8 @@ class WikiAdapter(L3Backend):
 
     def __init__(self) -> None:
         self._index: WikiIndex | None = None
+        self._fts: WikiFTS | None = None
+        self._fts_synced: bool = False
 
     # ── Index plumbing ──
 
@@ -268,50 +292,58 @@ class WikiAdapter(L3Backend):
             self._index.save(_index_path())
         return self._index
 
-    def _select_sections(
-        self, query: str, k: int
-    ) -> list[tuple[str, str, datetime | None]]:
-        """Resolve a free-text query to up to k wiki sections via the
-        index: exact-phrase match on header metadata first, then
-        per-token matches, then most-recent fill — never a whole-file
-        read. Returns (heading, body, valid_at) triples, total bytes
-        capped at MAX_RETURN_BYTES."""
+    def _get_fts(self) -> WikiFTS | None:
+        """Load (build if missing, rebuild if stale) the FTS5 companion
+        index. Returns None when the kill switch is set or FTS5 is
+        unavailable in this interpreter — callers then fall back to
+        index-metadata retrieval. The staleness check (row count vs
+        index section count, plus a deleted-DB check) runs once per
+        adapter instance; our own ingests keep the DB in sync after
+        that."""
+        if _fts_disabled():
+            return None
+        if not WikiFTS.available():
+            return None
         idx = self._get_index()
-        if not idx.records:
-            # Pre-backfill layout (no dated sections): legacy bundle path.
-            return [
-                (h, b, _wiki_mtime())
-                for h, b in _match_wiki_sections_bundle(query, k=k)
-            ]
+        db = _fts_db()
+        if self._fts is not None and not db.exists():
+            # DB deleted out from under us — force a rebuild.
+            self._fts.close()
+            self._fts, self._fts_synced = None, False
+        if self._fts is None or not self._fts_synced:
+            try:
+                self._fts = WikiFTS.rebuild_if_stale(idx, _wiki_md(), db)
+                self._fts_synced = self._fts is not None
+            except Exception as exc:  # derived artifact — never fatal
+                logger.warning("wiki.fts unavailable: %s", exc)
+                self._fts, self._fts_synced = None, False
+        return self._fts
 
-        matched: list[dict] = []
-        seen: set[int] = set()
+    def search_fts(
+        self,
+        query: str,
+        limit: int = 10,
+        since=None,
+        until=None,
+        source: str | None = None,
+    ) -> list[dict]:
+        """BM25-ranked keyword search over wiki sections (internal
+        surface — the port API is unchanged). Returns WikiFTS hit dicts
+        ({slug, header_ts, source, name, snippet, rank, byte_start})
+        best-first; [] when FTS is disabled/unavailable or nothing
+        matches."""
+        fts = self._get_fts()
+        if fts is None:
+            return []
+        return fts.search(
+            query, since=since, until=until, source=source, limit=limit
+        )
 
-        def _add(records: list[dict]) -> None:
-            for r in records:
-                key = r.get("byte_start", id(r))
-                if key not in seen:
-                    seen.add(key)
-                    matched.append(r)
-
-        q = query.strip()
-        if q:
-            _add(idx.sections_matching(name_pattern=re.escape(q), limit=k))
-            if len(matched) < k:
-                for token in q.split():
-                    if len(matched) >= k:
-                        break
-                    _add(
-                        idx.sections_matching(
-                            name_pattern=re.escape(token), limit=k
-                        )
-                    )
-        if len(matched) < k:
-            # Fill with the most recent sections so the caller always
-            # has substrate to reason from (old-behavior parity).
-            _add(idx.sections_matching(limit=k))
-        matched = matched[:k]
-
+    def _materialize_records(
+        self, matched: list[dict]
+    ) -> list[tuple[str, str, datetime | None]]:
+        """Windowed-read the given index records into (heading, body,
+        valid_at) triples, total bytes capped at MAX_RETURN_BYTES."""
         wiki = _wiki_md()
         out: list[tuple[str, str, datetime | None]] = []
         budget = MAX_RETURN_BYTES
@@ -339,6 +371,67 @@ class WikiAdapter(L3Backend):
             )
             budget -= span
         return out
+
+    def _select_sections(
+        self, query: str, k: int
+    ) -> list[tuple[str, str, datetime | None]]:
+        """Resolve a free-text query to up to k wiki sections. Primary
+        path: BM25-ranked FTS5 over full section text (name + body).
+        Fallback (FTS disabled/unavailable/no hits): the legacy
+        index-metadata match — exact-phrase on header metadata, then
+        per-token, then most-recent fill. Either way the result is
+        windowed reads only, total bytes capped at MAX_RETURN_BYTES."""
+        idx = self._get_index()
+        if not idx.records:
+            # Pre-backfill layout (no dated sections): legacy bundle path.
+            return [
+                (h, b, _wiki_mtime())
+                for h, b in _match_wiki_sections_bundle(query, k=k)
+            ]
+
+        q = query.strip()
+
+        # ── Primary: FTS5 BM25 ranking ──
+        if q:
+            hits = self.search_fts(q, limit=k)
+            if hits:
+                by_start = {r.get("byte_start"): r for r in idx.records}
+                ranked = [
+                    by_start[h["byte_start"]]
+                    for h in hits
+                    if h["byte_start"] in by_start
+                ]
+                if ranked:
+                    return self._materialize_records(ranked)
+
+        # ── Fallback: legacy index-metadata match ──
+        matched: list[dict] = []
+        seen: set[int] = set()
+
+        def _add(records: list[dict]) -> None:
+            for r in records:
+                key = r.get("byte_start", id(r))
+                if key not in seen:
+                    seen.add(key)
+                    matched.append(r)
+
+        if q:
+            _add(idx.sections_matching(name_pattern=re.escape(q), limit=k))
+            if len(matched) < k:
+                for token in q.split():
+                    if len(matched) >= k:
+                        break
+                    _add(
+                        idx.sections_matching(
+                            name_pattern=re.escape(token), limit=k
+                        )
+                    )
+        if len(matched) < k:
+            # Fill with the most recent sections so the caller always
+            # has substrate to reason from (old-behavior parity).
+            _add(idx.sections_matching(limit=k))
+        matched = matched[:k]
+        return self._materialize_records(matched)
 
     # ── Selective read (new surface; additive, used by future callers) ──
 
@@ -428,16 +521,24 @@ class WikiAdapter(L3Backend):
         # Index row: byte_start points at the header line (skip the two
         # leading newlines the section string carries).
         section_bytes = len(section.encode("utf-8"))
-        idx.append_section(
-            {
-                "header_ts": ref_iso,
-                "source": episode.source_description,
-                "name": title,
-                "byte_start": pre_size + 2,
-                "byte_end": pre_size + section_bytes,
-                "content_bytes": content_bytes,
-            }
-        )
+        record = {
+            "header_ts": ref_iso,
+            "source": episode.source_description,
+            "name": title,
+            "byte_start": pre_size + 2,
+            "byte_end": pre_size + section_bytes,
+            "content_bytes": content_bytes,
+        }
+        idx.append_section(record)
+        # FTS companion row (derived, idempotent by slug — failures are
+        # non-fatal; rebuild_if_stale reconciles on the next adapter).
+        fts = self._get_fts()
+        if fts is not None:
+            try:
+                fts.append_section(record, episode.content.rstrip())
+            except Exception as exc:
+                logger.warning("wiki.fts append failed: %s", exc)
+                self._fts_synced = False
         # Audit log: "<iso-ts> <source> <byte-count>", one line per episode.
         n_bytes = len(episode.content.encode("utf-8"))
         try:
@@ -574,5 +675,7 @@ class WikiAdapter(L3Backend):
     # ── Lifecycle ──
 
     async def close(self) -> None:
-        # Nothing to release — the adapter holds no long-lived handles.
+        if self._fts is not None:
+            self._fts.close()
+            self._fts, self._fts_synced = None, False
         return None
