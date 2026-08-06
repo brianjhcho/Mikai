@@ -31,7 +31,7 @@ DEPARTMENTS: list[tuple[str, str, str, str]] = [
     ("ai_work", "AI Work", "primary", "product · shipping · code · ideas"),
     ("body", "Body", "primary", "breathing · posture · movement · sleep"),
     ("domestic", "Home", "primary", "monstera · marble table · chairs · space"),
-    ("love", "Love", "primary", "Bethany · ring · venue · vow"),
+    ("love", "Love", "primary", "Germaine · ring · venue · vow"),
 ]
 
 MISC = ("misc", "Misc", "misc", "unfiled · awaiting a department")
