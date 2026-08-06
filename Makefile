@@ -4,7 +4,7 @@
 
 PY := python3
 
-.PHONY: standup standup-dry triage triage-no-llm consolidate-dry consolidate consolidate-brain-md test test-writeback smoke cockpit install-consolidate-cron
+.PHONY: standup standup-dry triage triage-no-llm consolidate-dry consolidate consolidate-brain-md test test-writeback test-exec smoke cockpit install-consolidate-cron act act-dry
 
 standup:
 	$(PY) -m infra.mikai_brain.standup
@@ -32,7 +32,7 @@ consolidate:
 consolidate-brain-md:
 	$(PY) -m infra.mikai_brain.consolidate --target=brain-md
 
-test: test-writeback
+test: test-writeback test-exec
 	$(PY) -m unittest discover -s infra/mikai_brain/tests -t . -v
 
 # SPEC §5.1 write-back tests for the action scenarios (shell organize,
@@ -51,6 +51,21 @@ cockpit:
 # and launchctl load. Idempotent: unloads first if already installed.
 install-consolidate-cron:
 	bash infra/decider/launchd/install-consolidate-cron.sh
+
+# Executor-layer tests: LLM, dialogs, and subprocess spawns all mocked.
+test-exec:
+	$(PY) -m unittest discover -s infra/mikai_exec/tests -t . -v
+
+# Act on a surfaced thread end-to-end: propose → approve dialog → execute
+# through a scoped channel → write back. Example:
+#   make act SLUG=proposal-timing TYPE=message
+act:
+	$(PY) -m infra.mikai_exec --slug=$(SLUG) --type=$(TYPE)
+
+# Same, but stops after printing the proposal — no dialog, no execution,
+# no state writes.
+act-dry:
+	$(PY) -m infra.mikai_exec --slug=$(SLUG) --type=$(TYPE) --dry-run
 
 # Read-only health check: no state writes, no LLM calls, no file moves.
 smoke:
