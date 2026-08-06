@@ -367,27 +367,47 @@ class TestConsolidate(BrainTestCase):
             with contextlib.redirect_stdout(io.StringIO()) as out:
                 rc = self.consolidate.run(dry_run=True, verbose=False)
 
-        self.assertIn("[dry-run] BRAIN.md not written.", out.getvalue())
+        self.assertIn("[dry-run]", out.getvalue())
+        self.assertIn("nothing written", out.getvalue())
 
         self.assertEqual(rc, 0)
         chat.assert_called_once()
         self.assertEqual(self.brain.BRAIN_MD.read_text(), before)
         self.assertEqual(self.ledger.read_runs(), [])
 
-    def test_consolidate_wet_run_splices_only_the_priorities_section(self):
-        """A real run replaces the priorities body, keeps other sections, and logs the run."""
+    def test_consolidate_wet_run_target_brain_md_splices_priorities(self):
+        """target='brain-md' replaces the priorities body directly (autonomous mode)."""
         with mock.patch("infra.mikai_llm.chat", return_value="I'm waiting on the jeweler."):
-            rc = self.consolidate.run(dry_run=False, verbose=False)
+            rc = self.consolidate.run(dry_run=False, target="brain-md", verbose=False)
 
         self.assertEqual(rc, 0)
         after = self.brain.BRAIN_MD.read_text()
         self.assertIn("I'm waiting on the jeweler.", after)
         self.assertNotIn("Seeded priorities body.", after)
-        self.assertIn("## Departments", after)
-        self.assertIn("love, health, mikai", after)
-        runs = self.ledger.read_runs()
+
+    def test_consolidate_default_target_is_inbox_proposal(self):
+        """Default target writes to inbox, leaves BRAIN.md untouched, logs the run."""
+        before = self.brain.BRAIN_MD.read_text()
+        with mock.patch("infra.mikai_llm.chat", return_value="I'm shipping the moss pole call."):
+            rc = self.consolidate.run(dry_run=False, verbose=False)  # no target arg → default
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.brain.BRAIN_MD.read_text(), before,
+                         "inbox target must not touch BRAIN.md")
+        proposals = list(self.brain.INBOX_DIR.glob("proposed-priorities-*.md"))
+        self.assertEqual(len(proposals), 1, "exactly one proposal should land in inbox")
+        body = proposals[0].read_text()
+        self.assertIn("I'm shipping the moss pole call.", body)
+        self.assertIn("# Proposed Current Priorities", body,
+                     "proposal must carry a header so triage can distinguish it")
+        runs = self.brain.ledger.read_runs()
         self.assertEqual(len(runs), 1)
         self.assertEqual(runs[0]["mode"], "consolidate")
+        self.assertEqual(runs[0].get("extra", {}).get("target"), "inbox")
+
+    def test_consolidate_invalid_target_raises(self):
+        with self.assertRaises(ValueError):
+            self.consolidate.run(target="somewhere-else", verbose=False)
 
 
 class TestProgressJsonlMigration(BrainTestCase):

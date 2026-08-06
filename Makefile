@@ -4,7 +4,7 @@
 
 PY := python3
 
-.PHONY: standup standup-dry triage triage-no-llm consolidate-dry test smoke cockpit
+.PHONY: standup standup-dry triage triage-no-llm consolidate-dry consolidate consolidate-brain-md test smoke cockpit install-consolidate-cron
 
 standup:
 	$(PY) -m infra.mikai_brain.standup
@@ -22,12 +22,30 @@ triage-no-llm:
 consolidate-dry:
 	$(PY) -m infra.mikai_brain.consolidate --dry-run
 
+# Weekly-consolidate manual invocation. Default target=inbox: writes to
+# ~/.mikai/brain/inbox/proposed-priorities-<date>.md for triage to fold in.
+consolidate:
+	$(PY) -m infra.mikai_brain.consolidate
+
+# Autonomous overwrite path — use only after you've calibrated trust from
+# N weeks of accurate inbox proposals.
+consolidate-brain-md:
+	$(PY) -m infra.mikai_brain.consolidate --target=brain-md
+
 test:
 	$(PY) -m unittest discover -s infra/mikai_brain/tests -t . -v
 
-# Second Brain constellation view: writes state/dashboard.json + cockpit.html.
+# Second Brain constellation view: runs standup first (deterministic
+# heartbeat — writes state transitions, delivery events) then rebuilds
+# dashboard.json + cockpit.html. Opening the cockpit IS the heartbeat.
 cockpit:
+	$(PY) -m infra.mikai_brain.standup --quiet
 	$(PY) -m infra.cockpit.main
+
+# Copy runner + plist into ~/Library/Application Support/mikai/launchd/
+# and launchctl load. Idempotent: unloads first if already installed.
+install-consolidate-cron:
+	bash infra/decider/launchd/install-consolidate-cron.sh
 
 # Read-only health check: no state writes, no LLM calls, no file moves.
 smoke:
