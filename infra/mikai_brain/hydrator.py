@@ -177,25 +177,75 @@ def _backup_inbox() -> Path | None:
     return dest
 
 
+def _theme_aligned(slug: str, themes: list[str]) -> bool:
+    """Cheap substring / token overlap check. Matches the ranker in
+    latent_threads.py so hydrator and latent-threads agree on what
+    "aligned" means."""
+    if not themes:
+        return False
+    slug_l = slug.lower()
+    slug_spaced = slug_l.replace("-", " ")
+    for theme in themes:
+        tl = theme.lower()
+        if slug_l in tl or slug_spaced in tl:
+            return True
+        # token overlap ≥ 1 non-trivial token
+        theme_tokens = {t for t in re.split(r"[^a-z0-9]+", tl) if len(t) >= 3}
+        slug_tokens = {t for t in re.split(r"[^a-z0-9]+", slug_spaced) if len(t) >= 3}
+        if theme_tokens & slug_tokens:
+            return True
+    return False
+
+
 def select_candidates(
     *,
     min_mentions: int = DEFAULT_MIN_MENTIONS,
     limit: int = DEFAULT_LIMIT,
     ontology_path: Path = ONTOLOGY_PATH,
 ) -> list[OntologyEntity]:
-    """Apply all filters; return proposal candidates, highest-mention first."""
+    """Apply all filters; return proposal candidates.
+
+    Ordering is user-model-aware: entities whose slug aligns with a
+    UserModel theme are promoted above pure-frequency winners. Under
+    the mention floor, theme-aligned entities can still surface (down
+    to `min(min_mentions, 2)`) — that's the fix for the dry-eye /
+    plants / China-proposal blind spot: heavy-attention topics with
+    few substrate touches used to be invisible.
+
+    Without a UserModel present, falls back to old frequency ordering.
+    """
+    # Local import — avoid module-load cycle (user_model may load lazily).
+    from . import user_model as _um_mod
+    um = _um_mod.load()
+    themes = um.themes if um is not None else []
+
     existing = existing_entity_slugs()
-    out: list[OntologyEntity] = []
-    for e in sorted(parse_ontology(ontology_path), key=lambda x: -x.mentions):
+    # First pass: filter by hard rules (existing/flagged/type/proposed).
+    passable: list[OntologyEntity] = []
+    for e in parse_ontology(ontology_path):
         if e.slug in existing:
             continue
         if e.flagged:
             continue
-        if e.mentions < min_mentions:
-            continue
         if e.type not in ALLOWED_TYPES:
             continue
         if _already_proposed(e.slug):
+            continue
+        passable.append(e)
+
+    # Second pass: score. Theme alignment lets us relax the mention
+    # floor for topic-shaped candidates while keeping noise gated.
+    def _rank(e: OntologyEntity) -> tuple[int, int]:
+        aligned = _theme_aligned(e.slug, themes)
+        # Rank key: (aligned first, then mentions desc).
+        return (1 if aligned else 0, e.mentions)
+
+    relaxed_floor = min(min_mentions, 2) if themes else min_mentions
+    out: list[OntologyEntity] = []
+    for e in sorted(passable, key=_rank, reverse=True):
+        aligned = _theme_aligned(e.slug, themes)
+        floor = relaxed_floor if aligned else min_mentions
+        if e.mentions < floor:
             continue
         out.append(e)
         if len(out) >= limit:

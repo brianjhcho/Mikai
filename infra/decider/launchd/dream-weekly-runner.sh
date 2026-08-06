@@ -27,5 +27,14 @@ mkdir -p "$HOME/.mikai/logs"
 REPO="$HOME/Desktop/MIKAI"
 cd "$REPO"
 
-exec /usr/bin/env python3 -m infra.graphiti.dream_bootstrap ontology \
+# 1) Ontology rebuild — feeds hydrator + latent-threads.
+/usr/bin/env python3 -m infra.graphiti.dream_bootstrap ontology \
   --max-calls 40 --ledger-mode dream-weekly
+
+# 2) User-model rebuild — 1 interactive call; reads the fresh
+#    ontology + wiki narrative + brain/entities + threads + ledger
+#    to compile ~/.mikai/brain/USER_MODEL.md. Downstream hydrator and
+#    latent-threads consult it as their ranker (not raw counts).
+#    See docs/USER_MODEL_RESEARCH.md.
+exec /usr/bin/env python3 -m infra.graphiti.dream_bootstrap user-model \
+  --max-calls 5 --ledger-mode dream-weekly-user-model

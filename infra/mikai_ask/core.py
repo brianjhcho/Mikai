@@ -109,6 +109,18 @@ def _profile_text() -> str:
     return "(no PROFILE.md — profile not yet seeded)"
 
 
+def _user_model_text() -> str:
+    """USER_MODEL.md — the compiled observed-model layer above PROFILE.md.
+    Byte-capped at ~2KB by the compiler (see infra/mikai_brain/user_model.py),
+    so it always fits in the composed prompt. Empty string when the model
+    hasn't been built yet — the composer skips the section entirely rather
+    than injecting a placeholder that would eat context for nothing."""
+    p = brain.BRAIN_ROOT / "USER_MODEL.md"
+    if p.exists():
+        return p.read_text().strip()
+    return ""
+
+
 def _priorities_text() -> str:
     if not brain.BRAIN_MD.exists():
         return "(no BRAIN.md)"
@@ -262,15 +274,26 @@ def _active_thread_summaries() -> list[tuple[str, str]]:
 
 def _assemble(
     profile: str,
+    user_model: str,
     priorities: str,
     fts_blocks: list[str],
     entity_blocks: list[str],
     thread_blocks: list[str],
     query: str,
 ) -> str:
+    # Order: PROFILE (hand-curated identity) → USER_MODEL (observed
+    # themes/values/unresolved) → priorities → retrieved. USER_MODEL
+    # sits above PROFILE-adjacent content because it's the "MIKAI
+    # actually understands me" signal downstream reasoning needs before
+    # touching wiki excerpts. Section is omitted entirely when the
+    # model hasn't been compiled yet — no placeholder tax on context.
     parts = [
         _PREAMBLE,
         "## Profile\n\n" + profile,
+    ]
+    if user_model:
+        parts.append("# WHAT MIKAI HAS OBSERVED ABOUT YOU\n\n" + user_model)
+    parts.extend([
         "## Current priorities (BRAIN.md)\n\n" + priorities,
         "## Retrieved wiki sections\n\n"
         + ("\n\n".join(fts_blocks) if fts_blocks else "(none retrieved)"),
@@ -279,13 +302,14 @@ def _assemble(
         "## Active threads\n\n"
         + ("\n\n".join(thread_blocks) if thread_blocks else "(none active)"),
         "## Question\n\n" + query,
-    ]
+    ])
     return SEP.join(parts)
 
 
 def compose(query: str) -> tuple[str, dict]:
     """Build the full prompt for one query. Returns (prompt, stats)."""
     profile = _profile_text()
+    user_model = _user_model_text()
     priorities = _priorities_text()
 
     hits = _fts_hits(query)
@@ -303,8 +327,8 @@ def compose(query: str) -> tuple[str, dict]:
     entity_blocks = [f"### entity: {slug}\n\n{body}" for slug, body in entities]
 
     trimmed = {"fts": 0, "entities": 0, "threads": 0}
-    prompt = _assemble(profile, priorities, fts_blocks, entity_blocks,
-                       thread_blocks, query)
+    prompt = _assemble(profile, user_model, priorities, fts_blocks,
+                       entity_blocks, thread_blocks, query)
     # Over budget: trim FTS first, then entities, then threads. PROFILE
     # and priorities are inviolate.
     while len(prompt) > PROMPT_CHAR_CAP:
@@ -319,8 +343,8 @@ def compose(query: str) -> tuple[str, dict]:
             trimmed["threads"] += 1
         else:
             break
-        prompt = _assemble(profile, priorities, fts_blocks, entity_blocks,
-                           thread_blocks, query)
+        prompt = _assemble(profile, user_model, priorities, fts_blocks,
+                           entity_blocks, thread_blocks, query)
 
     stats = {
         "prompt_chars": len(prompt),
@@ -331,6 +355,7 @@ def compose(query: str) -> tuple[str, dict]:
         "thread_slugs": [slug for slug, _ in thread_pairs][: len(thread_blocks)],
         "trimmed": trimmed,
         "profile_chars": len(profile),
+        "user_model_chars": len(user_model),
         "priorities_chars": len(priorities),
     }
     return prompt, stats

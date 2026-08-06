@@ -910,6 +910,49 @@ def _ledger_trace(mode: str, did: str, budget: Budget) -> None:
         print(f"[ledger] trace failed (non-fatal): {exc}", file=sys.stderr)
 
 
+# ── Pass D: user-model rebuild (weekly, 1 LLM call) ───────────────────────
+
+
+def run_user_model(budget: Budget, dry_run: bool, verbose: bool) -> str:
+    """Rebuild USER_MODEL.md via infra.mikai_brain.user_model.build().
+
+    One interactive-tier LLM call. Counted against `budget` (weekly
+    runner has plenty of headroom). Never nightly — see
+    docs/USER_MODEL_RESEARCH.md for the weekly-cadence rationale."""
+    from infra.mikai_brain import user_model as um_mod
+
+    print("[pass D] rebuilding USER_MODEL.md from substrate")
+    if dry_run:
+        bundle = um_mod.collect_inputs()
+        print(f"[pass D] dry-run — would send {len(bundle)}ch input to interactive tier")
+        return "user-model dry-run"
+
+    # Route the synthesizer call through the shared Budget so it
+    # rate-limits and counts against --max-calls like every other pass.
+    def _budget_chat(prompt: str) -> str:
+        out = budget.chat(prompt, "user-model synthesizer")
+        if out is None:
+            raise RuntimeError("user-model synthesizer call failed (see stderr)")
+        return out
+
+    try:
+        model = um_mod.build(chat_fn=_budget_chat)
+    except RuntimeError as exc:
+        print(f"[pass D] build failed: {exc}", file=sys.stderr)
+        raise
+
+    md_path, json_path = um_mod.save(model)
+    if verbose:
+        print(model.to_markdown())
+    print(f"[pass D] wrote {md_path} ({md_path.stat().st_size}B)")
+    print(f"[pass D] wrote {json_path}")
+    return (
+        f"user-model rebuild: {len(model.themes)} themes, "
+        f"{len(model.unresolved)} unresolved, "
+        f"{len(model.values)} values"
+    )
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────
 
 
@@ -920,9 +963,11 @@ def main() -> None:
     )
     ap.add_argument(
         "which", nargs="?", default="all",
-        choices=["all", "narrative", "ontology", "compact"],
+        choices=["all", "narrative", "ontology", "compact", "user-model"],
         help="which pass to run (default: all = narrative + ontology; "
-             "compact runs only when named explicitly)",
+             "compact and user-model run only when named explicitly. "
+             "user-model rebuilds ~/.mikai/brain/USER_MODEL.md via 1 "
+             "interactive LLM call — attached to dream-weekly, not nightly)",
     )
     ap.add_argument("--narrative-days", type=int, default=30)
     ap.add_argument("--incremental", action="store_true",
@@ -967,6 +1012,8 @@ def main() -> None:
         if args.which == "compact":
             summary = "wiki compaction"
             run_compact(idx, args.dry_run, args.verbose)
+        if args.which == "user-model":
+            summary = run_user_model(budget, args.dry_run, args.verbose)
         if args.ledger_mode and not args.dry_run:
             _ledger_trace(args.ledger_mode, summary or "completed", budget)
     except BudgetExceeded as exc:
