@@ -4,7 +4,7 @@
 
 PY := python3
 
-.PHONY: standup standup-dry triage triage-no-llm consolidate-dry consolidate consolidate-brain-md test smoke cockpit install-consolidate-cron
+.PHONY: standup standup-dry triage triage-no-llm consolidate-dry consolidate consolidate-brain-md test test-writeback smoke cockpit install-consolidate-cron
 
 standup:
 	$(PY) -m infra.mikai_brain.standup
@@ -32,8 +32,13 @@ consolidate:
 consolidate-brain-md:
 	$(PY) -m infra.mikai_brain.consolidate --target=brain-md
 
-test:
+test: test-writeback
 	$(PY) -m unittest discover -s infra/mikai_brain/tests -t . -v
+
+# SPEC §5.1 write-back tests for the action scenarios (shell organize,
+# calendar planner, week planner). All I/O mocked; brain in a temp dir.
+test-writeback:
+	$(PY) -m unittest discover -s infra/mikai_shell/tests -t . -v
 
 # Second Brain constellation view: runs standup first (deterministic
 # heartbeat — writes state transitions, delivery events) then rebuilds
