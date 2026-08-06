@@ -4,7 +4,7 @@
 
 PY := python3
 
-.PHONY: standup standup-dry triage triage-no-llm consolidate-dry consolidate consolidate-brain-md test test-writeback test-exec smoke cockpit install-consolidate-cron act act-dry
+.PHONY: standup standup-dry triage triage-no-llm consolidate-dry consolidate consolidate-brain-md test test-writeback test-exec smoke cockpit install-consolidate-cron install-dream-crons act act-dry
 
 standup:
 	$(PY) -m infra.mikai_brain.standup
@@ -51,6 +51,11 @@ cockpit:
 # and launchctl load. Idempotent: unloads first if already installed.
 install-consolidate-cron:
 	bash infra/decider/launchd/install-consolidate-cron.sh
+
+# Dream crons: weekly ontology rebuild (Sun 06:00) + monthly wiki
+# compaction (1st 05:00). See docs/DREAM_CRONS.md. Idempotent.
+install-dream-crons:
+	bash infra/decider/launchd/install-dream-crons.sh
 
 # Executor-layer tests: LLM, dialogs, and subprocess spawns all mocked.
 test-exec:
