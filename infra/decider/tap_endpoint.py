@@ -25,6 +25,12 @@ Design notes:
   insert a TAPPED row for them because it would skew the ranking signal
   (a bot could inflate any dimension by hitting random IDs).
 - Health: `GET /healthz` returns 200 for cloudflared/monitoring.
+- `POST /ask` bridges the cockpit (file:// HTML) to mikai_ask: JSON in
+  `{"query": ...}`, JSON out `{"answer": ..., "retrieved": {...}}`.
+  Synchronous — the LLM call takes 30–60s; ThreadingMixIn keeps tap
+  redirects responsive meanwhile. CORS is wildcard on purpose: the
+  server binds 127.0.0.1 and the only client is Brian's own browser
+  opening cockpit.html via file:// (Origin: null).
 """
 
 from __future__ import annotations
@@ -41,6 +47,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib import request as urlreq
+from urllib.parse import parse_qs, urlsplit
 
 # caldav_client is stdlib-only, so importing it at module load is safe even
 # if iCloud creds aren't configured. The client constructor is the layer
@@ -282,6 +289,60 @@ def _send_confirmation_ntfy(title: str, body: str) -> None:
         logger.warning("confirmation ntfy failed: %s", exc)
 
 
+# ── Cockpit /ask bridge (mikai_ask) ────────────────────────────────────
+
+# Reject bodies over this size before parsing — an ask is a question,
+# not a document upload.
+MAX_ASK_BYTES = 4096
+
+
+def _ensure_user_path() -> None:
+    """launchd jobs get a bare PATH (/usr/bin:/bin:...), but mikai_llm
+    resolves the `claude` CLI via shutil.which. Append the user's usual
+    bin dirs so an in-process ask finds the same CLI an interactive
+    shell would. Append — an already-correct PATH wins."""
+    extra = (
+        Path.home() / ".local" / "bin",
+        Path.home() / ".superset" / "bin",
+        Path("/opt/homebrew/bin"),
+        Path("/usr/local/bin"),
+    )
+    parts = os.environ.get("PATH", "").split(os.pathsep)
+    for p in extra:
+        if p.is_dir() and str(p) not in parts:
+            parts.append(str(p))
+    os.environ["PATH"] = os.pathsep.join(parts)
+
+
+def _run_ask(query: str) -> dict:
+    """Invoke mikai_ask in-process and return its debug-shaped dict.
+
+    Imported lazily so the tap endpoint keeps serving redirects even if
+    the mikai_ask stack is broken, and so startup stays instant. Module
+    indirection also gives tests a clean seam to mock.
+    """
+    _ensure_user_path()
+    repo = Path(__file__).resolve().parents[2]
+    if str(repo) not in sys.path:
+        sys.path.insert(0, str(repo))
+    from infra.mikai_ask.core import ask
+    return ask(query, verbose=False, return_debug=True)
+
+
+def _run_ask_stream(query: str):
+    """Yield event dicts from mikai_ask.ask_stream() lazily.
+
+    Same import strategy as _run_ask (lazy so the tap endpoint keeps
+    serving even if mikai_ask is broken; module seam so tests can mock).
+    """
+    _ensure_user_path()
+    repo = Path(__file__).resolve().parents[2]
+    if str(repo) not in sys.path:
+        sys.path.insert(0, str(repo))
+    from infra.mikai_ask.core import ask_stream
+    yield from ask_stream(query, verbose=False)
+
+
 # ── Approval / rejection HTML confirmation pages ───────────────────────
 
 
@@ -314,10 +375,15 @@ class TapHandler(http.server.BaseHTTPRequestHandler):
     server_version = "MikaiTap/1.0"
 
     def do_GET(self) -> None:  # noqa: N802 — stdlib API
-        path = self.path.split("?", 1)[0]
+        parts = urlsplit(self.path)
+        path = parts.path
 
         if path == "/healthz":
             self._reply(200, "text/plain", b"ok\n")
+            return
+
+        if path == "/ask/stream":
+            self._handle_ask_stream(parts.query)
             return
 
         m = re.match(r"^/t/([^/]+)$", path)
@@ -337,7 +403,149 @@ class TapHandler(http.server.BaseHTTPRequestHandler):
 
         self._reply(404, "text/plain", b"not found\n")
 
+    def do_POST(self) -> None:  # noqa: N802 — stdlib API
+        path = self.path.split("?", 1)[0]
+        if path == "/ask":
+            self._handle_ask()
+            return
+        if path == "/ask/stream":
+            # SSE is GET-only (EventSource); reject POST cleanly.
+            self.send_response(405)
+            self.send_header("Allow", "GET")
+            self._send_cors_headers()
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self._reply_json(404, {"error": "not found"})
+
+    def do_OPTIONS(self) -> None:  # noqa: N802 — stdlib API
+        # CORS preflight for the file:// cockpit (Origin: null). Wildcard
+        # is intentional — 127.0.0.1-bound, single local user.
+        self.send_response(204)
+        self._send_cors_headers()
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     # ── Route handlers ────────────────────────────────────────────────
+
+    def _handle_ask(self) -> None:
+        try:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+        except (TypeError, ValueError):
+            length = 0
+        if length <= 0:
+            self._reply_json(400, {"error": "empty request body"})
+            return
+        if length > MAX_ASK_BYTES:
+            self._reply_json(
+                413, {"error": f"payload too large (>{MAX_ASK_BYTES} bytes)"})
+            return
+
+        try:
+            body = self.rfile.read(length)
+            payload = json.loads(body.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+            self._reply_json(400, {"error": f"invalid JSON body: {exc}"})
+            return
+
+        query = payload.get("query") if isinstance(payload, dict) else None
+        if not isinstance(query, str) or not query.strip():
+            self._reply_json(400, {"error": "missing or empty 'query'"})
+            return
+        query = query.strip()
+
+        # Synchronous on purpose: the cockpit shows a loading pulse and
+        # waits. The LLM call takes 30–60s; each request runs on its own
+        # thread (ThreadingMixIn), so tap redirects stay unaffected.
+        logger.info("ASK %r", query[:120])
+        try:
+            result = _run_ask(query)
+        except Exception as exc:  # noqa: BLE001 — surface any failure as JSON
+            logger.exception("ask failed for %r", query[:120])
+            self._reply_json(500, {"error": f"ask failed: {exc}"})
+            return
+
+        answer = result.get("answer", "") if isinstance(result, dict) else str(result)
+        retrieved = result.get("retrieved", {}) if isinstance(result, dict) else {}
+        logger.info("ASK done (%d chars answer)", len(answer))
+        self._reply_json(200, {"answer": answer, "retrieved": retrieved})
+
+    def _handle_ask_stream(self, raw_query: str) -> None:
+        """SSE bridge: `GET /ask/stream?q=<url-encoded-query>`.
+
+        Yields `retrieved`, then `chunk` events as the LLM produces text,
+        then a final `done` (or `error`) event. The client-side
+        EventSource in the cockpit parses these into progressive UI.
+        """
+        # Query-string length cap — the URL itself is the payload. Same
+        # 4KB budget as the POST body for consistency.
+        if len(raw_query) > MAX_ASK_BYTES:
+            self._reply_json(
+                413, {"error": f"query string too large (>{MAX_ASK_BYTES} bytes)"})
+            return
+
+        params = parse_qs(raw_query, keep_blank_values=False)
+        q = params.get("q") or params.get("query") or []
+        query = (q[0] if q else "").strip()
+        if not query:
+            self._reply_json(400, {"error": "missing or empty 'q'"})
+            return
+
+        logger.info("ASK STREAM %r", query[:120])
+
+        # Open SSE response. We flush headers immediately so browsers
+        # move out of "pending" state; then walk the generator and
+        # flush each event as it arrives.
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-transform")
+            # Use Connection: close so the browser (and curl -N) see EOF
+            # when the generator finishes. HTTP/1.0 semantics let us skip
+            # Content-Length and Transfer-Encoding entirely; the server
+            # closes the socket on handler return.
+            self.send_header("Connection", "close")
+            self.send_header("X-Accel-Buffering", "no")  # in case a proxy shows up later
+            self._send_cors_headers()
+            self.end_headers()
+            self.wfile.flush()
+            # Signal to the connection layer that we do not want keep-alive
+            # on this response (matters for HTTP/1.1-capable clients).
+            self.close_connection = True
+        except (BrokenPipeError, ConnectionResetError):
+            logger.warning("client disconnected before SSE headers sent")
+            return
+
+        n_chunks = 0
+        try:
+            for event in _run_ask_stream(query):
+                if not isinstance(event, dict):
+                    continue
+                etype = event.get("type", "message")
+                # SSE frame: `event: <name>\ndata: <json>\n\n`
+                frame = (
+                    f"event: {etype}\n"
+                    f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                ).encode("utf-8")
+                try:
+                    self.wfile.write(frame)
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    logger.warning("client hung up mid-stream after %d chunks",
+                                   n_chunks)
+                    return
+                if etype == "chunk":
+                    n_chunks += 1
+        except Exception as exc:  # noqa: BLE001 — surface as an SSE error
+            logger.exception("ask_stream failed for %r", query[:120])
+            try:
+                self.wfile.write(
+                    ("event: error\n"
+                     f"data: {json.dumps({'error': str(exc)})}\n\n").encode())
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+        logger.info("ASK STREAM done (%d chunks)", n_chunks)
 
     def _handle_tap(self, notif_id: str) -> None:
         if not NOTIF_ID_RE.match(notif_id):
@@ -467,6 +675,26 @@ class TapHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_cors_headers(self) -> None:
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Max-Age", "86400")
+
+    def _reply_json(self, status: int, obj: dict) -> None:
+        body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self._send_cors_headers()
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            # Browser gave up on a long ask — nothing to salvage.
+            logger.warning("client disconnected before /ask response was sent")
 
     # Route BaseHTTPServer's noisy default logs through our logger at DEBUG,
     # so INFO logs stay clean.

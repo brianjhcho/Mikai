@@ -29,6 +29,7 @@ import sys
 import types
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Iterator
 
 _REPO = Path(__file__).resolve().parents[2]
 if str(_REPO) not in sys.path:
@@ -229,11 +230,11 @@ def _matching_entities(query: str, hits: list[dict]) -> list[tuple[str, str]]:
     return (query_matched + hit_matched)[:ENTITY_CAP]
 
 
-def _active_thread_summaries() -> list[str]:
-    """Frontmatter + first log line for every thread in an active state.
-    Never the body — this is a 'what Brian is in the middle of' signal,
-    not a content dump."""
-    out: list[str] = []
+def _active_thread_summaries() -> list[tuple[str, str]]:
+    """(slug, frontmatter + first log line) for every thread in an active
+    state. Never the body — this is a 'what Brian is in the middle of'
+    signal, not a content dump."""
+    out: list[tuple[str, str]] = []
     for t in brain_threads.load_all():
         if t.state not in ACTIVE_STATES:
             continue
@@ -252,7 +253,7 @@ def _active_thread_summaries() -> list[str]:
             lines.append(f"department: {t.department}")
         if t.log_lines:
             lines.append(f"last log: {t.log_lines[0]}")
-        out.append("\n".join(lines))
+        out.append((t.slug, "\n".join(lines)))
     return out
 
 
@@ -295,7 +296,8 @@ def compose(query: str) -> tuple[str, dict]:
         hits = hits + fill
 
     entities = _matching_entities(query, hits)
-    thread_blocks = _active_thread_summaries()
+    thread_pairs = _active_thread_summaries()
+    thread_blocks = [block for _, block in thread_pairs]
 
     fts_blocks = [_format_hit(h) for h in hits]
     entity_blocks = [f"### entity: {slug}\n\n{body}" for slug, body in entities]
@@ -326,6 +328,7 @@ def compose(query: str) -> tuple[str, dict]:
         "fallback_fill": fallback_fill,
         "entities": [slug for slug, _ in entities][: len(entity_blocks)],
         "threads": len(thread_blocks),
+        "thread_slugs": [slug for slug, _ in thread_pairs][: len(thread_blocks)],
         "trimmed": trimmed,
         "profile_chars": len(profile),
         "priorities_chars": len(priorities),
@@ -352,9 +355,22 @@ def _print_stats(stats: dict, stream=None) -> None:
     )
 
 
-def ask(query: str, *, verbose: bool = False, dry_run: bool = False) -> str:
+def ask(
+    query: str,
+    *,
+    verbose: bool = False,
+    dry_run: bool = False,
+    return_debug: bool = False,
+) -> str | dict:
     """One ask: compose the prompt, call the interactive tier, log the
-    run. dry_run returns the composed prompt — no LLM call, no log row."""
+    run. dry_run returns the composed prompt — no LLM call, no log row.
+
+    return_debug=True changes the return type to a dict
+    ``{"answer": str, "retrieved": {...}}`` where ``retrieved`` reports
+    what the composer actually pulled (wiki_hits, entity slugs, active
+    thread slugs, prompt chars). return_debug=False preserves the plain
+    string contract for existing callers. dry_run wins over return_debug.
+    """
     query = (query or "").strip()
     if not query:
         raise ValueError("empty query")
@@ -383,4 +399,91 @@ def ask(query: str, *, verbose: bool = False, dry_run: bool = False) -> str:
             "trimmed": stats["trimmed"],
         },
     )
+    if return_debug:
+        return {
+            "answer": answer,
+            "retrieved": {
+                "wiki_hits": stats["fts_hits"],
+                "entities": stats["entities"],
+                "threads": stats["thread_slugs"],
+                "prompt_chars": stats["prompt_chars"],
+            },
+        }
     return answer
+
+
+def _retrieved_from_stats(stats: dict) -> dict:
+    return {
+        "wiki_hits": stats["fts_hits"],
+        "entities": stats["entities"],
+        "threads": stats["thread_slugs"],
+        "prompt_chars": stats["prompt_chars"],
+    }
+
+
+def ask_stream(
+    query: str,
+    *,
+    verbose: bool = False,
+) -> Iterator[dict]:
+    """Streaming variant of ask(): compose the prompt, then yield events.
+
+    Event shapes (all dicts, one per yield):
+      * ``{"type": "retrieved", "data": {...}}`` — retrieval metadata,
+        yielded FIRST so the client can render the "Retrieved N wiki
+        sections…" footnote before any Claude tokens arrive.
+      * ``{"type": "chunk", "text": "..."}`` — a text delta from the
+        interactive-tier provider (Claude today). Emitted zero or more
+        times, in order.
+      * ``{"type": "done", "answer": "<full>"}`` — sentinel emitted after
+        the provider finishes cleanly. ``answer`` is the concatenated
+        stream, handy for callers that want both.
+      * ``{"type": "error", "error": "<msg>"}`` — provider failure.
+        Yielded in place of ``done``. The generator ends after this.
+
+    Also writes a ledger row on successful completion, mirroring ask().
+    Errors do not write a ledger row (matches ask() behavior — a raised
+    exception in ask() aborts before ledger.run()).
+    """
+    query = (query or "").strip()
+    if not query:
+        raise ValueError("empty query")
+
+    prompt, stats = compose(query)
+    if verbose:
+        _print_stats(stats)
+
+    # First event: retrieval metadata. Client can paint immediately.
+    yield {"type": "retrieved", "data": _retrieved_from_stats(stats)}
+
+    chunks: list[str] = []
+    try:
+        for piece in mikai_llm.chat_stream(prompt, tier="interactive"):
+            if not piece:
+                continue
+            chunks.append(piece)
+            yield {"type": "chunk", "text": piece}
+    except Exception as exc:  # noqa: BLE001 — surface to the client
+        yield {"type": "error", "error": str(exc)}
+        return
+
+    answer = "".join(chunks).strip()
+
+    ledger.run(
+        mode="ask",
+        did=(
+            f"ask: {_summarize_query(query)} | fts={stats['fts_hits']} "
+            f"entities={len(stats['entities'])} threads={stats['threads']}"
+        ),
+        extra={
+            "prompt_chars": stats["prompt_chars"],
+            "fts_hits": stats["fts_hits"],
+            "fallback_fill": stats["fallback_fill"],
+            "entities": stats["entities"],
+            "threads": stats["threads"],
+            "trimmed": stats["trimmed"],
+            "streamed": True,
+        },
+    )
+
+    yield {"type": "done", "answer": answer}

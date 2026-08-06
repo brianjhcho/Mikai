@@ -276,6 +276,60 @@ _TEMPLATE = r"""<!doctype html>
   #panel .dec li{font-size:12.5px;line-height:1.5;color:var(--faint)}
   #panel .dec li b{font-family:var(--mono);font-size:10px;color:var(--ink);font-weight:500}
 
+  /* ── ask bar (bottom of constellation) ── */
+  #askbar{
+    position:fixed;left:50%;transform:translateX(-50%);bottom:54px;z-index:35;
+    width:min(560px,92vw);
+  }
+  #askform{
+    display:flex;align-items:center;gap:8px;
+    border:1px solid var(--rule);border-radius:999px;
+    background:rgba(11,17,27,.78);backdrop-filter:blur(8px);
+    padding:6px 8px 6px 18px;transition:border-color .2s;
+  }
+  #askform:focus-within{border-color:var(--faint)}
+  #askq{
+    flex:1;min-width:0;background:none;border:none;resize:none;outline:none;
+    color:var(--ink);font-family:var(--serif);font-size:14px;line-height:1.4;
+    height:20px;
+  }
+  #askq::placeholder{color:var(--faint);font-style:italic}
+  #asksend{
+    font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--warm);border:1px solid #E4A77666;border-radius:999px;padding:6px 13px;
+    transition:color .2s,border-color .2s;flex:none;
+  }
+  #asksend:hover{color:var(--ink);border-color:var(--warm)}
+  #asksend:disabled{color:var(--faint);border-color:var(--rule);cursor:default}
+  #askload{
+    width:7px;height:7px;border-radius:50%;background:var(--warm);flex:none;
+    animation:askpulse 1.1s ease-in-out infinite;
+  }
+  @keyframes askpulse{0%,100%{opacity:.25;transform:scale(.7)}50%{opacity:1;transform:scale(1)}}
+  #askhelp{
+    display:flex;gap:10px;align-items:flex-start;margin-top:7px;padding:0 18px;
+    font-family:var(--mono);font-size:9px;line-height:1.6;color:var(--faint);
+    letter-spacing:.03em;
+  }
+  #askhelp[hidden]{display:none}
+  #askhelp button{color:var(--faint);font-family:var(--mono);font-size:11px;padding:0 4px;flex:none}
+  #askhelp button:hover{color:var(--ink)}
+
+  /* ask result in the detail panel */
+  #panel .ask-answer{font-size:14px;line-height:1.6}
+  #panel .ask-answer p{margin:0 0 10px}
+  #panel .ask-answer ul{margin:0 0 10px 18px}
+  #panel .ask-answer li{font-size:14px;line-height:1.55}
+  #panel .ask-answer code{font-family:var(--mono);font-size:12px;color:var(--warm)}
+  #panel .ask-foot{
+    font-family:var(--mono);font-size:9px;color:var(--faint);line-height:1.7;
+    border-top:1px solid var(--rule);padding-top:10px;margin-top:16px;
+  }
+  #panel .ask-err{
+    border-left:2px solid #C96A5E;padding:2px 0 2px 12px;color:#C96A5E;
+    font-size:13.5px;line-height:1.5;
+  }
+
   /* ── mobile: stacked cards ── */
   #cards{display:none}
   @media (max-width:899px){
@@ -298,12 +352,14 @@ _TEMPLATE = r"""<!doctype html>
       overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:none}
     .card .row .days{font-family:var(--mono);font-size:9px;color:var(--faint)}
     .node-inline{position:static;transform:none}
+    #askbar{position:static;transform:none;width:auto;max-width:640px;margin:18px auto 0;padding:0 20px}
   }
 
   @media (prefers-reduced-motion:reduce){
     .node[data-state="acting"] .dot::after{animation:none;display:none}
     #panel{transition:none}
     #reload.spin svg{animation:none}
+    #askload{animation:none}
     #entity-edges path,#entity-edges circle,.hub,#center,.node{transition:none}
   }
 </style>
@@ -328,6 +384,18 @@ _TEMPLATE = r"""<!doctype html>
 </div>
 
 <div id="cards"></div>
+
+<div id="askbar">
+  <form id="askform">
+    <textarea id="askq" rows="1" placeholder="Ask MIKAI anything about your substrate…" aria-label="Ask MIKAI"></textarea>
+    <span id="askload" hidden aria-hidden="true"></span>
+    <button id="asksend" type="submit">ask</button>
+  </form>
+  <div id="askhelp" hidden>
+    <span>answers are grounded in your own substrate — wiki sections (full-text search), entity files, active threads, BRAIN.md priorities, and PROFILE.md. needs the tap endpoint on localhost:8210; a real ask takes 30–60s.</span>
+    <button type="button" id="askhelp-x" aria-label="Dismiss help">×</button>
+  </div>
+</div>
 
 <aside id="panel" role="region" aria-live="polite" aria-label="Detail panel">
   <button class="close" type="button" aria-label="Close panel">esc ✕</button>
@@ -398,7 +466,7 @@ document.addEventListener("keydown", function(e){ if (e.key === "Escape") closeP
 // "open/refresh", and the reload button stays a reload.
 document.addEventListener("click", function(e){
   if (!panel.classList.contains("open")) return;
-  if (e.target.closest("#panel, .node, .hub, #center, .card, #reload")) return;
+  if (e.target.closest("#panel, .node, .hub, #center, .card, #reload, #askbar")) return;
   closePanel();
 });
 
@@ -878,6 +946,187 @@ function tryRefresh(manual){
     .then(function(){ setTimeout(function(){ btn.classList.remove("spin"); }, 700); });
 }
 document.getElementById("reload").addEventListener("click", function(){ tryRefresh(true); });
+
+/* ── ask bar → tap endpoint → detail panel ─────────────────────────── */
+var ASK_BASE = "http://localhost:8210";
+var ASK_STREAM_URL = ASK_BASE + "/ask/stream";
+var askQ = document.getElementById("askq");
+var askSend = document.getElementById("asksend");
+var askLoad = document.getElementById("askload");
+var askHelp = document.getElementById("askhelp");
+var HELP_KEY = "mikai.askhelp.dismissed";
+try { if (!localStorage.getItem(HELP_KEY)) askHelp.hidden = false; }
+catch (err) { askHelp.hidden = false; }
+document.getElementById("askhelp-x").addEventListener("click", function(){
+  askHelp.hidden = true;
+  try { localStorage.setItem(HELP_KEY, "1"); } catch (err) {}
+});
+
+// Tiny markdown-ish renderer: escape first, then bold / inline code /
+// italics / headings / bullets / paragraphs. Not a parser — just enough
+// for LLM prose.
+function mdHTML(text){
+  var out = [], para = [], list = null;
+  function inline(s){
+    return esc(s)
+      .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/(^|[\s(])\*([^*\s][^*]*)\*(?=[\s).,;:!?]|$)/g, "$1<i>$2</i>");
+  }
+  function flushPara(){
+    if (para.length){ out.push("<p>" + para.map(inline).join("<br>") + "</p>"); para = []; }
+  }
+  function flushList(){
+    if (list){ out.push("<ul>" + list.join("") + "</ul>"); list = null; }
+  }
+  String(text || "").split(/\r?\n/).forEach(function(l){
+    var t = l.trim();
+    if (!t){ flushPara(); flushList(); return; }
+    var mh = /^(#{1,4})\s+(.*)$/.exec(t);
+    if (mh){
+      flushPara(); flushList();
+      out.push('<p style="font-weight:600;margin-top:4px">' + inline(mh[2]) + "</p>");
+      return;
+    }
+    var mb = /^[-*]\s+(.*)$/.exec(t);
+    if (mb){ flushPara(); (list = list || []).push("<li>" + inline(mb[1]) + "</li>"); return; }
+    flushList(); para.push(t);
+  });
+  flushPara(); flushList();
+  return out.join("");
+}
+function askFootHTML(r){
+  r = r || {};
+  var ents = (r.entities || []).join(", ") || "—";
+  var thrs = (r.threads || []).join(", ") || "—";
+  return 'Retrieved: ' + (r.wiki_hits != null ? r.wiki_hits : "?") +
+    " wiki sections · entities: " + esc(ents) + " · threads: " + esc(thrs) +
+    " · prompt: " + (r.prompt_chars != null ? r.prompt_chars.toLocaleString() : "?") +
+    " chars";
+}
+// Skeleton for a streaming ask: header + empty answer body + retrieved
+// footnote slot + status pill. Chunks append into #ask-answer-body; the
+// foot is populated the instant the 'retrieved' event arrives; the
+// pulsing dot in the pill vanishes on 'done'.
+function askSkeletonHTML(query){
+  return '<div class="eyebrow">ask · grounded in your substrate</div>' +
+    "<h2>" + esc(query) + "</h2>" +
+    '<div id="ask-status" class="soft" style="font-family:var(--mono);font-size:10px;letter-spacing:.08em;margin:0 0 12px">' +
+      '<span id="ask-status-dot" style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--warm);margin-right:6px;animation:askpulse 1.1s ease-in-out infinite;vertical-align:middle"></span>' +
+      '<span id="ask-status-text">retrieving substrate…</span>' +
+    "</div>" +
+    '<div class="ask-answer" id="ask-answer-body"></div>' +
+    '<div class="ask-foot" id="ask-foot">…</div>';
+}
+function askErrPanel(query, msg){
+  return '<div class="eyebrow">ask · error</div>' +
+    "<h2>" + esc(query) + "</h2>" +
+    '<div class="ask-err">' + esc(msg) + "</div>" +
+    '<p class="soft" style="margin-top:12px">is the tap endpoint up? ' +
+    '<code style="font-family:var(--mono);font-size:10.5px">launchctl kickstart -k gui/$UID/com.mikai.tap-endpoint</code></p>';
+}
+var askBusy = false;
+var askES = null;
+function closeES(){
+  if (askES){ try { askES.close(); } catch (e) {} askES = null; }
+}
+function submitAsk(){
+  var q = askQ.value.trim();
+  if (!q || askBusy) return;
+  askBusy = true; askSend.disabled = true; askLoad.hidden = false;
+
+  openPanel(askSkeletonHTML(q));
+  var body = document.getElementById("ask-answer-body");
+  var foot = document.getElementById("ask-foot");
+  var statusText = document.getElementById("ask-status-text");
+  var statusDot = document.getElementById("ask-status-dot");
+  var raw = "";
+
+  function stopUI(){
+    askBusy = false; askSend.disabled = false; askLoad.hidden = true;
+    if (statusDot) statusDot.style.animation = "none";
+  }
+  function finish(msg){
+    if (statusText) statusText.textContent = msg;
+    if (statusDot) statusDot.style.display = "none";
+    stopUI();
+    closeES();
+  }
+  function fail(msg){
+    closeES();
+    openPanel(askErrPanel(q, msg));
+    stopUI();
+  }
+
+  if (!("EventSource" in window)){
+    fail("this browser has no EventSource — streaming ask is unavailable");
+    return;
+  }
+
+  closeES();
+  var url = ASK_STREAM_URL + "?q=" + encodeURIComponent(q);
+  try {
+    askES = new EventSource(url);
+  } catch (err){
+    fail("could not open stream: " + (err && err.message ? err.message : err));
+    return;
+  }
+
+  // Watchdog: if nothing arrives in 30s we bail. The server side has its
+  // own 5-min hard timeout on the LLM subprocess.
+  var watchdog = setTimeout(function(){
+    if (askBusy) fail("no response from the ask endpoint after 30s");
+  }, 30000);
+  function ping(){ clearTimeout(watchdog); watchdog = setTimeout(function(){
+    if (askBusy) fail("stream stalled — the LLM stopped emitting text");
+  }, 60000); }
+
+  askES.addEventListener("retrieved", function(ev){
+    ping();
+    try {
+      var payload = JSON.parse(ev.data || "{}");
+      if (foot) foot.innerHTML = askFootHTML(payload.data || {});
+      if (statusText) statusText.textContent = "MIKAI is thinking…";
+    } catch (err){}
+  });
+  askES.addEventListener("chunk", function(ev){
+    ping();
+    try {
+      var payload = JSON.parse(ev.data || "{}");
+      if (typeof payload.text === "string" && payload.text){
+        raw += payload.text;
+        if (body) body.innerHTML = mdHTML(raw);
+      }
+    } catch (err){}
+  });
+  askES.addEventListener("done", function(ev){
+    clearTimeout(watchdog);
+    try {
+      var payload = JSON.parse(ev.data || "{}");
+      // Prefer the server's final `answer` (already stripped) so trailing
+      // whitespace across the stream doesn't affect the rendered version.
+      if (typeof payload.answer === "string" && payload.answer){
+        raw = payload.answer;
+        if (body) body.innerHTML = mdHTML(raw);
+      }
+    } catch (err){}
+    finish("done");
+  });
+  askES.addEventListener("error", function(ev){
+    clearTimeout(watchdog);
+    var msg = "";
+    try { msg = (JSON.parse(ev.data || "{}") || {}).error || ""; } catch (e){}
+    // EventSource fires a plain 'error' event on network drop too — no data.
+    if (!msg) msg = "the stream ended unexpectedly (endpoint down, or CORS?)";
+    fail(msg);
+  });
+}
+document.getElementById("askform").addEventListener("submit", function(e){
+  e.preventDefault(); submitAsk();
+});
+askQ.addEventListener("keydown", function(e){
+  if (e.key === "Enter" && !e.shiftKey){ e.preventDefault(); submitAsk(); }
+});
 
 var resizeT;
 window.addEventListener("resize", function(){

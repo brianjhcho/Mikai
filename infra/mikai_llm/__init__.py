@@ -22,7 +22,8 @@ import json
 import os
 import shutil
 import subprocess
-from typing import Literal
+import time
+from typing import Iterator, Literal
 from urllib import request as urlreq
 
 Tier = Literal["interactive", "background"]
@@ -39,12 +40,29 @@ _POLICY: dict[Tier, str] = {
 # ── Provider: claude (via `claude -p`) ────────────────────────────────────
 
 
-def _chat_claude(prompt: str, timeout: float = 300.0) -> str:
-    """Route through the Claude Code CLI, billed to the Max subscription.
+def _claude_env() -> dict[str, str]:
+    """Strip ANTHROPIC_API_KEY so the CLI falls through to the Max
+    subscription auth. Parent env is untouched — this is subprocess-local."""
+    return {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
 
-    Requires ANTHROPIC_API_KEY unset (otherwise the CLI prefers the key
-    over the subscription auth). We unset it in the subprocess env only —
-    the parent's env is untouched.
+
+def _chat_claude(prompt: str, timeout: float = 300.0) -> str:
+    """Non-streaming Claude call. Kept for callers that still prefer the
+    old blocking shape (nothing in tree today, but the shape is a stable
+    contract). Delegates to `_stream_claude` and joins the pieces so the
+    subprocess argv, tool-safety flags, and env stay defined in one place.
+    """
+    return "".join(_stream_claude(prompt, timeout=timeout))
+
+
+def _stream_claude(prompt: str, timeout: float = 300.0) -> Iterator[str]:
+    """Yield text deltas from `claude -p` in real time.
+
+    Uses `--output-format stream-json --include-partial-messages`, which
+    emits one JSON object per line. We parse only ``content_block_delta``
+    events (text_delta payloads) — everything else (init, hook chatter,
+    usage, message wrappers) is filtered. `--verbose` is required by
+    the CLI when combined with stream-json in --print mode.
 
     Passes `--tools ""` to disable every built-in tool for this subprocess.
     Every interactive-tier call today (consolidate, triage tie-break, Surface
@@ -60,24 +78,98 @@ def _chat_claude(prompt: str, timeout: float = 300.0) -> str:
     If a future call ever needs a specific MCP server (e.g., Gmail MCP for
     live-fetch context), whitelist that server by name via a settings file
     or `--allowedTools mcp:gmail` — never re-open the blanket "*".
+
+    Timeout is enforced by a wall-clock check inside the read loop; on
+    expiry the child is terminated and a RuntimeError is raised. On
+    non-zero exit, stderr context is included in the error.
     """
     if shutil.which("claude") is None:
         raise RuntimeError("`claude` CLI not on PATH — install Claude Code first")
-    env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
-    # Prompt goes via stdin because `--tools` is variadic (`<tools...>`) and
-    # would otherwise consume the positional prompt arg. Stdin also removes
-    # argv-length caps entirely — long consolidate/planner prompts are safe.
-    proc = subprocess.run(
-        ["claude", "-p", "--tools", ""],
-        input=prompt,
-        capture_output=True,
+
+    argv = [
+        "claude", "-p", "--tools", "",
+        "--output-format", "stream-json",
+        "--include-partial-messages",
+        "--verbose",
+    ]
+    proc = subprocess.Popen(
+        argv,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=timeout,
-        env=env,
+        bufsize=1,  # line-buffered stdout so deltas surface immediately
+        env=_claude_env(),
     )
-    if proc.returncode != 0:
-        raise RuntimeError(f"claude -p failed (rc={proc.returncode}): {proc.stderr[:500]}")
-    return proc.stdout.strip()
+    # Hand the prompt off and close stdin so the model starts generating.
+    try:
+        assert proc.stdin is not None
+        proc.stdin.write(prompt)
+        proc.stdin.close()
+    except BrokenPipeError as exc:
+        proc.kill()
+        raise RuntimeError(f"claude -p died before prompt was sent: {exc}") from exc
+
+    started = time.monotonic()
+    assert proc.stdout is not None
+    try:
+        for raw in proc.stdout:
+            if time.monotonic() - started > timeout:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                raise RuntimeError(f"claude -p timed out after {timeout:.0f}s")
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                # stream-json guarantees one JSON obj per line — a
+                # non-JSON line is either warm-up chatter or a bug.
+                # Skipping keeps the stream flowing.
+                continue
+            text = _extract_delta_text(obj)
+            if text:
+                yield text
+    finally:
+        # Drain and reap; we still want the exit code.
+        try:
+            rc = proc.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            rc = proc.wait()
+        if rc != 0:
+            err = ""
+            if proc.stderr is not None:
+                try:
+                    err = proc.stderr.read() or ""
+                except Exception:  # noqa: BLE001
+                    err = ""
+            raise RuntimeError(
+                f"claude -p failed (rc={rc}): {err[:500]}"
+            )
+
+
+def _extract_delta_text(obj: dict) -> str:
+    """Pull the text out of one stream-json line. Returns '' for events
+    we don't care about (init, hooks, usage, message wrappers, tool
+    events, etc.). Structure per the Anthropic streaming schema:
+    ``{"type":"stream_event","event":{"type":"content_block_delta",
+        "delta":{"type":"text_delta","text":"..."}}}``
+    """
+    if obj.get("type") != "stream_event":
+        return ""
+    event = obj.get("event") or {}
+    if event.get("type") != "content_block_delta":
+        return ""
+    delta = event.get("delta") or {}
+    if delta.get("type") != "text_delta":
+        return ""
+    text = delta.get("text")
+    return text if isinstance(text, str) else ""
 
 
 # ── Provider: deepseek ───────────────────────────────────────────────────
@@ -133,9 +225,38 @@ def chat(
     if provider == "claude":
         if json_mode:
             prompt = prompt + "\n\nReturn ONLY valid JSON. No prose. No markdown fences."
-        return _chat_claude(prompt, timeout=timeout or 300.0)
+        return _chat_claude(prompt, timeout=timeout or 300.0).strip()
     if provider == "deepseek":
         return _chat_deepseek(prompt, timeout=timeout or 90.0, json_mode=json_mode)
+    raise ValueError(f"Unknown provider {provider!r} for tier {tier!r}")
+
+
+def chat_stream(
+    prompt: str,
+    tier: Tier = "interactive",
+    timeout: float | None = None,
+) -> Iterator[str]:
+    """Yield text chunks as the provider produces them.
+
+    Claude tier: real token-by-token streaming via `claude -p
+    --output-format stream-json`. First chunk lands within ~1-2s of
+    Claude spinning up; the stream ends when the CLI exits cleanly.
+
+    DeepSeek tier: no real streaming today — we run the blocking call
+    and yield the whole result as one final chunk. Callers that need
+    background-tier streaming should build a proper SSE reader against
+    the DeepSeek Chat Completions endpoint (out of scope here).
+    """
+    provider = _POLICY[tier]
+    if provider == "claude":
+        yield from _stream_claude(prompt, timeout=timeout or 300.0)
+        return
+    if provider == "deepseek":
+        # No SSE reader for DeepSeek yet — collect and emit atomically.
+        result = _chat_deepseek(prompt, timeout=timeout or 90.0)
+        if result:
+            yield result
+        return
     raise ValueError(f"Unknown provider {provider!r} for tier {tier!r}")
 
 

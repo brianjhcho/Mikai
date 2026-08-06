@@ -245,6 +245,128 @@ class TestAsk(AskTestCase):
         self.assertIn("log me please", rows[0]["did"])
         self.assertIn("prompt_chars", rows[0]["extra"])
 
+    def test_ask_return_debug_returns_answer_and_retrieved(self):
+        self.write_entity("germaine", "GERMAINE-BODY partner facts here.")
+        self.write_thread("some-build", state="acting")
+        hits = [self.fake_hit(f"hit-{i}", f"snippet {i}") for i in range(3)]
+        with mock.patch("infra.mikai_llm.chat", return_value="debug answer"):
+            with mock.patch.object(self.core, "_fts_hits", return_value=hits):
+                out = self.core.ask("how is germaine?", return_debug=True)
+        self.assertIsInstance(out, dict)
+        self.assertEqual(out["answer"], "debug answer")
+        r = out["retrieved"]
+        self.assertEqual(r["wiki_hits"], 3)
+        self.assertEqual(r["entities"], ["germaine"])
+        self.assertEqual(r["threads"], ["some-build"])
+        self.assertGreater(r["prompt_chars"], 0)
+        self.assertEqual(len(self.progress_rows()), 1,
+                         "return_debug must still log the run")
+
+    def test_ask_return_debug_false_preserves_string_contract(self):
+        with mock.patch("infra.mikai_llm.chat", return_value="plain answer"):
+            with mock.patch.object(self.core, "_fts_hits", return_value=[]):
+                out = self.core.ask("anything at all")
+        self.assertIsInstance(out, str)
+        self.assertEqual(out, "plain answer")
+
+    def test_ask_stream_yields_retrieved_then_chunks_then_done(self):
+        self.write_entity("germaine", "GERMAINE-BODY partner facts here.")
+        self.write_thread("some-build", state="acting")
+        hits = [self.fake_hit(f"hit-{i}", f"snippet {i}") for i in range(3)]
+        chunks = ["Hello ", "Brian, ", "here is the answer."]
+        with mock.patch("infra.mikai_llm.chat_stream", return_value=iter(chunks)):
+            with mock.patch.object(self.core, "_fts_hits", return_value=hits):
+                events = list(self.core.ask_stream("how is germaine?"))
+        # First event is retrieved metadata, populated from stats
+        self.assertEqual(events[0]["type"], "retrieved")
+        data = events[0]["data"]
+        self.assertEqual(data["wiki_hits"], 3)
+        self.assertEqual(data["entities"], ["germaine"])
+        self.assertEqual(data["threads"], ["some-build"])
+        self.assertGreater(data["prompt_chars"], 0)
+        # Middle events are chunks in order
+        chunk_events = [e for e in events if e["type"] == "chunk"]
+        self.assertEqual([e["text"] for e in chunk_events], chunks)
+        # Last event is done with the full concatenated answer
+        self.assertEqual(events[-1]["type"], "done")
+        self.assertEqual(events[-1]["answer"], "Hello Brian, here is the answer.")
+        # Ledger row written on success
+        rows = self.progress_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["mode"], "ask")
+        self.assertTrue(rows[0]["extra"].get("streamed"))
+
+    def test_ask_stream_error_from_provider_yields_error_no_ledger(self):
+        def boom(_prompt, **_kw):
+            yield "partial "
+            raise RuntimeError("upstream died")
+        with mock.patch("infra.mikai_llm.chat_stream", side_effect=boom):
+            with mock.patch.object(self.core, "_fts_hits", return_value=[]):
+                events = list(self.core.ask_stream("please break"))
+        self.assertEqual(events[0]["type"], "retrieved")
+        self.assertEqual(events[-1]["type"], "error")
+        self.assertIn("upstream died", events[-1]["error"])
+        self.assertEqual(self.progress_rows(), [],
+                         "errored streams must not write a ledger row")
+
+    def test_ask_stream_rejects_empty_query(self):
+        with self.assertRaises(ValueError):
+            list(self.core.ask_stream(""))
+        with self.assertRaises(ValueError):
+            list(self.core.ask_stream("   "))
+
+    def test_chat_still_works_via_chat_stream_under_the_hood(self):
+        # Backward compat: existing callers of mikai_llm.chat get the same
+        # blocking string return, even though chat_stream now exists.
+        import infra.mikai_llm as llm
+
+        def fake_stream_claude(prompt, timeout=300.0):
+            # Simulate three delta pieces from `claude -p` stream-json
+            yield "part-1 "
+            yield "part-2 "
+            yield "part-3"
+
+        with mock.patch.object(llm, "_stream_claude", side_effect=fake_stream_claude):
+            out = llm.chat("anything", tier="interactive")
+        self.assertEqual(out, "part-1 part-2 part-3")
+
+    def test_chat_stream_yields_pieces_in_order(self):
+        import infra.mikai_llm as llm
+
+        def fake_stream_claude(prompt, timeout=300.0):
+            yield "alpha "
+            yield "beta"
+
+        with mock.patch.object(llm, "_stream_claude", side_effect=fake_stream_claude):
+            pieces = list(llm.chat_stream("hi", tier="interactive"))
+        self.assertEqual(pieces, ["alpha ", "beta"])
+
+    def test_extract_delta_text_from_stream_json_line(self):
+        # Guard the exact shape of stream-json events we depend on so a
+        # future claude CLI schema change surfaces as a test failure
+        # instead of a silent zero-token stream.
+        import infra.mikai_llm as llm
+        good = {
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "abc"},
+            },
+        }
+        self.assertEqual(llm._extract_delta_text(good), "abc")
+        # Wrong outer type
+        self.assertEqual(llm._extract_delta_text({"type": "assistant"}), "")
+        # Right outer, wrong event type
+        self.assertEqual(llm._extract_delta_text({
+            "type": "stream_event", "event": {"type": "message_start"}
+        }), "")
+        # Right event, non-text delta
+        self.assertEqual(llm._extract_delta_text({
+            "type": "stream_event",
+            "event": {"type": "content_block_delta",
+                      "delta": {"type": "input_json_delta"}},
+        }), "")
+
     def test_ask_stdin_input_works(self):
         from infra.mikai_ask import main as ask_main
         with mock.patch("infra.mikai_llm.chat", return_value="STDIN-ANSWER"):
