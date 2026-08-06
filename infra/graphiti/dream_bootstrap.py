@@ -30,7 +30,16 @@ Usage (from repo root):
     python3 -m infra.graphiti.dream_bootstrap --dry-run
     python3 -m infra.graphiti.dream_bootstrap narrative --narrative-days 30
     python3 -m infra.graphiti.dream_bootstrap ontology --resume
-    python3 -m infra.graphiti.dream_bootstrap            # both passes
+    python3 -m infra.graphiti.dream_bootstrap compact --dry-run
+    python3 -m infra.graphiti.dream_bootstrap            # narrative+ontology
+
+Scheduled runs (see docs/DREAM_CRONS.md): `ontology` weekly (Sunday
+06:00, com.mikai.dream-weekly), `compact` monthly (1st 05:00,
+com.mikai.dream-monthly). `compact` is zero-LLM: it drops retry/glitch
+duplicate sections — same (source, content_bytes) and matching
+normalized 256-char body prefix — keeping the oldest copy, rewrites
+wiki.md (with backup), rebuilds the index + episode log, retires the
+FTS db, and leaves a compact-report-<date>.md.
 
 Existing outputs are backed up as <file>.bak-bootstrap-<ts> before
 overwrite. wiki-ontology-v1.md (hand-curated, July 22) is never touched.
@@ -556,6 +565,169 @@ def run_ontology(
     )
 
 
+# ── Pass C — compact (monthly, zero-LLM dedup) ────────────────────────────
+
+
+EPISODE_LOG = WIKI_DIR / "wiki-episodes.log"
+FTS_DB = WIKI_DIR / "wiki.fts.db"
+
+
+def _body_prefix(section_text: str, n: int = 256) -> str:
+    """Normalized first-n-chars of the section body (header + ingested
+    comment stripped, lowercased, whitespace collapsed)."""
+    lines = section_text.split("\n", 1)
+    body = _INGESTED_RE.sub("", lines[1] if len(lines) > 1 else "")
+    return re.sub(r"\s+", " ", body).strip().lower()[:n]
+
+
+def _find_duplicates(idx: WikiIndex) -> tuple[list[dict], list[list[dict]]]:
+    """Group sections by (source, content_bytes, normalized 256-char body
+    prefix). Returns (survivors_in_file_order, duplicate_groups) where
+    each group is [kept, dropped, dropped, ...] sorted oldest-first by
+    reference_time (header_ts) — the OLDEST copy survives."""
+    groups: dict[tuple, list[dict]] = defaultdict(list)
+    for r in idx.records:
+        prefix = _body_prefix(WikiIndex.read_section(WIKI_MD, r))
+        groups[(r["source"], r["content_bytes"], prefix)].append(r)
+
+    drop_ids: set[int] = set()
+    dup_groups: list[list[dict]] = []
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        members = sorted(members, key=lambda r: r["header_ts"])
+        dup_groups.append(members)
+        drop_ids.update(id(r) for r in members[1:])
+
+    survivors = [r for r in idx.records if id(r) not in drop_ids]
+    return survivors, dup_groups
+
+
+def run_compact(idx: WikiIndex, dry_run: bool, verbose: bool) -> None:
+    snapshot_size = idx.scanned_bytes  # wiki.md size at index-build time
+    survivors, dup_groups = _find_duplicates(idx)
+    n_dropped = len(idx.records) - len(survivors)
+    bytes_reclaimed = sum(
+        r["byte_end"] - r["byte_start"]
+        for g in dup_groups
+        for r in g[1:]
+    )
+    print(
+        f"[pass C] compact: {len(idx.records)} sections, "
+        f"{len(dup_groups)} duplicate group(s), {n_dropped} section(s) to "
+        f"drop, ~{bytes_reclaimed:,} bytes to reclaim"
+    )
+    if verbose:
+        for g in dup_groups:
+            k = g[0]
+            print(
+                f"  keep {k['header_ts']} — {k['source']} — {k['name']}; "
+                f"drop {len(g) - 1} copy(ies) at "
+                + ", ".join(r["header_ts"] for r in g[1:])
+            )
+    if dry_run:
+        print("[pass C] dry-run: no writes")
+        return
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    today = datetime.now(timezone.utc).date().isoformat()
+
+    if n_dropped == 0:
+        print("[pass C] no duplicates — wiki.md untouched")
+        _write_compact_report(today, idx, dup_groups, 0, None)
+        return
+
+    # Rewrite wiki.md: preamble + surviving sections (verbatim byte
+    # slices, file order), via temp file + atomic replace. If the wiki
+    # grew while we worked (ingest race), carry the appended tail over.
+    raw = WIKI_MD.read_bytes()
+    preamble_end = idx.records[0]["byte_start"]
+    parts = [raw[:preamble_end]]
+    for r in survivors:
+        parts.append(raw[r["byte_start"]:r["byte_end"]])
+    if len(raw) > snapshot_size:
+        print(
+            f"[pass C] wiki.md grew during compaction "
+            f"({len(raw):,} > {snapshot_size:,}) — preserving appended tail"
+        )
+        parts.append(raw[snapshot_size:])
+
+    bak_md = WIKI_MD.with_name(f"wiki.md.pre-compact-{ts}")
+    bak_md.write_bytes(raw)
+    print(f"[pass C] backed up wiki.md -> {bak_md.name}")
+
+    tmp = WIKI_MD.with_suffix(".md.compact-tmp")
+    tmp.write_bytes(b"".join(parts))
+    import os as _os
+    _os.replace(tmp, WIKI_MD)
+    print(f"[pass C] wrote {WIKI_MD} ({WIKI_MD.stat().st_size:,} bytes)")
+
+    # Derived files: rebuild index, rewrite episode log from the new
+    # index, retire the FTS db (disposable — adapter regrows it via
+    # rebuild_if_stale on next access). All originals backed up first.
+    if WIKI_INDEX.exists():
+        WIKI_INDEX.with_name(f"wiki.index.pre-compact-{ts}").write_bytes(
+            WIKI_INDEX.read_bytes()
+        )
+    new_idx = WikiIndex.build(WIKI_MD)
+    new_idx.save(WIKI_INDEX)
+    print(f"[pass C] rebuilt wiki.index ({len(new_idx.records)} sections)")
+
+    if EPISODE_LOG.exists():
+        EPISODE_LOG.with_name(
+            f"wiki-episodes.log.pre-compact-{ts}"
+        ).write_bytes(EPISODE_LOG.read_bytes())
+    with EPISODE_LOG.open("w", encoding="utf-8") as f:
+        for r in new_idx.records:
+            f.write(f"{r['header_ts']} {r['source']} {r['content_bytes']}\n")
+    print(f"[pass C] rewrote wiki-episodes.log ({len(new_idx.records)} lines)")
+
+    if FTS_DB.exists():
+        _os.replace(FTS_DB, FTS_DB.with_name(f"wiki.fts.db.pre-compact-{ts}"))
+        for suffix in ("-wal", "-shm"):
+            side = FTS_DB.with_name(FTS_DB.name + suffix)
+            if side.exists():
+                side.unlink()
+        print("[pass C] retired wiki.fts.db (adapter rebuilds on next access)")
+
+    _write_compact_report(today, idx, dup_groups, bytes_reclaimed, bak_md)
+
+
+def _write_compact_report(
+    today: str,
+    idx: WikiIndex,
+    dup_groups: list[list[dict]],
+    bytes_reclaimed: int,
+    bak_md: Path | None,
+) -> None:
+    n_dropped = sum(len(g) - 1 for g in dup_groups)
+    lines = [
+        f"# Wiki Compaction Report — {today}",
+        "",
+        f"- sections scanned: {len(idx.records)}",
+        f"- duplicate groups: {len(dup_groups)}",
+        f"- sections dropped: {n_dropped}",
+        f"- bytes reclaimed: {bytes_reclaimed:,}",
+        f"- backup: {bak_md.name if bak_md else '(none — nothing dropped)'}",
+        "",
+    ]
+    if dup_groups:
+        lines += ["## Sample duplicates (kept the oldest of each group)", ""]
+        for g in dup_groups[:20]:
+            k = g[0]
+            lines.append(
+                f"- **{k['name']}** ({k['source']}, {k['content_bytes']}B): "
+                f"kept {k['header_ts']}, dropped "
+                + ", ".join(r["header_ts"] for r in g[1:])
+            )
+        if len(dup_groups) > 20:
+            lines.append(f"- … and {len(dup_groups) - 20} more group(s)")
+        lines.append("")
+    report = WIKI_DIR / f"compact-report-{today}.md"
+    report.write_text("\n".join(lines), encoding="utf-8")
+    print(f"[pass C] report -> {report}")
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────
 
 
@@ -566,8 +738,9 @@ def main() -> None:
     )
     ap.add_argument(
         "which", nargs="?", default="all",
-        choices=["all", "narrative", "ontology"],
-        help="which pass to run (default: all)",
+        choices=["all", "narrative", "ontology", "compact"],
+        help="which pass to run (default: all = narrative + ontology; "
+             "compact runs only when named explicitly)",
     )
     ap.add_argument("--narrative-days", type=int, default=30)
     ap.add_argument("--batch-sections", type=int, default=300,
@@ -593,6 +766,8 @@ def main() -> None:
         if args.which in ("all", "ontology"):
             run_ontology(idx, args.batch_sections, budget,
                          args.dry_run, args.verbose, args.resume)
+        if args.which == "compact":
+            run_compact(idx, args.dry_run, args.verbose)
     except BudgetExceeded as exc:
         print(f"[stop] {exc}", file=sys.stderr)
         sys.exit(2)
