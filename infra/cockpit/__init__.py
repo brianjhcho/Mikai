@@ -72,7 +72,28 @@ def thread_dict(t: threads.Thread, reason: str | None) -> dict:
         "log_recent": log[-3:],
         "last_log": log[-1] if log else "",
         "reason": reason or "",
+        "entities": list(t.entities),
     }
+
+
+def collect_entity_edges(departments: list[dict]) -> list[dict]:
+    """Cross-thread entanglement: two threads share an edge when their
+    `entities` frontmatter sets intersect. One edge per unordered pair,
+    emitted with slug_a < slug_b and the shared entity names in `via`."""
+    ts = sorted(
+        (t for d in departments for t in d["threads"]),
+        key=lambda t: t["slug"],
+    )
+    edges: list[dict] = []
+    for i, a in enumerate(ts):
+        ea = set(a["entities"])
+        if not ea:
+            continue
+        for b in ts[i + 1:]:
+            via = sorted(ea & set(b["entities"]))
+            if via:
+                edges.append({"a": a["slug"], "b": b["slug"], "via": via})
+    return edges
 
 
 def latest_note_by_thread(events: list[ledger.DeliveryEvent]) -> dict[str, str]:

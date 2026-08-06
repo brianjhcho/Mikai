@@ -180,6 +180,19 @@ _TEMPLATE = r"""<!doctype html>
   .node:hover .lbl,.node:focus-visible .lbl{color:var(--ink)}
   .node.flip{flex-direction:row-reverse}
 
+  /* ── entity edges (ENTANGLED WITH) ──
+     hidden until a node with shared entities is hovered/focused */
+  #entity-edges path{
+    fill:none;stroke:#5EBFA9;stroke-width:1;stroke-dasharray:4 3;
+    opacity:0;transition:opacity .3s;
+  }
+  #entity-edges circle{fill:var(--warm);opacity:0;transition:opacity .3s}
+  #entity-edges path.on{opacity:.25}
+  #entity-edges circle.on{opacity:.65}
+  .hub,#center,.node{transition:opacity .3s}
+  #stage.entangled .hub,#stage.entangled #center,
+  #stage.entangled .node:not(.lit){opacity:.4}
+
   /* ── detail panel (left) ── */
   #panel{
     position:fixed;top:0;left:0;bottom:0;width:min(360px,88vw);z-index:40;
@@ -253,6 +266,7 @@ _TEMPLATE = r"""<!doctype html>
     .node[data-state="acting"] .dot::after{animation:none;display:none}
     #panel{transition:none}
     #reload.spin svg{animation:none}
+    #entity-edges path,#entity-edges circle,.hub,#center,.node{transition:none}
   }
 </style>
 </head>
@@ -356,6 +370,22 @@ function logHTML(lines){
     return "<li>" + esc(l.replace(/^-\s*/, "")) + "</li>";
   }).join("") + "</ul>";
 }
+function entangledHTML(slug){
+  var edges = (data.entity_edges || []).filter(function(e){
+    return e.a === slug || e.b === slug;
+  });
+  if (!edges.length) return "";
+  var titles = {};
+  data.departments.forEach(function(d){
+    d.threads.forEach(function(t){ titles[t.slug] = t.title; });
+  });
+  var items = edges.map(function(e){
+    var other = e.a === slug ? e.b : e.a;
+    return esc(titles[other] || other) +
+      ' <span style="color:var(--faint);font-style:italic">(via ' + esc(e.via[0]) + ")</span>";
+  });
+  return '<div class="eyebrow">entangled with</div><p>' + items.join(" · ") + "</p>";
+}
 function threadPanel(t, dept){
   var tint = tintOf(dept.id);
   var html = '<div class="eyebrow">thread · ' + esc(dept.name) + "</div>" +
@@ -370,6 +400,7 @@ function threadPanel(t, dept){
     html += '<div class="eyebrow">next step</div><p>' + esc(t.next_step) +
       (t.next_step_due ? ' <span class="chip' + (t.overdue ? " warm" : "") +
         '" style="margin-left:6px">due ' + esc(t.next_step_due) + "</span>" : "") + "</p>";
+  html += entangledHTML(t.slug);
   html += '<div class="eyebrow">last activity</div>' +
     '<p class="soft">' + esc(t.last_activity || "—") +
     (t.last_log ? " — " + esc(t.last_log.replace(/^-\s*\d{4}-\d{2}-\d{2}\s*(\[[^\]]*\])?\s*/, "")) : "") + "</p>";
@@ -458,6 +489,9 @@ function renderConstellation(){
   bindOpen(c, function(){ openPanel(centerPanel(data.center)); });
   stage.appendChild(c);
 
+  var nodePos = {};   // slug → {x,y} of the placed sub-node
+  var nodeEls = {};   // slug → button element
+
   var depts = data.departments;
   var n = depts.length;
   depts.forEach(function(d, i){
@@ -499,9 +533,79 @@ function renderConstellation(){
       var b = nodeButton(t, d);
       b.style.left = nx + "px"; b.style.top = ny + "px";
       if (Math.cos(na) < -0.15) b.classList.add("flip"); // label toward outer edge
+      nodePos[t.slug] = {x: nx, y: ny};
+      nodeEls[t.slug] = b;
+      b.addEventListener("mouseenter", function(){ focusEdges(t.slug); });
+      b.addEventListener("focus", function(){ focusEdges(t.slug); });
+      b.addEventListener("mouseleave", unfocusEdges);
+      b.addEventListener("blur", unfocusEdges);
       stage.appendChild(b);
     });
   });
+
+  // ── entity edges: shared-entity curves between threads ──
+  // Appended after the spokes so they paint above them; sub-nodes are
+  // HTML (z-index 8) and always sit above the SVG. Hidden until hover.
+  var SVGNS = "http://www.w3.org/2000/svg";
+  var edgesG = document.createElementNS(SVGNS, "g");
+  edgesG.id = "entity-edges";
+  wires.appendChild(edgesG);
+  var edgeEls = [];
+  (data.entity_edges || []).forEach(function(e){
+    var A = nodePos[e.a], B = nodePos[e.b];
+    if (!A || !B) return;
+    var mx = (A.x + B.x) / 2, my = (A.y + B.y) / 2;
+    // control point pushed away from the center hub so curves arc
+    // around it instead of slicing through
+    var dx = mx - cx, dy = my - cy, dd = Math.sqrt(dx*dx + dy*dy);
+    var span = Math.sqrt((B.x-A.x)*(B.x-A.x) + (B.y-A.y)*(B.y-A.y)) || 1;
+    var lift = Math.min(130, 36 + span * 0.18);
+    var ux, uy;
+    if (dd < 24){
+      // midpoint sits (nearly) on the center hub — arc perpendicular
+      // to the chord instead, preferring upward
+      ux = -(B.y - A.y) / span; uy = (B.x - A.x) / span;
+      if (uy > 0){ ux = -ux; uy = -uy; }
+    } else {
+      ux = dx / dd; uy = dy / dd;
+    }
+    var qx = mx + ux * lift, qy = my + uy * lift;
+    var p = document.createElementNS(SVGNS, "path");
+    p.setAttribute("d", "M" + A.x + " " + A.y + " Q " + qx + " " + qy + " " + B.x + " " + B.y);
+    edgesG.appendChild(p);
+    // warm flow dot at the curve's midpoint (t=0.5 on the quadratic)
+    var dot = document.createElementNS(SVGNS, "circle");
+    dot.setAttribute("cx", 0.25*A.x + 0.5*qx + 0.25*B.x);
+    dot.setAttribute("cy", 0.25*A.y + 0.5*qy + 0.25*B.y);
+    dot.setAttribute("r", 1.7);
+    edgesG.appendChild(dot);
+    edgeEls.push({a: e.a, b: e.b, path: p, dot: dot});
+  });
+
+  function focusEdges(slug){
+    var hit = false;
+    edgeEls.forEach(function(e){
+      var on = e.a === slug || e.b === slug;
+      e.path.classList.toggle("on", on);
+      e.dot.classList.toggle("on", on);
+      if (on){
+        hit = true;
+        var other = nodeEls[e.a === slug ? e.b : e.a];
+        if (other) other.classList.add("lit");
+      }
+    });
+    if (hit){
+      if (nodeEls[slug]) nodeEls[slug].classList.add("lit");
+      stage.classList.add("entangled");
+    }
+  }
+  function unfocusEdges(){
+    stage.classList.remove("entangled");
+    edgeEls.forEach(function(e){
+      e.path.classList.remove("on"); e.dot.classList.remove("on");
+    });
+    Object.keys(nodeEls).forEach(function(s){ nodeEls[s].classList.remove("lit"); });
+  }
 
   function line(x1, y1, x2, y2, stroke, w){
     var l = document.createElementNS("http://www.w3.org/2000/svg", "line");
@@ -568,7 +672,10 @@ function renderLegend(){
     return '<span><span class="lg node-inline node" data-state="' + s[0] +
       '" style="color:#8f9bb0;position:static;transform:none;display:inline-flex">' +
       '<span class="dot" style="width:7px;height:7px;border-width:1px"></span></span>' + s[1] + "</span>";
-  }).join("") + '<span><span class="lg" style="background:' + WARM + ';width:5px;height:5px"></span>overdue</span>';
+  }).join("") + '<span><span class="lg" style="background:' + WARM + ';width:5px;height:5px"></span>overdue</span>' +
+  '<span><svg width="20" height="8" viewBox="0 0 20 8" aria-hidden="true" style="flex:none">' +
+    '<path d="M1 6.5 Q 10 -2 19 6.5" fill="none" stroke="#5EBFA9" stroke-width="1" stroke-dasharray="3 2" opacity=".5"/></svg>' +
+  'hover a node — cross-thread entanglement, shared entities drawn as edges</span>';
 }
 function renderStamp(){
   document.getElementById("stamp").textContent =
