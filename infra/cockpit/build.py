@@ -18,22 +18,43 @@ from pathlib import Path
 
 from infra.mikai_brain import BRAIN_ROOT, STATE_DIR
 
-from . import collect_center, collect_departments, collect_entity_edges
+from . import (collect_center, collect_departments, collect_entity_edges,
+               compute_attention)
 from .render import render_html
+from .snapshot import (compute_deltas, load_prior, save_snapshot,
+                       snapshot_from_departments)
 
 DASHBOARD_JSON = STATE_DIR / "dashboard.json"
 COCKPIT_HTML = BRAIN_ROOT / "cockpit.html"
+LAST_SNAPSHOT_JSON = STATE_DIR / "cockpit_last_snapshot.json"
 
 
 def build_dashboard() -> dict:
     now = datetime.now(timezone.utc)
     departments = collect_departments()
+    center = collect_center()
+
+    # Attention head + salience budget (items 1 & 2 of the ranked build
+    # list in docs/COCKPIT_CONTENT_STRATEGY.md). Both live on `center` per
+    # the spec — the same dict already carries Surface gate status, and
+    # the render layer treats center as the "what is today for" node.
+    att = compute_attention(departments)
+    center["attention_head"] = att["attention_head"]
+    center["loud_slugs"] = att["loud_slugs"]
+
+    # Delta strip (item 3). Diff against the last snapshot written by a
+    # prior full build; if no prior snapshot exists we emit an empty list
+    # and the strip stays hidden on-screen.
+    current_snap = snapshot_from_departments(departments)
+    prior_snap = load_prior(LAST_SNAPSHOT_JSON)
+    center["delta_strip"] = compute_deltas(prior_snap, current_snap)
+
     return {
         "generated_at": now.isoformat(timespec="seconds"),
         "generated_at_human": now.strftime("%Y-%m-%d %H:%M UTC"),
         "departments": departments,
         "entity_edges": collect_entity_edges(departments),
-        "center": collect_center(),
+        "center": center,
         # Absolute paths the static page can only reference, never write:
         # the "mark done" affordance copies a shell append targeting this
         # file; triage (or a future apply-actions) is the consumer.
@@ -46,7 +67,11 @@ def build_dashboard() -> dict:
 def write_outputs(dashboard: dict, html_path: Path | None = None,
                   refresh_only: bool = False) -> list[Path]:
     """Write dashboard.json (always) and cockpit.html (unless refresh_only).
-    Returns the paths written."""
+    Returns the paths written.
+
+    Full builds (not refresh_only) also rewrite the snapshot file so the
+    next build's delta strip diffs from now, not from an older baseline.
+    """
     written: list[Path] = []
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(dashboard, ensure_ascii=False, indent=2)
@@ -57,6 +82,10 @@ def write_outputs(dashboard: dict, html_path: Path | None = None,
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(render_html(dashboard), encoding="utf-8")
         written.append(target)
+        # Update the snapshot after a successful HTML write so a rerun
+        # after a crash still shows the same deltas.
+        save_snapshot(LAST_SNAPSHOT_JSON,
+                      snapshot_from_departments(dashboard["departments"]))
     return written
 
 

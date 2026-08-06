@@ -71,15 +71,125 @@ def thread_dict(t: threads.Thread, reason: str | None) -> dict:
         "state_since": t.state_since,
         "last_activity": t.last_activity,
         "days_since": _days_since(t.last_activity),
+        "days_since_state": _days_since(t.state_since),
         "next_step": t.next_step,
         "next_step_due": t.next_step_due,
         "overdue": overdue,
+        "overdue_days": ((_today() - due).days if overdue and due else 0),
         "log_recent": log[-3:],
         "log_full": log,
         "last_log": log[-1] if log else "",
         "reason": reason or "",
         "entities": list(t.entities),
     }
+
+
+# ── attention scoring (Cockpit Content Strategy §6, items 1+2) ──────────
+#
+# Ranks threads by "attention-owed". The top scorer becomes the attention
+# head; the top 4 form the salience budget (loud vs scenery).
+
+
+def score_attention_owed(t: dict) -> tuple[float, str]:
+    """Return (score, reason) for a thread dict from `thread_dict()`.
+
+    Rules per COCKPIT_CONTENT_STRATEGY.md §6:
+      - Overdue: overdue_days × 10
+      - Stalled: days_since_stall × 5
+      - Acting with next_step_due within 7 days: (7 - days_to_due) × 3
+      - Decided > 5 days ago (no follow-through): days_since_decided × 4
+      - Everything else: 0
+    """
+    state = t.get("state", "exploring")
+    today = _today()
+
+    if t.get("overdue"):
+        od = int(t.get("overdue_days") or 0)
+        if od > 0:
+            return float(od * 10), f"overdue by {od}d"
+        return 10.0, "overdue"
+
+    if state == "stalled":
+        days = int(t.get("days_since_state") or 0)
+        return float(days * 5), f"stalled {days}d"
+
+    if state == "acting":
+        due = _parse_date(t.get("next_step_due") or "")
+        if due:
+            days_to_due = (due - today).days
+            if 0 <= days_to_due <= 7:
+                return float((7 - days_to_due) * 3), f"acting · due in {days_to_due}d"
+
+    if state == "decided":
+        days = int(t.get("days_since_state") or 0)
+        if days > 5:
+            return float(days * 4), f"decided {days}d ago — no follow-through"
+
+    return 0.0, ""
+
+
+def _attention_sort_key(entry: dict) -> tuple:
+    # Higher score wins; ties broken by larger stalls, then oldest activity.
+    la = entry.get("last_activity") or "9999-99-99"
+    return (-entry["score"], -(entry.get("days_since_state") or 0), la)
+
+
+def compute_attention(departments: list[dict]) -> dict:
+    """Compute attention head + loud slugs for the salience budget.
+
+    Returns:
+      {
+        "attention_head": {slug,title,state,days,next_step,reason,score,quiet},
+        "loud_slugs": [slug, ...],  # up to 4, always includes head slug
+        "scored": [{slug,score,reason}, ...]  # all threads, top-first
+      }
+    """
+    entries: list[dict] = []
+    for d in departments:
+        for t in d["threads"]:
+            # Completed threads are scenery — they've left the sky.
+            if t.get("state") == "completed":
+                continue
+            score, reason = score_attention_owed(t)
+            entries.append({
+                "slug": t["slug"],
+                "title": t["title"],
+                "state": t["state"],
+                "days_since_state": t.get("days_since_state") or 0,
+                "last_activity": t.get("last_activity") or "",
+                "next_step": t.get("next_step") or "",
+                "score": score,
+                "reason": reason,
+            })
+    entries.sort(key=_attention_sort_key)
+
+    if entries and entries[0]["score"] > 0:
+        top = entries[0]
+        head = {
+            "slug": top["slug"],
+            "title": top["title"],
+            "state": top["state"],
+            "days_since_state": top["days_since_state"],
+            "next_step": top["next_step"],
+            "reason": top["reason"],
+            "score": top["score"],
+            "quiet": False,
+        }
+    else:
+        head = {"slug": None, "title": "", "state": "", "days_since_state": 0,
+                "next_step": "", "reason": "all quiet — nothing owed",
+                "score": 0.0, "quiet": True}
+
+    loud: list[str] = []
+    for e in entries[:4]:
+        if e["score"] > 0:
+            loud.append(e["slug"])
+    if head["slug"] and head["slug"] not in loud:
+        loud = [head["slug"]] + loud
+        loud = loud[:4]
+    return {"attention_head": head, "loud_slugs": loud,
+            "scored": [{"slug": e["slug"], "score": e["score"], "reason": e["reason"]}
+                       for e in entries]}
 
 
 def collect_entity_edges(departments: list[dict]) -> list[dict]:

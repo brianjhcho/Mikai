@@ -50,6 +50,80 @@ _TEMPLATE = r"""<!doctype html>
   /* faint star grain */
   #grain{position:fixed;inset:0;pointer-events:none;opacity:.5}
 
+  /* ── attention head + delta strip (COCKPIT_CONTENT_STRATEGY §4) ── */
+  #attnstrip{
+    position:fixed;top:60px;left:50%;transform:translateX(-50%);z-index:28;
+    display:flex;flex-direction:column;align-items:center;gap:6px;
+    max-width:min(720px,92vw);pointer-events:none;text-align:center;
+  }
+  #attnhead{
+    display:inline-flex;align-items:baseline;gap:12px;flex-wrap:wrap;
+    justify-content:center;line-height:1.35;pointer-events:auto;
+    cursor:pointer;padding:4px 8px;border-radius:3px;
+    transition:background .2s;
+  }
+  #attnhead:hover{background:rgba(228,167,118,.05)}
+  #attnhead .caret{
+    font-family:var(--mono);font-size:11px;color:var(--warm);letter-spacing:0;
+  }
+  #attnhead .title{
+    font-family:var(--serif);font-weight:500;font-size:16px;
+    letter-spacing:.24em;text-transform:uppercase;color:var(--ink);
+  }
+  #attnhead .meta{
+    font-family:var(--mono);font-size:10px;letter-spacing:.08em;
+    color:var(--faint);
+  }
+  #attnhead .next{
+    font-family:var(--mono);font-size:10px;letter-spacing:.03em;
+    color:var(--faint);font-style:italic;
+  }
+  #attnhead[data-mood="warm"] .caret,
+  #attnhead[data-mood="warm"] .title{color:var(--warm)}
+  #attnhead[data-mood="warm"] .meta{color:var(--warm);opacity:.85}
+  #attnhead[data-mood="cool"] .caret{color:#5EBFA9}
+  #attnhead[data-mood="cool"] .meta{color:#5EBFA9;opacity:.85}
+  #attnhead[data-mood="muted"]{opacity:.55}
+  #attnhead[data-mood="muted"] .caret,
+  #attnhead[data-mood="muted"] .title{color:var(--faint)}
+  #attnhead[data-quiet="1"]{cursor:default}
+  #attnhead[data-quiet="1"]:hover{background:none}
+
+  #deltastrip{
+    display:inline-flex;flex-wrap:wrap;justify-content:center;
+    gap:0 10px;pointer-events:auto;
+    font-family:var(--mono);font-size:9.5px;letter-spacing:.06em;
+    color:var(--faint);line-height:1.7;
+  }
+  #deltastrip[hidden]{display:none}
+  #deltastrip .lbl{color:var(--warm);letter-spacing:.16em;text-transform:uppercase}
+  #deltastrip .sep{color:var(--rule)}
+  #deltastrip .item{cursor:pointer;color:var(--faint);transition:color .2s}
+  #deltastrip .item:hover{color:var(--ink)}
+  #deltastrip .item b{font-weight:500;color:var(--ink)}
+
+  /* salience: dim = scenery, loud = default styling */
+  .node.dim .dot{opacity:.35;filter:saturate(.35)}
+  .node.dim .lbl{opacity:.4}
+  .node.dim .over{opacity:.5}
+  .node.dim[data-state="acting"] .dot::after{opacity:0;animation:none}
+  #stage.loud-only .node:not(.loud){display:none}
+  #stage.loud-only #wires line{opacity:.3}
+
+  #salience-toggle{
+    position:fixed;bottom:20px;right:24px;z-index:30;pointer-events:auto;
+    display:inline-flex;gap:2px;font-family:var(--mono);font-size:9px;
+    letter-spacing:.12em;text-transform:uppercase;color:var(--faint);
+    border:1px solid var(--rule);border-radius:999px;padding:2px;
+    background:rgba(11,17,27,.72);backdrop-filter:blur(6px);
+  }
+  #salience-toggle button{
+    padding:4px 10px;border-radius:999px;color:var(--faint);
+    transition:color .2s,background .2s;
+  }
+  #salience-toggle button:hover{color:var(--ink)}
+  #salience-toggle button.on{color:var(--ink);background:rgba(228,167,118,.12)}
+
   /* ── chrome ── */
   header{
     position:fixed;top:0;left:0;right:0;z-index:30;
@@ -379,8 +453,18 @@ _TEMPLATE = r"""<!doctype html>
   </button>
 </header>
 
+<div id="attnstrip" aria-live="polite">
+  <div id="attnhead" role="button" tabindex="0" hidden></div>
+  <div id="deltastrip" hidden></div>
+</div>
+
 <div id="stage" role="application" aria-label="Life constellation">
   <svg id="wires" aria-hidden="true"></svg>
+</div>
+
+<div id="salience-toggle" role="group" aria-label="Salience mode">
+  <button type="button" data-mode="show-all" class="on">show all</button>
+  <button type="button" data-mode="loud-only">loud only</button>
 </div>
 
 <div id="cards"></div>
@@ -681,12 +765,88 @@ function bindOpen(el, fn){
   el.addEventListener("click", fn);
 }
 
+/* ── attention head + delta strip + salience budget ────────────────── */
+function loudSet(){
+  var c = (data.center && data.center.loud_slugs) || [];
+  var s = {};
+  c.forEach(function(x){ s[x] = 1; });
+  return s;
+}
+function threadIndex(){
+  var idx = {};
+  data.departments.forEach(function(d){
+    d.threads.forEach(function(t){ idx[t.slug] = {t: t, d: d}; });
+  });
+  return idx;
+}
+function renderAttentionHead(){
+  var el = document.getElementById("attnhead");
+  var head = (data.center && data.center.attention_head) || null;
+  if (!head){ el.hidden = true; return; }
+  el.hidden = false;
+  if (head.quiet || !head.slug){
+    el.dataset.mood = "muted";
+    el.dataset.quiet = "1";
+    el.innerHTML = '<span class="caret">▲</span>' +
+      '<span class="title" style="letter-spacing:.18em">All quiet</span>' +
+      '<span class="meta">nothing owed</span>';
+    return;
+  }
+  el.dataset.quiet = "0";
+  var st = head.state || "";
+  var mood = "muted";
+  if (st === "stalled" || head.reason.indexOf("overdue") === 0) mood = "warm";
+  else if (st === "acting") mood = "cool";
+  el.dataset.mood = mood;
+  var days = head.days_since_state || 0;
+  var meta = st + (days ? ", " + days + "d" : "");
+  var next = head.next_step ? "next: " + head.next_step : "";
+  el.innerHTML =
+    '<span class="caret">▲</span>' +
+    '<span class="title">' + esc(head.title) + "</span>" +
+    '<span class="meta">' + esc(meta) + "</span>" +
+    (next ? '<span class="next">· ' + esc(next) + "</span>" : "");
+  el.onclick = function(){
+    var e = threadIndex()[head.slug];
+    if (e) openPanel(threadPanel(e.t, e.d));
+  };
+  el.onkeydown = function(ev){
+    if (ev.key === "Enter" || ev.key === " "){ ev.preventDefault(); el.click(); }
+  };
+}
+function renderDeltaStrip(){
+  var el = document.getElementById("deltastrip");
+  var deltas = (data.center && data.center.delta_strip) || [];
+  if (!deltas.length){ el.hidden = true; el.innerHTML = ""; return; }
+  el.hidden = false;
+  var parts = ['<span class="lbl">DELTA</span>'];
+  var idx = threadIndex();
+  deltas.forEach(function(d, i){
+    parts.push('<span class="sep">·</span>');
+    var slug = d.slug || "";
+    var label = '<b>' + esc(slug) + "</b>: " + esc(d.desc || "");
+    if (idx[slug]){
+      parts.push('<span class="item" data-slug="' + esc(slug) + '">' + label + "</span>");
+    } else {
+      parts.push('<span class="item" style="cursor:default">' + label + "</span>");
+    }
+  });
+  el.innerHTML = parts.join(" ");
+  Array.prototype.forEach.call(el.querySelectorAll(".item[data-slug]"), function(node){
+    node.addEventListener("click", function(){
+      var e = threadIndex()[node.dataset.slug];
+      if (e) openPanel(threadPanel(e.t, e.d));
+    });
+  });
+}
+
 /* ── constellation ─────────────────────────────────────────────────── */
-function nodeButton(t, dept){
+function nodeButton(t, dept, isLoud){
   var tint = tintOf(dept.id);
-  var b = h("button", "node");
+  var b = h("button", "node" + (isLoud ? " loud" : " dim"));
   b.type = "button";
   b.dataset.state = t.state;
+  b.dataset.slug = t.slug;
   b.style.color = tint;
   b.setAttribute("aria-label", t.title + " — " + t.state);
   var dot = h("span", "dot");
@@ -718,6 +878,7 @@ function renderConstellation(){
 
   var nodePos = {};   // slug → {x,y} of the placed sub-node
   var nodeEls = {};   // slug → button element
+  var loud = loudSet();
 
   var depts = data.departments;
   var n = depts.length;
@@ -757,7 +918,7 @@ function renderConstellation(){
       nx = Math.max(30, Math.min(W - 30, nx));
       ny = Math.max(70, Math.min(H - 70, ny));
       line(hx, hy, nx, ny, "color-mix(in srgb," + tint + " 26%,transparent)", 1);
-      var b = nodeButton(t, d);
+      var b = nodeButton(t, d, !!loud[t.slug]);
       b.style.left = nx + "px"; b.style.top = ny + "px";
       if (Math.cos(na) < -0.15) b.classList.add("flip"); // label toward outer edge
       nodePos[t.slug] = {x: nx, y: ny};
@@ -909,11 +1070,39 @@ function renderStamp(){
     "as of " + data.generated_at_human + " · " + source;
 }
 function renderAll(){
+  renderAttentionHead();
+  renderDeltaStrip();
   renderConstellation();
   renderCards();
   renderLegend();
   renderStamp();
 }
+
+/* ── salience toggle (show all · loud only), persisted in localStorage ── */
+var SAL_KEY = "mikai.cockpit.salience";
+function applySalienceMode(mode){
+  stage.classList.toggle("loud-only", mode === "loud-only");
+  var buttons = document.querySelectorAll("#salience-toggle button");
+  Array.prototype.forEach.call(buttons, function(btn){
+    btn.classList.toggle("on", btn.dataset.mode === mode);
+  });
+}
+(function initSalience(){
+  var stored = "show-all";
+  try {
+    var v = localStorage.getItem(SAL_KEY);
+    if (v === "loud-only" || v === "show-all") stored = v;
+  } catch (err){}
+  document.querySelectorAll("#salience-toggle button").forEach(function(btn){
+    btn.addEventListener("click", function(){
+      var m = btn.dataset.mode;
+      try { localStorage.setItem(SAL_KEY, m); } catch (err){}
+      applySalienceMode(m);
+    });
+  });
+  // apply after first render — renderAll runs at the bottom of this IIFE
+  setTimeout(function(){ applySalienceMode(stored); }, 0);
+})();
 
 /* ── star grain ────────────────────────────────────────────────────── */
 function grain(){
@@ -1137,6 +1326,11 @@ window.addEventListener("resize", function(){
 grain();
 renderAll();
 tryRefresh(false);
+// Record last-open so future client-side diffing can use it. The
+// server-side snapshot (state/cockpit_last_snapshot.json) drives the
+// delta strip today; this key is written for the next iteration.
+try { localStorage.setItem("mikai:last_open", String(Date.now())); }
+catch (err) {}
 })();
 </script>
 </body>
