@@ -12,9 +12,12 @@ Design commitment (ARCH-024 port, D-041 primitives-only):
 - `search` and `get_source` return wiki sections as pseudo-Edges /
   SourceEpisodes so downstream FIGS code that already speaks the port
   contract keeps working unchanged.
-- `ingest_episode` appends to ~/.mikai/wiki/wiki-episodes.log (JSONL) so
-  new episodes are captured without a graph — dream loops or future
-  wiki-regen can consume this log to rebuild the wiki.
+- `ingest_episode` appends the episode verbatim to ~/.mikai/wiki/wiki.md
+  as a dated, source-tagged section (Karpathy design: verbatim capture
+  with metadata, no entity resolution — the LLM resolves at query time),
+  plus a one-line audit entry in ~/.mikai/wiki/wiki-episodes.log
+  ("<iso-ts> <source> <byte-count>"). No dedup at this layer — that is a
+  future compaction / wiki-reorganizer pass.
 - All node/edge/community primitives return sensible empty or
   wiki-derived defaults. The wiki has no bitemporal edge structure, so
   history() returns empty superseded lists.
@@ -28,11 +31,9 @@ and becomes appropriate at 100K+ episodes.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
-from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -190,16 +191,36 @@ class WikiAdapter(L3Backend):
     # ── Write ──
 
     async def ingest_episode(self, episode: Episode) -> IngestResult:
-        """Append the episode to the JSONL log. No extraction; no
-        entities or edges are produced — hence zeros in the result."""
-        EPISODE_LOG.parent.mkdir(parents=True, exist_ok=True)
-        row = asdict(episode)
-        # datetime → ISO string for JSON serialization
-        if isinstance(row.get("reference_time"), datetime):
-            row["reference_time"] = row["reference_time"].isoformat()
+        """Verbatim capture (Karpathy wiki design): append the episode to
+        wiki.md as a dated, source-tagged `###` section, plus a one-line
+        audit entry in wiki-episodes.log. No extraction, no entity
+        resolution (the LLM resolves at query time), no dedup — dedup is
+        a future compaction pass. Zeros in the result reflect that no
+        entities/edges are produced at write time."""
+        WIKI_ROOT.mkdir(parents=True, exist_ok=True)
+        wiki_md = WIKI_ROOT / "wiki.md"
+        ingested_at = datetime.now(timezone.utc)
+        ref = episode.reference_time
+        ref_iso = ref.isoformat() if isinstance(ref, datetime) else str(ref)
+        title = episode.name or "(untitled)"
+        section = (
+            f"\n\n### {ref_iso} — {episode.source_description} — {title}\n"
+            f"<!-- ingested={ingested_at.isoformat()} "
+            f"group_id={episode.group_id} -->\n\n"
+            f"{episode.content.rstrip()}\n"
+        )
+        # wiki.md append is the write of record — a failure here must
+        # surface to the caller so daemons don't mark content ingested.
+        with wiki_md.open("a") as f:
+            f.write(section)
+        # Audit log: "<iso-ts> <source> <byte-count>", one line per episode.
+        n_bytes = len(episode.content.encode("utf-8"))
         try:
             with EPISODE_LOG.open("a") as f:
-                f.write(json.dumps(row) + "\n")
+                f.write(
+                    f"{ingested_at.isoformat()} "
+                    f"{episode.source_description} {n_bytes}\n"
+                )
         except OSError as exc:
             logger.warning("wiki episode log write failed: %s", exc)
         # Stable synthetic uuid — line number in the log.
