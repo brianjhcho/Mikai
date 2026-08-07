@@ -30,58 +30,12 @@ WIKI_NARRATIVE = WIKI_DIR / "wiki-narrative.md"
 WIKI_ONTOLOGY = WIKI_DIR / "wiki-ontology.md"
 
 
-# Canned queries — each opens the panel with a prompt pre-filled that
-# reflects the retrieval shape MIKAI's substrate is best at. Every
-# panel is answered by the same /ask/stream endpoint the cockpit uses;
-# no new inference path.
-CANNED_QUERIES: dict[str, dict] = {
-    "obsessions": {
-        "title": "Obsessions",
-        "subtitle": "recurring returns across contexts and years",
-        "glyph": "spiral",
-        "query": (
-            "Which recurring themes have I returned to across the most "
-            "contexts and years? Rank by depth of return, not raw "
-            "frequency. Cite provenance from the wiki. Format as a "
-            "table with columns: theme · first surfaced · last touched · "
-            "why it keeps coming back."
-        ),
-    },
-    "aphorisms": {
-        "title": "Aphorisms",
-        "subtitle": "compressed lines that keep re-earning shelf space",
-        "glyph": "quote",
-        "query": (
-            "From my wiki and thread exports, extract the most "
-            "compressed lines I have written or endorsed — the ones "
-            "that function as aphorisms in my own idiom. Prefer lines I "
-            "have referenced more than once. Group by domain (design, "
-            "training, epistemics, relationships)."
-        ),
-    },
-    "ideas": {
-        "title": "Ideas",
-        "subtitle": "propositions I have not yet built or refuted",
-        "glyph": "lightbulb",
-        "query": (
-            "List propositions I have floated but not yet built or "
-            "refuted — genuine ideas, not tasks. For each, cite where I "
-            "first raised it and where I most recently returned to it. "
-            "Flag any that have gone cold for more than 90 days."
-        ),
-    },
-    "expertise": {
-        "title": "Expertise",
-        "subtitle": "domains where the substrate carries real depth",
-        "glyph": "book",
-        "query": (
-            "Which domains has my substrate accumulated genuine depth in "
-            "— versus surface familiarity? Ground each claim in the "
-            "number and specificity of episodes, not word count. "
-            "Distinguish 'thinks about' from 'has practiced'."
-        ),
-    },
-}
+# NOTE: The four canned-query panels (obsessions / aphorisms / ideas /
+# expertise) were removed on 2026-08-06 — same over-taxonomy Fable
+# rejected, dressed as UI tabs instead of files. The bottom ASK bar
+# covers those asks on demand; Brian types the question himself.
+# Only three panels remain: TENSIONS (parsed from wiki.md), USER MODEL
+# (rendered from USER_MODEL.md), SUBSTRATE (real metrics).
 
 
 def _file_bytes(path: Path) -> int:
@@ -255,7 +209,6 @@ def build_state() -> dict:
             "mtime": _file_mtime(USER_MODEL_MD),
             "bytes": _file_bytes(USER_MODEL_MD),
         },
-        "queries": CANNED_QUERIES,
         "substrate": {
             "wiki_bytes": _file_bytes(WIKI_MD),
             "wiki_mtime": _file_mtime(WIKI_MD),

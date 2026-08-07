@@ -5,12 +5,16 @@ cockpit; matches the enterprise-brain reference (cream ground, dark
 ink, faint pink accents, delicate serif titling). The state dict from
 ``build_state()`` is embedded as ``window.__INSPECTOR__`` and the page
 renders entirely from that — no network calls beyond the
-``/ask/stream`` EventSource on the canned-query panels.
+``/ask/stream`` EventSource used by the bottom ASK bar.
 
 Deliberate design choices, so future edits stay honest to the brief:
 
   * The Inspector never asks the user to act. Every panel is a
     read-only lens on what MIKAI has noticed.
+  * Only three panels — TENSIONS, USER MODEL, SUBSTRATE — each backed
+    by real, parsed data. The over-taxonomy of canned-query panels
+    (obsessions / aphorisms / ideas / expertise) was deleted: the
+    bottom ASK bar covers those asks without dressing them as tabs.
   * The bottom bar reuses the cockpit's ask contract exactly — same
     endpoint, same event shape — so we do not fork the streaming
     surface for a second UI.
@@ -155,7 +159,19 @@ _TEMPLATE = r"""<!doctype html>
   }
 
   /* ── content ────────────────────────────────────────────────── */
+  /* #content-wrap is a grid item; give it a definite height and
+     min-height:0 so its scrollable child can actually shrink and
+     scroll (grid items default to min-height:auto → content size,
+     which is the classic "scroll doesn't work" bug). */
+  #content-wrap{
+    position:relative;
+    overflow:hidden;
+    height:100%;
+    min-height:0;
+  }
   #content{
+    position:absolute;
+    inset:0;
     overflow-y:auto;
     padding:36px 44px 60px;
   }
@@ -258,45 +274,6 @@ _TEMPLATE = r"""<!doctype html>
     font-family:var(--mono);font-size:10px;letter-spacing:.14em;
     color:var(--faint);
   }
-
-  /* ── query panel ────────────────────────────────────────────── */
-  .q-wrap{max-width:820px;display:flex;flex-direction:column;gap:12px}
-  .q-shell{
-    display:flex;flex-direction:column;gap:10px;
-    background:var(--card);border:1px solid var(--rule);border-radius:2px;
-    padding:14px 16px;
-  }
-  .q-textarea{
-    width:100%;min-height:82px;
-    background:transparent;border:none;outline:none;resize:vertical;
-    font-family:var(--serif);font-size:15px;line-height:1.55;color:var(--ink);
-  }
-  .q-actions{display:flex;align-items:center;gap:10px}
-  .q-run{
-    padding:6px 16px;border:1px solid var(--ink);
-    font-family:var(--mono);font-size:10px;letter-spacing:.22em;
-    text-transform:uppercase;color:var(--ink);
-    background:var(--ground);
-  }
-  .q-run:hover{background:var(--ink);color:var(--ground)}
-  .q-regen{
-    font-family:var(--mono);font-size:9.5px;letter-spacing:.18em;
-    text-transform:uppercase;color:var(--faint);
-    text-decoration:underline;text-decoration-color:var(--pink-soft);
-  }
-  .q-cache-note{
-    margin-left:auto;
-    font-family:var(--mono);font-size:9px;letter-spacing:.16em;
-    color:var(--faint);text-transform:uppercase;
-  }
-  .q-answer{
-    background:var(--card);border:1px solid var(--rule);
-    padding:20px 24px;font-family:var(--serif);font-size:15px;
-    line-height:1.7;color:var(--ink);
-    white-space:pre-wrap;
-    min-height:120px;
-  }
-  .q-answer.empty{color:var(--faint);font-style:italic}
 
   /* ── substrate panel ────────────────────────────────────────── */
   .stat-grid{
@@ -402,7 +379,7 @@ _TEMPLATE = r"""<!doctype html>
     <div class="hint">Diagnostic surface — for tuning, not for acting.</div>
   </nav>
 
-  <section id="content-wrap" style="position:relative;overflow:hidden">
+  <section id="content-wrap">
     <div id="content" role="main"></div>
     <div id="ask-overlay" aria-live="polite">
       <div class="oh">
@@ -429,13 +406,13 @@ window.__INSPECTOR__ = __STATE__;
               || "http://localhost:8210/ask/stream";
 
   // ── panel registry ────────────────────────────────────────────
+  // Only three panels — each backed by real, parsed data. The
+  // over-taxonomy of canned-query panels (obsessions / aphorisms /
+  // ideas / expertise) was deleted; the bottom ASK bar covers those
+  // asks without dressing them as tabs.
   var PANELS = [
     {id:"tensions",  label:"Tensions",  glyph:svgGlyph("dot")},
     {id:"user",      label:"User Model",glyph:svgGlyph("book")},
-    {id:"obsessions",label:"Obsessions",glyph:svgGlyph("spiral")},
-    {id:"aphorisms", label:"Aphorisms", glyph:svgGlyph("quote")},
-    {id:"ideas",     label:"Ideas",     glyph:svgGlyph("bulb")},
-    {id:"expertise", label:"Expertise", glyph:svgGlyph("book")},
     {id:"substrate", label:"Substrate", glyph:svgGlyph("hex")},
   ];
 
@@ -444,12 +421,9 @@ window.__INSPECTOR__ = __STATE__;
     var c = 'fill="currentColor"';
     var base = '<svg viewBox="0 0 14 14" width="14" height="14" xmlns="http://www.w3.org/2000/svg">';
     var shapes = {
-      dot   : '<circle cx="7" cy="7" r="4" '+c+'/>',
-      book  : '<rect x="3" y="2.5" width="8" height="9" rx="0.7" '+c+'/><rect x="6.6" y="2.5" width="0.6" height="9" fill="#F4F1EA"/>',
-      spiral: '<path d="M7 2c-2.5 0-4 2-4 4s2 3.5 4 3.5 3-1.5 3-3-1-2.5-2.5-2.5S5 5.2 5 6.5 6 8 7 8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>',
-      quote : '<path d="M3.5 4h3v3l-1.5 3H3.5V7h1.5V5.5h-1.5zM8 4h3v3l-1.5 3H8V7h1.5V5.5H8z" '+c+'/>',
-      bulb  : '<path d="M7 2.4a3.4 3.4 0 013.4 3.4c0 1.3-.7 2.3-1.6 2.9v1.1H5.2V8.7c-.9-.6-1.6-1.6-1.6-2.9A3.4 3.4 0 017 2.4z" '+c+'/><rect x="5.4" y="10.4" width="3.2" height="1" rx="0.4" '+c+'/><rect x="5.8" y="11.7" width="2.4" height="0.7" rx="0.3" '+c+'/>',
-      hex   : '<path d="M7 2.2l4 2.3v4.6l-4 2.3-4-2.3V4.5z" '+c+'/>',
+      dot : '<circle cx="7" cy="7" r="4" '+c+'/>',
+      book: '<rect x="3" y="2.5" width="8" height="9" rx="0.7" '+c+'/><rect x="6.6" y="2.5" width="0.6" height="9" fill="#F4F1EA"/>',
+      hex : '<path d="M7 2.2l4 2.3v4.6l-4 2.3-4-2.3V4.5z" '+c+'/>',
     };
     return base + (shapes[kind]||shapes.dot) + '</svg>';
   }
@@ -482,8 +456,6 @@ window.__INSPECTOR__ = __STATE__;
   });
 
   // ── panel selection ───────────────────────────────────────────
-  var CACHE_PREFIX = "mikai.inspector.answer.";
-  var CACHE_TS = "mikai.inspector.ts.";
   var current = "tensions";
   function selectPanel(id){
     current = id;
@@ -500,7 +472,8 @@ window.__INSPECTOR__ = __STATE__;
     if (id === "tensions") return renderTensions(c);
     if (id === "user")     return renderUserModel(c);
     if (id === "substrate")return renderSubstrate(c);
-    return renderQueryPanel(c, id);
+    // Unknown panel id (should not happen — rail is closed vocabulary)
+    c.innerHTML = "<div class='panel-header'><div class='h'>—</div></div>";
   }
 
   // ── TENSIONS ──────────────────────────────────────────────────
@@ -566,73 +539,6 @@ window.__INSPECTOR__ = __STATE__;
     foot.textContent = "compiled by dream-weekly at " +
         (um.mtime||"—") + " · regenerate via `make user-model`";
     c.appendChild(foot);
-  }
-
-  // ── CANNED QUERY PANEL ────────────────────────────────────────
-  function renderQueryPanel(c, id){
-    var q = (STATE.queries||{})[id];
-    if (!q){
-      c.innerHTML = "<div class='panel-header'><div class='h'>—</div></div>";
-      return;
-    }
-    var header = document.createElement("div");
-    header.className = "panel-header";
-    header.innerHTML =
-      '<div class="h">'+esc(q.title)+'</div>'+
-      '<div class="sub">'+esc(q.subtitle||"")+'</div>';
-    c.appendChild(header);
-
-    var wrap = document.createElement("div"); wrap.className="q-wrap";
-    var shell = document.createElement("div"); shell.className="q-shell";
-    var ta = document.createElement("textarea");
-    ta.className = "q-textarea";
-    ta.value = q.query;
-    shell.appendChild(ta);
-
-    var actions = document.createElement("div"); actions.className="q-actions";
-    var runBtn = document.createElement("button");
-    runBtn.className="q-run"; runBtn.textContent="Run";
-    actions.appendChild(runBtn);
-    var regen = document.createElement("button");
-    regen.className="q-regen"; regen.textContent="regenerate";
-    actions.appendChild(regen);
-    var cacheNote = document.createElement("span");
-    cacheNote.className="q-cache-note";
-    actions.appendChild(cacheNote);
-    shell.appendChild(actions);
-    wrap.appendChild(shell);
-
-    var ans = document.createElement("div");
-    ans.className="q-answer empty";
-    ans.textContent = "not run yet — press Run.";
-    wrap.appendChild(ans);
-    c.appendChild(wrap);
-
-    // hydrate from localStorage
-    var cached = localStorage.getItem(CACHE_PREFIX + id);
-    var cachedTs = localStorage.getItem(CACHE_TS + id);
-    if (cached){
-      ans.classList.remove("empty");
-      ans.textContent = cached;
-      cacheNote.textContent = "cached · " + (cachedTs||"—");
-    }
-
-    function run(){
-      ans.classList.remove("empty");
-      ans.textContent = "";
-      cacheNote.textContent = "streaming…";
-      streamAsk(ta.value, function(chunk){
-        ans.textContent += chunk;
-      }, function(err){
-        if (err){ ans.textContent += "\n\n[stream error: "+err+"]"; }
-        var ts = new Date().toISOString().slice(0,19).replace("T"," ");
-        localStorage.setItem(CACHE_PREFIX+id, ans.textContent);
-        localStorage.setItem(CACHE_TS+id, ts);
-        cacheNote.textContent = "cached · " + ts;
-      });
-    }
-    runBtn.addEventListener("click", run);
-    regen.addEventListener("click", run);
   }
 
   // ── SUBSTRATE ─────────────────────────────────────────────────

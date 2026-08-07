@@ -4,9 +4,10 @@ Points ``MIKAI_BRAIN_ROOT`` at a tempdir before importing the inspector
 modules so nothing under ``~/.mikai`` is touched. Verifies:
 
   * build_state() produces the expected shape (tensions, user_model,
-    substrate, canned queries),
+    substrate),
   * write_outputs() creates both files,
-  * embedded JSON in inspector.html is valid + contains our data.
+  * embedded JSON in inspector.html is valid + contains our data,
+  * the deleted canned-query panels stay deleted (regression guard).
 """
 
 from __future__ import annotations
@@ -92,10 +93,10 @@ class BuildOutputsTests(unittest.TestCase):
         self.assertEqual(st["tensions_count"], 2)
         self.assertGreater(len(st["user_model"]["text"]), 0)
         self.assertIn("substrate", st)
-        # canned queries populated
-        for key in ("obsessions", "aphorisms", "ideas", "expertise"):
-            self.assertIn(key, st["queries"])
-            self.assertTrue(st["queries"][key]["query"].strip())
+        # The four canned-query panels are gone — regression guard so
+        # they don't sneak back in as UI tabs (they belong in the ASK
+        # bar, not as pre-taxonomized panels).
+        self.assertNotIn("queries", st)
         # substrate has the expected keys
         for key in ("wiki_bytes", "thread_count", "entity_count",
                     "tensions_count", "attention_last"):
@@ -124,8 +125,11 @@ class BuildOutputsTests(unittest.TestCase):
         embedded = json.loads(m.group(1))
         self.assertEqual(embedded["tensions_count"], 2)
         self.assertIn("Fixture A", embedded["tensions"][0]["title"])
-        # canned queries survived the round-trip
-        self.assertIn("obsessions", embedded["queries"])
+        # canned-query panels are gone — page must not carry them
+        self.assertNotIn("queries", embedded)
+        # HTML rail must NOT reference the deleted panels
+        for gone in ("Obsessions", "Aphorisms", "Ideas", "Expertise"):
+            self.assertNotIn(gone, html)
 
 
 if __name__ == "__main__":
