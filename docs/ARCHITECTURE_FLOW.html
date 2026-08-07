@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MIKAI — Architecture Flow</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=Archivo:wght@400;500;600&family=IBM+Plex+Mono:ital,wght@0,400;0,500;1,400&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ground:#faf7f0; --panel:#fdfbf6; --ink:#2b2723; --ink-soft:#57504a;
+    --ink-faint:#8a8378; --line:#c9c2b4; --line-soft:#e2dccd;
+    --pink:#d98fa0; --pink-faint:#eec3cd;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--ground);color:var(--ink);font-family:'Newsreader',serif;
+       -webkit-font-smoothing:antialiased;line-height:1.55}
+  .page{max-width:1160px;margin:0 auto;padding:56px 32px 96px}
+  .kicker{font-family:'Archivo',sans-serif;font-size:11px;letter-spacing:.32em;
+          text-transform:uppercase;color:var(--ink-faint);margin-bottom:10px}
+  h1{font-weight:500;font-size:34px;letter-spacing:.02em;margin-bottom:6px}
+  .dek{font-style:italic;color:var(--ink-soft);font-size:16px;max-width:60ch}
+  .rule{border:0;border-top:1px solid var(--line);margin:36px 0 28px}
+  .sechead{font-family:'Archivo',sans-serif;font-size:11px;letter-spacing:.28em;
+           text-transform:uppercase;color:var(--ink-soft);margin:0 0 18px}
+  .sechead .no{color:var(--pink);margin-right:.8em}
+  .diagram-wrap{background:var(--panel);border:1px solid var(--line-soft);
+                border-radius:4px;padding:18px 10px;overflow-x:auto}
+  .diagram-wrap svg{display:block;margin:0 auto;min-width:980px}
+
+  /* SVG text classes */
+  .band{font-family:'Archivo',sans-serif;font-size:10.5px;letter-spacing:.26em;
+        text-transform:uppercase;fill:var(--ink-faint)}
+  .nname{font-family:'Newsreader',serif;font-size:14.5px;letter-spacing:.07em;
+         fill:var(--ink)}
+  .nname-sm{font-family:'Newsreader',serif;font-size:12.5px;letter-spacing:.06em;
+            fill:var(--ink)}
+  .nsub{font-family:'IBM Plex Mono',monospace;font-size:8.8px;fill:var(--ink-faint)}
+  .elab{font-family:'IBM Plex Mono',monospace;font-size:8.8px;font-style:italic;
+        fill:var(--ink-soft)}
+  .ghost{opacity:.45}
+
+  /* prose */
+  .prose{max-width:72ch;font-size:16.5px}
+  .prose p{margin-bottom:14px}
+  .prose strong{font-weight:500}
+  .legend{list-style:none;margin:0 0 8px}
+  .legend li{margin-bottom:10px;padding-left:26px;position:relative}
+  .legend li::before{content:"";position:absolute;left:2px;top:.62em;width:12px;
+        height:1px;background:var(--ink)}
+  .legend li::after{content:"";position:absolute;left:6px;top:.5em;width:5px;height:5px;
+        border-radius:50%;background:var(--pink)}
+  .legend .k{font-family:'Archivo',sans-serif;font-size:12px;letter-spacing:.14em;
+        text-transform:uppercase;color:var(--ink-soft);margin-right:.5em}
+  .audit{list-style:none}
+  .audit>li{margin-bottom:18px;padding-left:0}
+  .audit .head{font-family:'Archivo',sans-serif;font-size:13px;letter-spacing:.05em;
+        margin-bottom:2px}
+  .verdict{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.12em;
+        padding:1px 7px;border:1px solid var(--line);border-radius:2px;margin-left:.6em}
+  .v-keep{color:#4a6b52;border-color:#a9bfae}
+  .v-collapse{color:#8a6a2f;border-color:#cdb98a}
+  .v-delete{color:#9c4a5a;border-color:var(--pink-faint);background:#f9eef1}
+  .top3{background:var(--panel);border:1px solid var(--line-soft);border-radius:4px;
+        padding:22px 26px;margin-top:26px}
+  .top3 ol{margin-left:20px}
+  .top3 li{margin-bottom:8px}
+  .mono{font-family:'IBM Plex Mono',monospace;font-size:.85em}
+  footer{margin-top:56px;font-family:'IBM Plex Mono',monospace;font-size:10px;
+        color:var(--ink-faint);letter-spacing:.08em}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="kicker">MIKAI &nbsp;·&nbsp; system portrait</div>
+  <h1>Architecture Flow</h1>
+  <p class="dek">How data moves from raw capture to action — ingestion, substrate, dream derivations, task-state awareness, surfaces, executors — with the write-back rail that closes the loop.</p>
+
+  <hr class="rule">
+  <div class="sechead"><span class="no">01</span>Data-flow diagram</div>
+
+  <div class="diagram-wrap">
+  <svg viewBox="0 0 1120 1010" width="1120" height="1010" role="img"
+       aria-label="MIKAI data-flow diagram: ingestion sources feed the wiki substrate; dream derives narrative, ontology and user model; L4 brain modules read derivations; surfaces and executors consume L4; the ledger collects write-backs.">
+    <defs>
+      <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+        <path d="M0.5,0.8 L7.2,4 L0.5,7.2" fill="none" stroke="#57504a" stroke-width="1"/>
+      </marker>
+      <marker id="arrp" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+        <path d="M0.5,0.8 L7.2,4 L0.5,7.2" fill="none" stroke="#d98fa0" stroke-width="1.1"/>
+      </marker>
+    </defs>
+
+    <!-- ══ band guides ══ -->
+    <g stroke="#e2dccd" stroke-width="1" stroke-dasharray="1 5">
+      <line x1="150" y1="128" x2="1100" y2="128"/>
+      <line x1="150" y1="392" x2="1100" y2="392"/>
+      <line x1="150" y1="618" x2="1100" y2="618"/>
+      <line x1="150" y1="768" x2="1100" y2="768"/>
+      <line x1="150" y1="898" x2="1100" y2="898"/>
+    </g>
+
+    <!-- ══ BAND LABELS ══ -->
+    <text class="band" x="160" y="40">Ingestion — L1</text>
+    <text class="band" x="160" y="150">Substrate — L3 · Retrieval — L2</text>
+    <text class="band" x="160" y="414">Task-state awareness — L4</text>
+    <text class="band" x="160" y="640">Surfaces</text>
+    <text class="band" x="160" y="790">Executors — L5</text>
+    <text class="band" x="160" y="920">Ledger rail</text>
+
+    <!-- ══ LEFT SIDEBAR: mikai_llm ══ -->
+    <g>
+      <rect x="18" y="150" width="112" height="740" fill="none" stroke="#c9c2b4" stroke-width="1" rx="3"/>
+      <text class="band" x="74" y="176" text-anchor="middle" style="letter-spacing:.18em">Cross-cut</text>
+      <circle cx="40" cy="205" r="3.5" fill="#2b2723"/>
+      <text class="nname-sm" x="52" y="209">mikai_llm</text>
+      <text class="nsub" x="34" y="228">.chat(tier=</text>
+      <text class="nsub" x="34" y="241">"interactive" |</text>
+      <text class="nsub" x="34" y="254">"background")</text>
+      <text class="nsub" x="34" y="278" fill="#8a8378">provider shim —</text>
+      <text class="nsub" x="34" y="291" fill="#8a8378">every LLM call in</text>
+      <text class="nsub" x="34" y="304" fill="#8a8378">dream, brain,</text>
+      <text class="nsub" x="34" y="317" fill="#8a8378">exec, planners,</text>
+      <text class="nsub" x="34" y="330" fill="#8a8378">ask routes here</text>
+      <g stroke="#c9c2b4" stroke-width="1" stroke-dasharray="3 4">
+        <line x1="130" y1="300" x2="238" y2="300"/>
+        <line x1="130" y1="480" x2="200" y2="480"/>
+        <line x1="130" y1="700" x2="196" y2="700"/>
+        <line x1="130" y1="836" x2="230" y2="836"/>
+      </g>
+    </g>
+
+    <!-- ══ BAND 1 · INGESTION ══ -->
+    <g>
+      <g fill="#2b2723">
+        <circle cx="255" cy="66" r="3.5"/><circle cx="415" cy="66" r="3.5"/>
+        <circle cx="590" cy="66" r="3.5"/><circle cx="755" cy="66" r="3.5"/>
+        <circle cx="890" cy="66" r="3.5"/><circle cx="1020" cy="66" r="3.5"/>
+      </g>
+      <text class="nname-sm" x="255" y="55" text-anchor="middle">Apple Notes</text>
+      <text class="nname-sm" x="415" y="55" text-anchor="middle">iMessage</text>
+      <text class="nname-sm" x="590" y="55" text-anchor="middle">Claude threads</text>
+      <text class="nname-sm" x="755" y="55" text-anchor="middle">Perplexity</text>
+      <text class="nname-sm" x="890" y="55" text-anchor="middle">Gmail</text>
+      <text class="nname-sm" x="1020" y="55" text-anchor="middle">drop folder</text>
+      <text class="nsub" x="255" y="82" text-anchor="middle">watcher</text>
+      <text class="nsub" x="415" y="82" text-anchor="middle">watcher</text>
+      <text class="nsub" x="590" y="82" text-anchor="middle">daily pull</text>
+      <text class="nsub" x="755" y="82" text-anchor="middle">export</text>
+      <text class="nsub" x="890" y="82" text-anchor="middle">poll</text>
+      <text class="nsub" x="1020" y="82" text-anchor="middle">manual</text>
+      <!-- converge -->
+      <g stroke="#57504a" stroke-width="1" fill="none" marker-end="url(#arr)">
+        <path d="M255,90 C255,112 500,100 545,116"/>
+        <path d="M415,90 C415,108 520,106 549,119"/>
+        <path d="M590,90 L578,114"/>
+        <path d="M755,90 C755,108 640,106 605,119"/>
+        <path d="M890,90 C890,114 660,102 609,116"/>
+        <path d="M1020,90 C1020,118 690,104 613,114"/>
+      </g>
+      <circle cx="577" cy="103" r="2.6" fill="#d98fa0"/>
+      <text class="elab" x="640" y="103">raw episodes → ingestEpisode()</text>
+    </g>
+
+    <!-- ══ BAND 2 · L3 / L2 ══ -->
+    <g>
+      <!-- WikiAdapter port -->
+      <rect x="470" y="168" width="216" height="46" fill="none" stroke="#2b2723" stroke-width="1" rx="3"/>
+      <circle cx="488" cy="185" r="3.5" fill="#2b2723"/>
+      <text class="nname" x="500" y="190">WikiAdapter</text>
+      <text class="nsub" x="500" y="205">L3Backend port · default</text>
+      <!-- Graphiti ghost -->
+      <g class="ghost">
+        <rect x="252" y="168" width="170" height="46" fill="none" stroke="#8a8378" stroke-width="1" stroke-dasharray="4 3" rx="3"/>
+        <text class="nname-sm" x="268" y="190">GraphitiAdapter</text>
+        <text class="nsub" x="268" y="204">frozen · Neo4j sidecar</text>
+        <line x1="422" y1="191" x2="470" y2="191" stroke="#8a8378" stroke-width="1" stroke-dasharray="2 4"/>
+      </g>
+      <line x1="578" y1="214" x2="578" y2="238" stroke="#57504a" stroke-width="1" marker-end="url(#arr)"/>
+      <circle cx="578" cy="226" r="2.6" fill="#d98fa0"/>
+      <text class="elab" x="592" y="231">verbatim append</text>
+
+      <!-- wiki.md -->
+      <rect x="452" y="240" width="252" height="62" fill="#fdfbf6" stroke="#2b2723" stroke-width="1.4" rx="3"/>
+      <circle cx="474" cy="263" r="4" fill="#2b2723"/>
+      <text class="nname" x="488" y="268" style="font-size:17px">wiki.md</text>
+      <text class="nsub" x="488" y="285">27 MB verbatim substrate · ~/.mikai/wiki/</text>
+
+      <!-- L2 retrieval -->
+      <rect x="790" y="240" width="200" height="62" fill="none" stroke="#57504a" stroke-width="1" rx="3"/>
+      <circle cx="808" cy="260" r="3.5" fill="#2b2723"/>
+      <text class="nname-sm" x="820" y="264">WikiFTS · WikiIndex</text>
+      <text class="nsub" x="820" y="279">SQLite BM25 · offset table</text>
+      <text class="nsub" x="820" y="292">embeddings deferred</text>
+      <path d="M704,264 L790,264" stroke="#57504a" stroke-width="1" marker-end="url(#arr)"/>
+      <path d="M790,282 L704,282" stroke="#57504a" stroke-width="1" marker-end="url(#arr)"/>
+      <circle cx="747" cy="264" r="2.6" fill="#d98fa0"/>
+      <text class="elab" x="712" y="256">index / snippets</text>
+
+      <!-- dream box -->
+      <rect x="200" y="238" width="216" height="112" fill="none" stroke="#57504a" stroke-width="1" rx="3"/>
+      <circle cx="218" cy="258" r="3.5" fill="#2b2723"/>
+      <text class="nname" x="230" y="262">dream_bootstrap</text>
+      <text class="nsub" x="218" y="281">nightly 03:00 — narrative (incr.)</text>
+      <text class="nsub" x="218" y="295">weekly Sun — ontology · user-model</text>
+      <text class="nsub" x="218" y="309">monthly 1st — compact</text>
+      <text class="nsub" x="218" y="329" fill="#8a8378">launchd: dream-nightly /</text>
+      <text class="nsub" x="218" y="341" fill="#8a8378">-weekly / -monthly</text>
+      <path d="M452,262 L416,262" stroke="#57504a" stroke-width="1" marker-end="url(#arr)"/>
+      <circle cx="434" cy="262" r="2.6" fill="#d98fa0"/>
+      <text class="elab" x="304" y="230" text-anchor="middle">reads full corpus</text>
+
+      <!-- derived pages -->
+      <rect x="240" y="366" width="180" height="44" fill="none" stroke="#57504a" stroke-width="1" rx="3"/>
+      <circle cx="256" cy="384" r="3.5" fill="#2b2723"/>
+      <text class="nname-sm" x="268" y="388">wiki-narrative.md</text>
+      <text class="nsub" x="268" y="402">30-day roll-up</text>
+      <rect x="452" y="366" width="180" height="44" fill="none" stroke="#57504a" stroke-width="1" rx="3"/>
+      <circle cx="468" cy="384" r="3.5" fill="#2b2723"/>
+      <text class="nname-sm" x="480" y="388">wiki-ontology.md</text>
+      <text class="nsub" x="480" y="402">375 entities</text>
+      <g stroke="#57504a" stroke-width="1" fill="none" marker-end="url(#arr)">
+        <path d="M300,350 L322,366"/>
+        <path d="M400,350 C440,356 490,358 516,366"/>
+      </g>
+      <circle cx="330" cy="358" r="2.6" fill="#d98fa0"/>
+      <circle cx="480" cy="358" r="2.6" fill="#d98fa0"/>
+      <text class="elab" x="640" y="362">writes derived pages</text>
+    </g>
+
+    <!-- ══ BAND 3 · L4 BRAIN ══ -->
+    <g>
+      <rect x="200" y="430" width="790" height="170" fill="#fdfbf6" stroke="#c9c2b4" stroke-width="1" rx="4"/>
+      <text class="nsub" x="976" y="448" text-anchor="end" fill="#8a8378">~/.mikai/brain/</text>
+
+      <!-- state files row -->
+      <circle cx="238" cy="472" r="3.5" fill="#2b2723"/>
+      <text class="nname-sm" x="250" y="476">threads/*.md</text>
+      <text class="nsub" x="250" y="490">state · next_step · log</text>
+      <circle cx="418" cy="472" r="3.5" fill="#2b2723"/>
+      <text class="nname-sm" x="430" y="476">entities/*.md</text>
+      <text class="nsub" x="430" y="490">curated · 1 file / thing</text>
+      <circle cx="592" cy="472" r="3.5" fill="#2b2723"/>
+      <text class="nname-sm" x="604" y="476">USER_MODEL.md</text>
+      <text class="nsub" x="604" y="490">2-section discipline</text>
+      <circle cx="778" cy="472" r="3.5" fill="#2b2723"/>
+      <text class="nname-sm" x="790" y="476">inbox/</text>
+      <text class="nsub" x="790" y="490">proposals → Brian triage</text>
+      <circle cx="880" cy="472" r="3.5" fill="#2b2723"/>
+      <text class="nname-sm" x="892" y="476">decisions/</text>
+      <text class="nsub" x="892" y="490">LOG.md</text>
+
+      <!-- module row -->
+      <circle cx="238" cy="546" r="3.5" fill="#2b2723"/>
+      <text class="nname-sm" x="250" y="550">standup</text>
+      <text class="nsub" x="250" y="564">daily digest</text>
+      <circle cx="368" cy="546" r="3.5" fill="#2b2723"/>
+      <text class="nname-sm" x="380" y="550">hydrator</text>
+      <text class="nsub" x="380" y="564">entity proposals</text>
+      <circle cx="516" cy="546" r="3.5" fill="#2b2723"/>
+      <text class="nname-sm" x="528" y="550">latent-threads</text>
+      <text class="nsub" x="528" y="564">thread proposals</text>
+      <circle cx="676" cy="546" r="3.5" fill="#2b2723"/>
+      <text class="nname-sm" x="688" y="550">consolidate</text>
+      <text class="nsub" x="688" y="564">weekly priorities</text>
+      <circle cx="836" cy="546" r="3.5" fill="#2b2723"/>
+      <text class="nname-sm" x="848" y="550">triage · health</text>
+      <text class="nsub" x="848" y="564">inbox apply · 08:15</text>
+
+      <!-- proposal arrows inside band -->
+      <g stroke="#8a8378" stroke-width="1" fill="none" marker-end="url(#arr)" stroke-dasharray="2 3">
+        <path d="M420,540 C500,516 700,500 776,482"/>
+        <path d="M570,540 C660,522 730,506 780,486"/>
+      </g>
+
+      <!-- derived pages → L4 -->
+      <g stroke="#57504a" stroke-width="1" fill="none" marker-end="url(#arr)">
+        <path d="M330,410 L330,458 L360,536"/>
+        <path d="M542,410 L542,534"/>
+        <path d="M600,410 C620,420 640,440 648,458"/>
+      </g>
+      <circle cx="330" cy="436" r="2.6" fill="#d98fa0"/>
+      <circle cx="542" cy="428" r="2.6" fill="#d98fa0"/>
+      <circle cx="626" cy="432" r="2.6" fill="#d98fa0"/>
+      <text class="elab" x="654" y="428">weekly compile</text>
+
+      <!-- user activity in -->
+      <path d="M990,540 C1030,540 1040,500 1040,470 C1040,440 1030,420 1010,406" stroke="#d98fa0" stroke-width="1" fill="none"/>
+      <path d="M1040,470 L990,500" stroke="#d98fa0" stroke-width="1" fill="none" marker-end="url(#arrp)"/>
+      <text class="elab" x="1006" y="396" text-anchor="middle" fill="#b76a7d">Brian:</text>
+      <text class="elab" x="1006" y="384" text-anchor="middle" fill="#b76a7d">approvals · logs</text>
+    </g>
+
+    <!-- ══ BAND 4 · SURFACES ══ -->
+    <g>
+      <circle cx="248" cy="686" r="3.5" fill="#2b2723"/>
+      <text class="nname-sm" x="260" y="690">cockpit.html</text>
+      <text class="nsub" x="260" y="704">constellation · operator</text>
+      <circle cx="428" cy="686" r="3.5" fill="#2b2723"/>
+      <text class="nname-sm" x="440" y="690">inspector.html</text>
+      <text class="nsub" x="440" y="704">diagnostic</text>
+      <circle cx="576" cy="686" r="3.5" fill="#2b2723"/>
+      <text class="nname-sm" x="588" y="690">surfacing.html</text>
+      <text class="nsub" x="588" y="704">text-first L4 view</text>
+      <circle cx="736" cy="686" r="3.5" fill="#2b2723"/>
+      <text class="nname-sm" x="748" y="690">mikai_ask</text>
+      <text class="nsub" x="748" y="704">streaming ask</text>
+      <circle cx="878" cy="686" r="3.5" fill="#2b2723"/>
+      <text class="nname-sm" x="890" y="690">Attention Engine</text>
+      <text class="nsub" x="890" y="704">mikai_decide → ntfy push</text>
+
+      <!-- L4 → surfaces -->
+      <g stroke="#57504a" stroke-width="1" fill="none" marker-end="url(#arr)">
+        <path d="M290,600 L268,676"/>
+        <path d="M450,600 L442,676"/>
+        <path d="M590,600 L588,676"/>
+        <path d="M750,600 L748,676"/>
+        <path d="M900,600 L892,676"/>
+      </g>
+      <circle cx="278" cy="640" r="2.6" fill="#d98fa0"/>
+      <circle cx="446" cy="640" r="2.6" fill="#d98fa0"/>
+      <circle cx="589" cy="640" r="2.6" fill="#d98fa0"/>
+      <circle cx="749" cy="640" r="2.6" fill="#d98fa0"/>
+      <circle cx="896" cy="640" r="2.6" fill="#d98fa0"/>
+      <text class="elab" x="960" y="644">attention-owed ranking ·</text>
+      <text class="elab" x="960" y="656">delta strip · thread text</text>
+      <!-- L2 snippets to ask -->
+      <path d="M890,302 C900,420 812,560 756,676" stroke="#c9c2b4" stroke-width="1" fill="none" stroke-dasharray="2 4" marker-end="url(#arr)"/>
+      <text class="elab" x="836" y="596" fill="#8a8378">BM25 snippets</text>
+    </g>
+
+    <!-- ══ BAND 5 · EXECUTORS ══ -->
+    <g>
+      <circle cx="330" cy="828" r="3.5" fill="#2b2723"/>
+      <text class="nname-sm" x="342" y="832">mikai_exec</text>
+      <text class="nsub" x="342" y="846">email · calendar · note · message · shell · code</text>
+      <circle cx="690" cy="828" r="3.5" fill="#2b2723"/>
+      <text class="nname-sm" x="702" y="832">calendar_planner</text>
+      <text class="nsub" x="702" y="846">CalDAV proposals · approve/reject</text>
+      <g class="ghost">
+        <circle cx="920" cy="828" r="3" fill="#8a8378"/>
+        <text class="nname-sm" x="930" y="832" fill="#8a8378">week_planner · mikai_shell</text>
+        <text class="nsub" x="930" y="846">fold-in candidates §03</text>
+      </g>
+      <!-- surfaces → executors, approval gated -->
+      <g stroke="#57504a" stroke-width="1" fill="none" marker-end="url(#arr)">
+        <path d="M300,712 C310,752 322,786 332,816"/>
+        <path d="M890,712 C860,752 740,790 706,818"/>
+      </g>
+      <circle cx="318" cy="766" r="2.6" fill="#d98fa0"/>
+      <circle cx="800" cy="762" r="2.6" fill="#d98fa0"/>
+      <text class="elab" x="404" y="770">approved actions only —</text>
+      <text class="elab" x="404" y="782">consent gate (ntfy tap / dialog)</text>
+    </g>
+
+    <!-- ══ LEDGER RAIL ══ -->
+    <g>
+      <rect x="200" y="936" width="790" height="52" fill="none" stroke="#2b2723" stroke-width="1" rx="3"/>
+      <circle cx="222" cy="957" r="3.5" fill="#2b2723"/>
+      <text class="nname-sm" x="234" y="961">ledger</text>
+      <text class="nsub" x="234" y="975">progress.jsonl · delivery_events.jsonl (Sumimasen)</text>
+      <text class="nsub" x="976" y="966" text-anchor="end" fill="#8a8378">"an action that leaves no trace never happened"</text>
+      <g stroke="#57504a" stroke-width="1" fill="none" marker-end="url(#arr)">
+        <path d="M340,852 L360,936"/>
+        <path d="M700,852 L680,936"/>
+        <path d="M912,712 C960,790 940,880 906,936"/>
+      </g>
+      <circle cx="350" cy="894" r="2.6" fill="#d98fa0"/>
+      <circle cx="690" cy="894" r="2.6" fill="#d98fa0"/>
+      <circle cx="936" cy="850" r="2.6" fill="#d98fa0"/>
+      <text class="elab" x="500" y="906">write-backs: every run logged</text>
+      <text class="elab" x="948" y="906">delivery events</text>
+    </g>
+  </svg>
+  </div>
+
+  <hr class="rule">
+  <div class="sechead"><span class="no">02</span>Legend — the five arrows that matter</div>
+  <div class="prose">
+    <ul class="legend">
+      <li><span class="k">Ingestion → substrate</span> Watchers, pollers, and the drop folder converge on one write path — <span class="mono">ingestEpisode()</span> through the WikiAdapter — appending verbatim episodes to <span class="mono">wiki.md</span>, never summarizing at capture time.</li>
+      <li><span class="k">Substrate → dream</span> The dream crons are the only readers of the full 27&thinsp;MB corpus: nightly narrative, weekly ontology + user-model, monthly compact — compression happens asleep, on a schedule, not at query time.</li>
+      <li><span class="k">Derivations → L4</span> The brain never reads raw wiki; hydrator and latent-threads read the ontology (filtered by USER_MODEL) and write <em>proposals</em> to the inbox — Brian's triage is the only path into <span class="mono">threads/</span> and <span class="mono">entities/</span>.</li>
+      <li><span class="k">L4 → surfaces</span> Cockpit, inspector, surfacing, ask, and the Attention Engine all render the same brain state — one attention-owed ranking, five presentations (pull portraits and one Sumimasen-gated push).</li>
+      <li><span class="k">L4 → executors</span> Nothing executes without an explicit approval tap; every executed action writes back to the ledger and its thread log, so action becomes tomorrow's substrate.</li>
+    </ul>
+    <p>Pink dots mark data in motion; dashed strokes mark proposals and frozen paths. The <span class="mono">mikai_llm</span> shim sits beside everything: all LLM calls, both tiers, one provider seam.</p>
+  </div>
+
+  <hr class="rule">
+  <div class="sechead"><span class="no">03</span>Where the architecture can be simplified</div>
+  <div class="prose">
+    <ul class="audit">
+      <li>
+        <div class="head">week_planner vs calendar_planner <span class="verdict v-collapse">COLLAPSE</span></div>
+        (a) Two CalDAV writers: calendar_planner fills today's editable blocks; week_planner overrides five recurring instances. (b) Nothing — week_planner's own docstring says "once this proves the mechanism, the logic folds into calendar_planner." (c) The code already voted; execute the fold, delete the file and its launchd runner.
+      </li>
+      <li>
+        <div class="head">mikai_shell organize <span class="verdict v-delete">DELETE</span></div>
+        (a) The "organize my desktop" scenario with rollback journal. (b) Almost nothing: <span class="mono">progress.jsonl</span> shows zero <span class="mono">mode="shell"</span> runs, ever, and <span class="mono">mikai_exec</span> already has a <span class="mono">shell</span> action type covering the same ground. (c) Salvage <span class="mono">rollback.py</span> as a library; delete the rest.
+      </li>
+      <li>
+        <div class="head">mikai_exec action types <span class="verdict v-collapse">COLLAPSE</span></div>
+        (a) Seven policies plus a <span class="mono">browse</span> stub that errors out ("Playwright not installed"). (b) The ledger shows zero <span class="mono">exec</span> runs; the real personal loop is message + note + calendar + email. (c) Keep those four, delete <span class="mono">browse</span> outright, park <span class="mono">drive/shell/code</span> until a ledger entry proves demand. Fewer channels, same port shape (HARNESS_ARCHITECTURE: global tools stay generic).
+      </li>
+      <li>
+        <div class="head">GraphitiAdapter <span class="verdict v-delete">DELETE (after decoupling)</span></div>
+        (a) Frozen Neo4j/sidecar stack — 822&thinsp;MB of <span class="mono">infra/graphiti/</span>, docker-compose still in launchd. (b) The catch: it isn't actually dead. <span class="mono">mikai_decide</span> still queries <span class="mono">:8100</span> and reads stale <span class="mono">wiki-ontology-v1.md</span>, and <span class="mono">dream_bootstrap.py</span> lives inside that directory. (c) Relocate dream, re-point the decider (below), then delete the tree; GRAPHITI_FREEZE_ROLLBACK.md is the museum plaque — git history is the museum.
+      </li>
+      <li>
+        <div class="head">Attention Engine vs cockpit attention head <span class="verdict v-collapse">COLLAPSE the scoring</span></div>
+        (a) Two salience computations: cockpit's <span class="mono">score_attention_owed()</span> ranks <span class="mono">brain/threads</span>; mikai_decide ranks Graphiti search hits + old ontology. (b) Push vs pull are genuinely different jobs — but the <em>ranking</em> shouldn't be, and today the push channel reasons from a frozen substrate. (c) One scorer (cockpit's), two deliveries; the Engine keeps only what's uniquely its own — the Sumimasen delivery-cost gate.
+      </li>
+      <li>
+        <div class="head">decisions/LOG.md <span class="verdict v-collapse">COLLAPSE</span></div>
+        (a) Numbered D-op decisions, 66 lines, 4 entries. (b) Zero inbound references from any thread file — nothing navigates by D-op number. (c) Append decisions to the owning thread's log; delete the standalone file.
+      </li>
+      <li>
+        <div class="head">Three surfaces · entities/ · narrative + ontology <span class="verdict v-keep">KEEP</span></div>
+        Cockpit/inspector/surfacing serve different consumers (operator portrait, diagnostic, raw text — COCKPIT_ORGANIZATION_TRADEOFF's portrait-not-dashboard argument holds); revisit only if inspector and surfacing converge on shared panels. <span class="mono">entities/</span> is four curated files powering ENTANGLED-WITH edges and hydrator dedup — costs nothing. Both dream pages have machine consumers (ontology → hydrator/latent-threads; narrative → user_model/tensions), so neither is "one prompt away." Hydrator and latent-threads propose different objects through one inbox; merge their crons, not their code.
+      </li>
+    </ul>
+
+    <div class="top3">
+      <div class="sechead" style="margin-bottom:12px">Top 3 — what to actually cut this month</div>
+      <ol>
+        <li><strong>Re-point the Attention Engine at brain + current ontology, reusing cockpit's scorer.</strong> Kills the last live Graphiti dependency and the stale-substrate drift in every push notification.</li>
+        <li><strong>Delete <span class="mono">infra/graphiti/</span></strong> (after relocating <span class="mono">dream_bootstrap</span>): −822&thinsp;MB, −1 docker stack, −1 sidecar to health-check.</li>
+        <li><strong>Fold week_planner into calendar_planner; delete mikai_shell organize and the browse stub.</strong> Pure deadweight by the code's own admission and an empty ledger.</li>
+      </ol>
+    </div>
+  </div>
+
+  <footer>MIKAI · docs/ARCHITECTURE_FLOW.html · generated 2026-08 · evidence: progress.jsonl mode counts, infra/* docstrings, launchd inventory</footer>
+</div>
+</body>
+</html>
