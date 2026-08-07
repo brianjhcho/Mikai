@@ -4,7 +4,7 @@
 
 PY := python3
 
-.PHONY: standup standup-dry triage triage-no-llm consolidate-dry consolidate consolidate-brain-md test test-writeback test-exec smoke cockpit install-consolidate-cron install-dream-crons install-health-check act act-dry ask ask-dry test-ask
+.PHONY: standup standup-dry triage triage-no-llm consolidate-dry consolidate consolidate-brain-md test test-writeback test-exec smoke cockpit surfacing surfacing-dry install-consolidate-cron install-dream-crons install-health-check act act-dry ask ask-dry test-ask
 
 standup:
 	$(PY) -m infra.mikai_brain.standup
@@ -46,6 +46,17 @@ test-writeback:
 cockpit:
 	$(PY) -m infra.mikai_brain.standup --quiet
 	$(PY) -m infra.cockpit.main
+	$(PY) -m infra.surfacing.main
+
+# Text-first "what L4 is surfacing right now" view. Piggybacks on the
+# cockpit's data collection (same departments/scoring) — regenerating is
+# cheap, so `make cockpit` rebuilds this too. Standalone target skips the
+# standup heartbeat for a quick refresh.
+surfacing:
+	$(PY) -m infra.surfacing.main
+
+surfacing-dry:
+	$(PY) -m infra.surfacing.main --dry-run
 
 # Copy runner + plist into ~/Library/Application Support/mikai/launchd/
 # and launchctl load. Idempotent: unloads first if already installed.
