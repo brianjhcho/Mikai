@@ -6,6 +6,26 @@ window.__DASHBOARD__ (T1 snapshot); on load the page attempts
 fetch('./state/dashboard.json') and re-renders if newer (T2).
 No polling — refresh happens on page load and on the manual reload
 button only.
+
+Layout (2026-08-06 refactor, ref: Alassafi enterprise-brain):
+  ┌ topbar ──────────────────────────────────────────────────────┐
+  │ MIKAI · MAP                                    [loud|all]    │
+  ├─────────────┬────────────────────────────────────────────────┤
+  │             │                                                │
+  │  detail     │        full-height constellation               │
+  │  panel      │        (right pane)                            │
+  │  (persistent│                                                │
+  │   ~380px)   │                                                │
+  │             │                                                │
+  │             │             ┌ ask bar ┐                       │
+  │             │             └─────────┘  ⟳ as of 12:34        │
+  └─────────────┴────────────────────────────────────────────────┘
+
+The detail panel is always visible. Default state shows the attention
+head + delta strip + "hover a node for details" hint. Hovering a node
+(or clicking a hub, center) fills the panel with structured chip-based
+fields for the selected item. Escape or clicking empty stage returns
+the panel to its default state.
 """
 
 from __future__ import annotations
@@ -23,7 +43,7 @@ _TEMPLATE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Second Brain — cockpit</title>
+<title>MIKAI — cockpit</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600&family=IBM+Plex+Mono:ital,wght@0,400;0,500;1,400&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400;1,6..72,500&display=swap" rel="stylesheet">
@@ -31,8 +51,10 @@ _TEMPLATE = r"""<!doctype html>
   :root{
     --ground0:#06080D; --ground1:#0A0F1A;
     --ink:#ECEEF2; --faint:#7B8790; --rule:#22282F;
-    --warm:#E4A776;
+    --warm:#E4A776; --cool:#5EBFA9;
     --panel:#0B111Bf2;
+    --panel-w:380px;
+    --topbar-h:44px;
     --serif:"Newsreader",Georgia,serif;
     --sans:"Archivo",system-ui,sans-serif;
     --mono:"IBM Plex Mono",ui-monospace,monospace;
@@ -40,55 +62,213 @@ _TEMPLATE = r"""<!doctype html>
   *{box-sizing:border-box;margin:0;padding:0}
   html,body{height:100%}
   body{
-    background:radial-gradient(120% 90% at 50% 38%, var(--ground1) 0%, var(--ground0) 78%);
+    background:radial-gradient(120% 90% at 62% 42%, var(--ground1) 0%, var(--ground0) 78%);
     color:var(--ink); font-family:var(--serif);
     overflow:hidden;
   }
   button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
   button:focus-visible{outline:1px solid var(--warm);outline-offset:3px;border-radius:2px}
 
-  /* faint star grain */
-  #grain{position:fixed;inset:0;pointer-events:none;opacity:.5}
+  /* faint star grain — over stage only, not under the panel */
+  #grain{
+    position:fixed;top:var(--topbar-h);left:var(--panel-w);right:0;bottom:0;
+    pointer-events:none;opacity:.45;z-index:1;
+  }
 
-  /* ── chrome ── */
-  header{
-    position:fixed;top:0;left:0;right:0;z-index:30;
-    display:flex;align-items:baseline;justify-content:space-between;
-    padding:22px 28px 0;pointer-events:none;
+  /* ── top bar ────────────────────────────────────────────────── */
+  #topbar{
+    position:fixed;top:0;left:0;right:0;height:var(--topbar-h);z-index:50;
+    display:flex;align-items:center;justify-content:space-between;
+    padding:0 22px;
+    border-bottom:1px solid var(--rule);
+    background:rgba(6,8,13,.72);
+    backdrop-filter:blur(10px);
   }
-  .masthead .kicker{
-    font-family:var(--sans);font-size:12px;font-weight:600;
-    letter-spacing:.34em;text-transform:uppercase;
+  #topbar .brand{display:flex;align-items:baseline;gap:14px}
+  #topbar .wordmark{
+    font-family:var(--sans);font-weight:600;font-size:12px;
+    letter-spacing:.42em;text-transform:uppercase;color:var(--ink);
   }
-  .masthead .tagline{
-    font-family:var(--serif);font-style:italic;font-size:13px;
-    color:var(--faint);margin-top:4px;
-  }
-  #reload{
-    pointer-events:auto;display:flex;align-items:center;gap:8px;
-    font-family:var(--mono);font-size:10px;letter-spacing:.12em;
+  #topbar .wordmark .dot{color:var(--warm);margin-left:2px}
+  #topbar .nav{
+    display:flex;gap:18px;
+    font-family:var(--mono);font-size:9.5px;letter-spacing:.2em;
     text-transform:uppercase;color:var(--faint);
-    border:1px solid var(--rule);border-radius:999px;padding:7px 14px;
+  }
+  #topbar .nav span{padding:4px 0;border-bottom:1px solid transparent}
+  #topbar .nav span.on{color:var(--ink);border-bottom-color:var(--warm)}
+  #salience-toggle{
+    display:inline-flex;gap:2px;font-family:var(--mono);font-size:9px;
+    letter-spacing:.14em;text-transform:uppercase;color:var(--faint);
+    border:1px solid var(--rule);border-radius:999px;padding:2px;
+    background:rgba(11,17,27,.55);
+  }
+  #salience-toggle button{
+    padding:4px 10px;border-radius:999px;color:var(--faint);
+    transition:color .2s,background .2s;
+  }
+  #salience-toggle button:hover{color:var(--ink)}
+  #salience-toggle button.on{color:var(--ink);background:rgba(228,167,118,.14)}
+
+  /* ── detail panel (left, persistent) ────────────────────────── */
+  #panel{
+    position:fixed;top:var(--topbar-h);left:0;bottom:0;width:var(--panel-w);z-index:40;
+    background:var(--panel);border-right:1px solid var(--rule);
+    backdrop-filter:blur(10px);
+    padding:26px 24px 30px;overflow-y:auto;
+    scrollbar-width:thin;scrollbar-color:var(--rule) transparent;
+  }
+  #panel::-webkit-scrollbar{width:6px}
+  #panel::-webkit-scrollbar-thumb{background:var(--rule);border-radius:3px}
+  #panel-body[hidden]{display:none}
+  #panel-default[hidden]{display:none}
+
+  .eyebrow{
+    font-family:var(--mono);font-size:8.5px;letter-spacing:.24em;
+    text-transform:uppercase;color:var(--faint);margin:22px 0 8px;
+  }
+  .eyebrow:first-child{margin-top:0}
+  #panel h2{
+    font-family:var(--serif);font-weight:500;font-style:italic;
+    font-size:24px;line-height:1.2;letter-spacing:-.005em;
+    text-wrap:balance;margin:6px 0 14px;
+  }
+  #panel h2.hub{
+    font-style:normal;font-size:20px;letter-spacing:.16em;
+    text-transform:uppercase;font-weight:500;
+  }
+  #panel h2 em{font-style:italic}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:4px}
+  .chip{
+    font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;
+    border:1px solid var(--rule);border-radius:999px;padding:3.5px 9px;color:var(--faint);
+    white-space:nowrap;
+  }
+  .chip.tint{border-color:color-mix(in srgb,currentColor 45%,transparent);color:currentColor}
+  .chip.warm{border-color:#E4A77666;color:var(--warm)}
+  .chip.cool{border-color:#5EBFA966;color:var(--cool)}
+  #panel p{font-size:14px;line-height:1.55;color:var(--ink)}
+  #panel p.soft{color:var(--faint);font-size:13px}
+  #panel p.next{
+    font-family:var(--serif);font-style:italic;font-size:15.5px;line-height:1.5;
+    color:var(--ink);margin:2px 0 4px;
+  }
+  #panel .log{list-style:none;border-left:1px solid var(--rule);padding-left:14px;
+    display:flex;flex-direction:column;gap:9px}
+  #panel .log li{font-family:var(--mono);font-size:10.5px;line-height:1.5;color:var(--faint)}
+  #panel .log li b{color:var(--ink);font-weight:500}
+  #panel .reason{
+    border-left:2px solid var(--warm);padding:2px 0 2px 12px;
+    font-style:italic;color:var(--ink);font-size:13.5px;line-height:1.5;
+  }
+  #panel .stat{font-family:var(--mono);font-size:11px;color:var(--ink);line-height:1.7}
+  #panel .stat b{font-size:20px;font-weight:500}
+  #panel hr{border:0;border-top:1px solid var(--rule);margin:18px 0 0}
+
+  /* do-next card — the one operator affordance; deliberately modest */
+  #panel .donext{
+    border:1px solid color-mix(in srgb,var(--warm) 28%,var(--rule));
+    border-radius:8px;padding:13px 15px 12px;margin:14px 0 2px;
+    background:rgba(228,167,118,.045);
+  }
+  #panel .donext .eyebrow{margin-top:0}
+  #panel .donext p.step{font-size:15.5px;line-height:1.45;margin:2px 0 11px;font-family:var(--serif);font-style:italic}
+  #panel .did-it{
+    font-family:var(--mono);font-size:9px;letter-spacing:.14em;text-transform:uppercase;
+    border:1px solid #E4A77666;border-radius:999px;padding:5px 12px;color:var(--warm);
     transition:color .2s,border-color .2s;
   }
-  #reload:hover{color:var(--ink);border-color:var(--faint)}
-  #reload svg{width:11px;height:11px}
-  #reload.spin svg{animation:spin .7s linear}
-  @keyframes spin{to{transform:rotate(360deg)}}
-
-  footer{
-    position:fixed;bottom:0;left:0;right:0;z-index:30;
-    display:flex;align-items:center;justify-content:space-between;gap:16px;
-    padding:0 28px 18px;pointer-events:none;
-    font-family:var(--mono);font-size:9.5px;color:var(--faint);
-    letter-spacing:.06em;
+  #panel .did-it:hover{color:var(--ink);border-color:var(--warm)}
+  #panel .did-it.queued{
+    border-color:var(--rule);color:var(--faint);cursor:default;
+    text-transform:none;letter-spacing:.03em;
   }
-  #legend{display:flex;gap:14px;flex-wrap:wrap}
-  #legend span{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
-  .lg{width:7px;height:7px;border-radius:50%;flex:none}
+  #panel .did-hint{font-family:var(--mono);font-size:8.5px;color:var(--faint);
+    letter-spacing:.04em;margin-top:8px;line-height:1.5}
 
-  /* ── constellation stage ── */
-  #stage{position:fixed;inset:0}
+  /* timeline micro-strip */
+  #panel .tl{display:block;width:100%;height:auto;margin-top:2px}
+
+  /* log show-older toggle */
+  #panel .log-toggle{
+    font-family:var(--mono);font-size:8.5px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--faint);margin:9px 0 0 15px;padding:2px 0;
+    border-bottom:1px dotted var(--rule);transition:color .2s;
+  }
+  #panel .log-toggle:hover{color:var(--ink)}
+  #panel .log.older{margin-top:9px}
+
+  /* linked decisions & entangled list */
+  #panel .dec{list-style:none;display:flex;flex-direction:column;gap:8px}
+  #panel .dec li{font-size:12.5px;line-height:1.5;color:var(--faint)}
+  #panel .dec li b{font-family:var(--mono);font-size:10px;color:var(--ink);font-weight:500}
+
+  /* ── default panel: attention head + delta strip ─────────────
+     The parallel Opus's attention/delta feed lives here, rendered
+     as a vertical stack inside the persistent panel. The rendering
+     functions still target #attnhead and #deltastrip verbatim; only
+     the CSS layout differs from a floating pill. */
+  #attnhead{
+    display:block;padding:14px 16px 13px;margin:6px 0 12px;
+    border:1px solid var(--rule);border-radius:8px;
+    background:rgba(11,17,27,.55);cursor:pointer;
+    transition:border-color .2s,background .2s;
+  }
+  #attnhead:hover{border-color:color-mix(in srgb,var(--warm) 30%,var(--rule));background:rgba(228,167,118,.045)}
+  #attnhead[hidden]{display:none}
+  #attnhead .caret{
+    display:inline-block;font-family:var(--mono);font-size:10px;color:var(--warm);
+    letter-spacing:.16em;text-transform:uppercase;margin-bottom:6px;
+  }
+  #attnhead .title{
+    display:block;font-family:var(--serif);font-style:italic;font-weight:500;
+    font-size:17px;line-height:1.35;letter-spacing:0;text-transform:none;
+    color:var(--ink);margin:2px 0 6px;
+  }
+  #attnhead .meta{
+    display:inline-block;font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;
+    color:var(--faint);text-transform:uppercase;
+  }
+  #attnhead .next{
+    display:block;font-family:var(--serif);font-size:13.5px;line-height:1.5;
+    color:var(--ink);margin-top:8px;font-style:normal;letter-spacing:0;
+  }
+  #attnhead[data-mood="warm"] .caret{color:var(--warm)}
+  #attnhead[data-mood="cool"] .caret{color:var(--cool)}
+  #attnhead[data-mood="muted"]{opacity:.72}
+  #attnhead[data-mood="muted"] .caret,
+  #attnhead[data-mood="muted"] .title{color:var(--faint)}
+  #attnhead[data-quiet="1"]{cursor:default}
+  #attnhead[data-quiet="1"]:hover{border-color:var(--rule);background:rgba(11,17,27,.55)}
+
+  #deltastrip{
+    display:flex;flex-direction:column;gap:6px;margin:8px 0 4px;
+    font-family:var(--mono);font-size:10.5px;line-height:1.5;color:var(--faint);
+  }
+  #deltastrip[hidden]{display:none}
+  #deltastrip .lbl{
+    font-family:var(--mono);font-size:8.5px;letter-spacing:.24em;
+    text-transform:uppercase;color:var(--faint);margin-bottom:2px;
+  }
+  #deltastrip .sep{display:none}
+  #deltastrip .item{
+    display:block;padding-left:10px;border-left:1px solid var(--rule);
+    color:var(--faint);cursor:pointer;transition:color .2s,border-left-color .2s;
+  }
+  #deltastrip .item:hover{color:var(--ink);border-left-color:var(--warm)}
+  #deltastrip .item b{font-weight:500;color:var(--ink)}
+
+  #panel .hint{
+    font-family:var(--mono);font-size:9.5px;letter-spacing:.06em;
+    color:var(--faint);margin-top:22px;padding-top:16px;
+    border-top:1px dotted var(--rule);line-height:1.6;
+  }
+
+  /* ── constellation stage (right pane) ───────────────────────── */
+  #stage{
+    position:fixed;top:var(--topbar-h);left:var(--panel-w);right:0;bottom:0;
+    z-index:2;
+  }
   #wires{position:absolute;inset:0;width:100%;height:100%}
 
   .hub{position:absolute;transform:translate(-50%,-50%);text-align:center;z-index:5;width:150px}
@@ -107,17 +287,17 @@ _TEMPLATE = r"""<!doctype html>
   .hub[data-tier="secondary"] .icon svg{width:14px;height:14px}
   .hub .name{
     display:block;margin-top:10px;
-    font-family:var(--serif);font-weight:500;font-size:17px;
-    letter-spacing:.22em;text-transform:uppercase;
+    font-family:var(--serif);font-weight:500;font-size:16px;
+    letter-spacing:.24em;text-transform:uppercase;
   }
   .hub[data-tier="secondary"] .name,.hub[data-tier="misc"] .name{
-    font-size:12.5px;letter-spacing:.26em;color:var(--faint);
+    font-size:12px;letter-spacing:.26em;color:var(--faint);
   }
   .hub[data-tier="misc"] .name{font-style:italic;text-transform:none;letter-spacing:.12em}
   .hub .sub{
     display:block;margin-top:4px;
-    font-family:var(--mono);font-size:8.5px;letter-spacing:.08em;
-    color:var(--faint);opacity:.85;
+    font-family:var(--mono);font-size:8.5px;letter-spacing:.1em;
+    color:var(--faint);opacity:.85;text-transform:uppercase;
   }
 
   /* center */
@@ -133,11 +313,11 @@ _TEMPLATE = r"""<!doctype html>
   #center .icon svg{width:26px;height:26px}
   #center .name{
     display:block;margin-top:11px;font-family:var(--sans);font-weight:600;
-    font-size:13px;letter-spacing:.4em;text-transform:uppercase;text-indent:.4em;
+    font-size:12.5px;letter-spacing:.42em;text-transform:uppercase;text-indent:.42em;
   }
   #center .sub{
     display:block;margin-top:3px;font-family:var(--serif);font-style:italic;
-    font-size:12px;color:var(--faint);
+    font-size:11.5px;color:var(--faint);
   }
 
   /* sub-nodes (threads) */
@@ -180,6 +360,14 @@ _TEMPLATE = r"""<!doctype html>
   .node:hover .lbl,.node:focus-visible .lbl{color:var(--ink)}
   .node.flip{flex-direction:row-reverse}
 
+  /* salience: dim = scenery, loud = default styling */
+  .node.dim .dot{opacity:.35;filter:saturate(.35)}
+  .node.dim .lbl{opacity:.4}
+  .node.dim .over{opacity:.5}
+  .node.dim[data-state="acting"] .dot::after{opacity:0;animation:none}
+  #stage.loud-only .node:not(.loud){display:none}
+  #stage.loud-only #wires line{opacity:.3}
+
   /* ── entity edges (ENTANGLED WITH) ──
      hidden until a node with shared entities is hovered/focused */
   #entity-edges path{
@@ -187,104 +375,21 @@ _TEMPLATE = r"""<!doctype html>
     opacity:0;transition:opacity .3s;
   }
   #entity-edges circle{fill:var(--warm);opacity:0;transition:opacity .3s}
-  #entity-edges path.on{opacity:.25}
-  #entity-edges circle.on{opacity:.65}
+  #entity-edges path.on{opacity:.28}
+  #entity-edges circle.on{opacity:.7}
   .hub,#center,.node{transition:opacity .3s}
   #stage.entangled .hub,#stage.entangled #center,
   #stage.entangled .node:not(.lit){opacity:.4}
 
-  /* ── detail panel (left) ── */
-  #panel{
-    position:fixed;top:0;left:0;bottom:0;width:min(360px,88vw);z-index:40;
-    background:var(--panel);border-right:1px solid var(--rule);
-    backdrop-filter:blur(8px);
-    transform:translateX(-102%);transition:transform .32s cubic-bezier(.3,.8,.3,1);
-    padding:30px 26px;overflow-y:auto;
-  }
-  #panel.open{transform:translateX(0)}
-  #panel .close{
-    position:absolute;top:16px;right:14px;color:var(--faint);
-    font-family:var(--mono);font-size:11px;padding:6px;
-  }
-  #panel .close:hover{color:var(--ink)}
-  .eyebrow{
-    font-family:var(--mono);font-size:8.5px;letter-spacing:.22em;
-    text-transform:uppercase;color:var(--faint);margin:20px 0 6px;
-  }
-  .eyebrow:first-of-type{margin-top:0}
-  #panel h2{
-    font-family:var(--serif);font-weight:500;font-size:23px;line-height:1.2;
-    text-wrap:balance;margin:4px 0 12px;
-  }
-  #panel h2 em{font-style:italic}
-  .chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px}
-  .chip{
-    font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;
-    border:1px solid var(--rule);border-radius:999px;padding:3.5px 9px;color:var(--faint);
-  }
-  .chip.tint{border-color:color-mix(in srgb,currentColor 45%,transparent);color:currentColor}
-  .chip.warm{border-color:#E4A77666;color:var(--warm)}
-  #panel p{font-size:14px;line-height:1.55;color:var(--ink)}
-  #panel p.soft{color:var(--faint);font-size:13px}
-  #panel .log{list-style:none;border-left:1px solid var(--rule);padding-left:14px;
-    display:flex;flex-direction:column;gap:9px}
-  #panel .log li{font-family:var(--mono);font-size:10.5px;line-height:1.5;color:var(--faint)}
-  #panel .log li b{color:var(--ink);font-weight:500}
-  #panel .reason{
-    border-left:2px solid var(--warm);padding:2px 0 2px 12px;
-    font-style:italic;color:var(--ink);font-size:13.5px;line-height:1.5;
-  }
-  #panel .stat{font-family:var(--mono);font-size:11px;color:var(--ink);line-height:1.7}
-  #panel .stat b{font-size:20px;font-weight:500}
-  #panel hr{border:0;border-top:1px solid var(--rule);margin:18px 0 0}
-
-  /* do-next card — the one operator affordance; deliberately modest */
-  #panel .donext{
-    border:1px solid color-mix(in srgb,var(--warm) 28%,var(--rule));
-    border-radius:10px;padding:13px 15px 12px;margin:16px 0 2px;
-    background:rgba(228,167,118,.045);
-  }
-  #panel .donext .eyebrow{margin-top:0}
-  #panel .donext p.step{font-size:16px;line-height:1.45;margin:2px 0 11px}
-  #panel .did-it{
-    font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;
-    border:1px solid #E4A77666;border-radius:999px;padding:5px 12px;color:var(--warm);
-    transition:color .2s,border-color .2s;
-  }
-  #panel .did-it:hover{color:var(--ink);border-color:var(--warm)}
-  #panel .did-it.queued{
-    border-color:var(--rule);color:var(--faint);cursor:default;
-    text-transform:none;letter-spacing:.03em;
-  }
-  #panel .did-hint{font-family:var(--mono);font-size:8.5px;color:var(--faint);
-    letter-spacing:.04em;margin-top:8px;line-height:1.5}
-
-  /* timeline micro-strip */
-  #panel .tl{display:block;width:100%;height:auto;margin-top:2px}
-
-  /* log show-older toggle */
-  #panel .log-toggle{
-    font-family:var(--mono);font-size:8.5px;letter-spacing:.12em;text-transform:uppercase;
-    color:var(--faint);margin:9px 0 0 15px;padding:2px 0;
-    border-bottom:1px dotted var(--rule);transition:color .2s;
-  }
-  #panel .log-toggle:hover{color:var(--ink)}
-  #panel .log.older{margin-top:9px}
-
-  /* linked decisions */
-  #panel .dec{list-style:none;display:flex;flex-direction:column;gap:8px}
-  #panel .dec li{font-size:12.5px;line-height:1.5;color:var(--faint)}
-  #panel .dec li b{font-family:var(--mono);font-size:10px;color:var(--ink);font-weight:500}
-
-  /* ── ask bar (bottom of constellation) ── */
+  /* ── ask bar (bottom of stage) ──────────────────────────────── */
   #askbar{
-    position:fixed;left:50%;transform:translateX(-50%);bottom:54px;z-index:35;
-    width:min(560px,92vw);
+    position:fixed;left:calc(var(--panel-w) + 32px);right:220px;bottom:22px;z-index:35;
+    max-width:640px;
   }
   #askform{
     display:flex;align-items:center;gap:8px;
     border:1px solid var(--rule);border-radius:999px;
-    background:rgba(11,17,27,.78);backdrop-filter:blur(8px);
+    background:rgba(11,17,27,.82);backdrop-filter:blur(10px);
     padding:6px 8px 6px 18px;transition:border-color .2s;
   }
   #askform:focus-within{border-color:var(--faint)}
@@ -330,14 +435,46 @@ _TEMPLATE = r"""<!doctype html>
     font-size:13.5px;line-height:1.5;
   }
 
-  /* ── mobile: stacked cards ── */
+  /* ── bottom-right micro-controls (stamp + refresh) ─────────── */
+  #corner{
+    position:fixed;bottom:22px;right:22px;z-index:35;
+    display:flex;align-items:center;gap:10px;
+    font-family:var(--mono);font-size:9px;letter-spacing:.08em;
+    color:var(--faint);
+  }
+  #corner #stamp{white-space:nowrap}
+  #reload{
+    display:inline-flex;align-items:center;gap:6px;
+    font-family:var(--mono);font-size:9px;letter-spacing:.14em;
+    text-transform:uppercase;color:var(--faint);
+    border:1px solid var(--rule);border-radius:999px;padding:5px 10px;
+    transition:color .2s,border-color .2s;
+    background:rgba(11,17,27,.6);backdrop-filter:blur(6px);
+  }
+  #reload:hover{color:var(--ink);border-color:var(--faint)}
+  #reload svg{width:10px;height:10px}
+  #reload.spin svg{animation:spin .7s linear}
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  /* legend kept for a11y but off-screen — the constellation is
+     largely self-explanatory once you know the primitives, and the
+     footer chrome competed with the map. */
+  #legend{position:fixed;left:-9999px;top:0}
+
+  /* ── mobile: stacked cards ──────────────────────────────────── */
   #cards{display:none}
   @media (max-width:899px){
+    :root{--panel-w:100%}
     body{overflow:auto}
+    #grain{display:none}
     #stage{display:none}
-    header{position:static;padding:22px 20px 0}
-    footer{position:static;padding:14px 20px 32px;flex-direction:column;align-items:flex-start;gap:10px}
-    #cards{display:flex;flex-direction:column;gap:14px;padding:26px 20px 8px;max-width:640px;margin:0 auto}
+    #topbar{padding:0 16px}
+    #topbar .nav{display:none}
+    #panel{
+      position:static;width:100%;border-right:none;border-bottom:1px solid var(--rule);
+      padding:22px 20px;max-height:none;
+    }
+    #cards{display:flex;flex-direction:column;gap:14px;padding:20px 20px 8px;max-width:640px;margin:0 auto}
     .card{border:1px solid var(--rule);border-radius:10px;padding:16px 18px;background:rgba(11,17,27,.6)}
     .card .head{display:flex;align-items:center;gap:12px;width:100%;text-align:left}
     .card .icon{width:32px;height:32px;border-radius:50%;border:1px solid;flex:none;
@@ -352,12 +489,12 @@ _TEMPLATE = r"""<!doctype html>
       overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:none}
     .card .row .days{font-family:var(--mono);font-size:9px;color:var(--faint)}
     .node-inline{position:static;transform:none}
-    #askbar{position:static;transform:none;width:auto;max-width:640px;margin:18px auto 0;padding:0 20px}
+    #askbar{position:static;left:0;right:0;width:auto;max-width:640px;margin:18px auto 12px;padding:0 20px}
+    #corner{position:static;justify-content:flex-end;padding:6px 20px 22px}
   }
 
   @media (prefers-reduced-motion:reduce){
     .node[data-state="acting"] .dot::after{animation:none;display:none}
-    #panel{transition:none}
     #reload.spin svg{animation:none}
     #askload{animation:none}
     #entity-edges path,#entity-edges circle,.hub,#center,.node{transition:none}
@@ -367,17 +504,28 @@ _TEMPLATE = r"""<!doctype html>
 <body>
 <canvas id="grain" aria-hidden="true"></canvas>
 
-<header>
-  <div class="masthead">
-    <div class="kicker">Second Brain</div>
-    <div class="tagline">a constellation of what is actually in motion</div>
+<div id="topbar">
+  <div class="brand">
+    <div class="wordmark">MIKAI<span class="dot">·</span></div>
+    <nav class="nav" aria-label="Views (map only shipped)">
+      <span class="on">Map</span>
+    </nav>
   </div>
-  <button id="reload" type="button" aria-label="Refresh from latest snapshot">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
-      <path d="M20 12a8 8 0 1 1-2.3-5.6M20 3v4h-4"/></svg>
-    <span>refresh</span>
-  </button>
-</header>
+  <div id="salience-toggle" role="group" aria-label="Salience mode">
+    <button type="button" data-mode="show-all" class="on">show all</button>
+    <button type="button" data-mode="loud-only">loud only</button>
+  </div>
+</div>
+
+<aside id="panel" role="region" aria-live="polite" aria-label="Detail panel">
+  <div id="panel-default">
+    <div class="eyebrow">attention</div>
+    <div id="attnhead" role="button" tabindex="0" hidden></div>
+    <div id="deltastrip" hidden></div>
+    <p class="hint">hover a node for details · escape returns here · ask below</p>
+  </div>
+  <div id="panel-body" hidden></div>
+</aside>
 
 <div id="stage" role="application" aria-label="Life constellation">
   <svg id="wires" aria-hidden="true"></svg>
@@ -397,15 +545,16 @@ _TEMPLATE = r"""<!doctype html>
   </div>
 </div>
 
-<aside id="panel" role="region" aria-live="polite" aria-label="Detail panel">
-  <button class="close" type="button" aria-label="Close panel">esc ✕</button>
-  <div id="panel-body"></div>
-</aside>
+<div id="corner">
+  <span id="stamp"></span>
+  <button id="reload" type="button" aria-label="Refresh from latest snapshot">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+      <path d="M20 12a8 8 0 1 1-2.3-5.6M20 3v4h-4"/></svg>
+    <span>refresh</span>
+  </button>
+</div>
 
-<footer>
-  <div id="legend" aria-hidden="true"></div>
-  <div id="stamp"></div>
-</footer>
+<div id="legend" aria-hidden="true"></div>
 
 <script>window.__DASHBOARD__ = __DASH_JSON__;</script>
 <script>
@@ -417,6 +566,7 @@ var TINT = {
   misc:"#7B8790"
 };
 var WARM = "#E4A776";
+var COOL = "#5EBFA9";
 var GLYPH = {
   ai_work:'<path d="M8 5l-5 7 5 7M16 5l5 7-5 7"/>',
   body:'<path d="M12 4v7M12 11c-2 1-5 3-5 7M12 11c2 1 5 3 5 7"/>',
@@ -438,6 +588,10 @@ var wires = document.getElementById("wires");
 var cards = document.getElementById("cards");
 var panel = document.getElementById("panel");
 var panelBody = document.getElementById("panel-body");
+var panelDefault = document.getElementById("panel-default");
+
+// current panel mode: "default" | "detail"
+var panelMode = "default";
 
 function h(tag, cls, html){
   var e = document.createElement(tag);
@@ -456,17 +610,28 @@ function iconSVG(g){
 function tintOf(id){ return TINT[id] || TINT.misc; }
 
 /* ── panel ─────────────────────────────────────────────────────────── */
-function openPanel(html){ panelBody.innerHTML = html; panel.classList.add("open"); }
-function closePanel(){ panel.classList.remove("open"); }
-panel.querySelector(".close").addEventListener("click", closePanel);
-document.addEventListener("keydown", function(e){ if (e.key === "Escape") closePanel(); });
-// Click anywhere that isn't the panel itself or a panel-opening control
-// dismisses the panel. Hover-open, click-outside-close. Openers (nodes,
-// hubs, center, mobile cards) are excluded so their click still means
-// "open/refresh", and the reload button stays a reload.
+// The panel is persistent. openPanel/closePanel swap between the
+// default view (attention head + delta strip) and the detail view.
+function openPanel(html){
+  panelBody.innerHTML = html;
+  panelBody.hidden = false;
+  panelDefault.hidden = true;
+  panel.scrollTop = 0;
+  panelMode = "detail";
+}
+function closePanel(){
+  panelBody.hidden = true;
+  panelDefault.hidden = false;
+  panelMode = "default";
+}
+document.addEventListener("keydown", function(e){
+  if (e.key === "Escape" && panelMode !== "default") closePanel();
+});
+// Click on empty stage returns to default. The panel itself, any
+// opener, ask bar, reload, and top bar keep their meanings.
 document.addEventListener("click", function(e){
-  if (!panel.classList.contains("open")) return;
-  if (e.target.closest("#panel, .node, .hub, #center, .card, #reload, #askbar")) return;
+  if (panelMode === "default") return;
+  if (e.target.closest("#panel, .node, .hub, #center, .card, #reload, #askbar, #topbar")) return;
   closePanel();
 });
 
@@ -493,9 +658,6 @@ function logHTML(lines){
   }
   return html;
 }
-// Timeline micro-strip: one dot per log entry along a date axis from
-// first entry to today; stalled entries warm, completed grey, the rest
-// in the department tint. Due date drawn as a ring (filled when overdue).
 function timelineHTML(t, tint){
   var entries = [];
   (t.log_full || t.log_recent || []).forEach(function(l){
@@ -533,7 +695,7 @@ function timelineHTML(t, tint){
 }
 function decisionsHTML(t){
   if (!t.decisions || !t.decisions.length) return "";
-  return '<div class="eyebrow">decisions touching this thread</div><ul class="dec">' +
+  return '<div class="eyebrow">linked decisions</div><ul class="dec">' +
     t.decisions.map(function(d){
       return "<li><b>" + esc(d.id) + "</b> · " + esc(d.date) + " — " + esc(d.summary) + "</li>";
     }).join("") + "</ul>";
@@ -610,27 +772,34 @@ function entangledHTML(slug){
   });
   var items = edges.map(function(e){
     var other = e.a === slug ? e.b : e.a;
-    return esc(titles[other] || other) +
-      ' <span style="color:var(--faint);font-style:italic">(via ' + esc(e.via[0]) + ")</span>";
+    return "<li>" + esc(titles[other] || other) +
+      ' <span style="color:var(--faint);font-style:italic">via ' + esc(e.via[0]) + "</span></li>";
   });
-  return '<div class="eyebrow">entangled with</div><p>' + items.join(" · ") + "</p>";
+  return '<div class="eyebrow">entangled with</div><ul class="dec">' + items.join("") + "</ul>";
+}
+function entitiesHTML(t){
+  if (!t.entities || !t.entities.length) return "";
+  return '<div class="eyebrow">entities</div><div class="chips">' +
+    t.entities.map(function(e){ return chip(e); }).join("") + "</div>";
 }
 function threadPanel(t, dept){
   var tint = tintOf(dept.id);
+  var stateColor = t.state === "stalled" ? WARM :
+                   (t.state === "acting" || t.state === "completed") ? COOL : tint;
   var html = '<div class="eyebrow">thread · ' + esc(dept.name) + "</div>" +
     "<h2>" + esc(t.title) + "</h2>" +
     '<div class="chips">' +
-      chip(t.state, "tint", t.state === "stalled" ? WARM : tint) +
-      chip(dept.id === "misc" ? (t.department || "unfiled") + " → misc" : dept.id) +
-      (t.days_since != null ? chip(t.days_since + "d since activity") : "") +
-      (t.overdue ? chip("overdue", "warm") : "") +
+      chip("state · " + t.state, "tint", stateColor) +
+      (t.days_since != null ? chip("age · " + t.days_since + "d") : "") +
+      (t.overdue ? chip("overdue" + (t.overdue_days ? " " + t.overdue_days + "d" : ""), "warm") : "") +
     "</div>";
   html += doNextHTML(t);
   if (t.next_step && t.state === "completed")
     html += '<div class="eyebrow">next step</div><p class="soft">' + esc(t.next_step) + "</p>";
-  html += timelineHTML(t, tint);
+  html += entitiesHTML(t);
   html += entangledHTML(t.slug);
-  html += '<div class="eyebrow">log</div>' + logHTML(t.log_full || t.log_recent);
+  html += timelineHTML(t, tint);
+  html += '<div class="eyebrow">recent log</div>' + logHTML(t.log_full || t.log_recent);
   html += decisionsHTML(t);
   if (t.reason)
     html += '<div class="eyebrow">reason</div><div class="reason">' + esc(t.reason) + "</div>";
@@ -638,20 +807,21 @@ function threadPanel(t, dept){
 }
 function deptPanel(d){
   var tint = tintOf(d.id);
-  var html = '<div class="eyebrow">department · ' + esc(d.tier) + "</div>" +
-    '<h2 style="color:' + tint + '">' + esc(d.name) + "</h2>" +
-    '<p class="soft" style="font-family:var(--mono);font-size:10px;letter-spacing:.06em">' + esc(d.sub) + "</p>" +
+  var html = '<div class="eyebrow">' + esc(d.tier) + " hub</div>" +
+    '<h2 class="hub" style="color:' + tint + '">' + esc(d.name) + "</h2>" +
+    '<p class="soft" style="font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;text-transform:uppercase">' +
+    esc(d.sub) + "</p>" +
     '<div class="eyebrow">threads</div>' +
     '<p><b style="font-weight:500">' + d.threads.length + "</b> — " + esc(d.breakdown) + "</p>";
   if (d.top_next_step)
-    html += '<div class="eyebrow">next step</div><p>' + esc(d.top_next_step.next_step) +
-      '</p><p class="soft" style="margin-top:4px;font-style:italic">— ' + esc(d.top_next_step.title) + "</p>";
+    html += '<div class="eyebrow">top next step</div><p class="next">' + esc(d.top_next_step.next_step) +
+      '</p><p class="soft" style="margin-top:2px;font-style:italic">— ' + esc(d.top_next_step.title) + "</p>";
   if (d.recent_decision)
     html += '<div class="eyebrow">recent decision</div><p class="soft"><b style="color:var(--ink);font-weight:500">' +
       esc(d.recent_decision.id) + "</b> · " + esc(d.recent_decision.date) + "<br>" +
       esc(d.recent_decision.summary) + "</p>";
   else
-    html += '<div class="eyebrow">recent decision</div><p class="soft">none recorded for this department.</p>';
+    html += '<div class="eyebrow">recent decision</div><p class="soft">none recorded for this hub.</p>';
   return html;
 }
 function centerPanel(c){
@@ -681,12 +851,87 @@ function bindOpen(el, fn){
   el.addEventListener("click", fn);
 }
 
+/* ── attention head + delta strip + salience budget ────────────────── */
+function loudSet(){
+  var c = (data.center && data.center.loud_slugs) || [];
+  var s = {};
+  c.forEach(function(x){ s[x] = 1; });
+  return s;
+}
+function threadIndex(){
+  var idx = {};
+  data.departments.forEach(function(d){
+    d.threads.forEach(function(t){ idx[t.slug] = {t: t, d: d}; });
+  });
+  return idx;
+}
+function renderAttentionHead(){
+  var el = document.getElementById("attnhead");
+  var head = (data.center && data.center.attention_head) || null;
+  if (!head){ el.hidden = true; return; }
+  el.hidden = false;
+  if (head.quiet || !head.slug){
+    el.dataset.mood = "muted";
+    el.dataset.quiet = "1";
+    el.innerHTML = '<span class="caret">all quiet</span>' +
+      '<span class="title">nothing owed</span>' +
+      '<span class="meta">the sky is calm</span>';
+    return;
+  }
+  el.dataset.quiet = "0";
+  var st = head.state || "";
+  var mood = "muted";
+  if (st === "stalled" || (head.reason || "").indexOf("overdue") === 0) mood = "warm";
+  else if (st === "acting") mood = "cool";
+  el.dataset.mood = mood;
+  var days = head.days_since_state || 0;
+  var meta = st + (days ? " · " + days + "d" : "");
+  var caret = head.reason || "attention";
+  el.innerHTML =
+    '<span class="caret">' + esc(caret) + "</span>" +
+    '<span class="title">' + esc(head.title) + "</span>" +
+    '<span class="meta">' + esc(meta) + "</span>" +
+    (head.next_step ? '<span class="next">' + esc(head.next_step) + "</span>" : "");
+  el.onclick = function(){
+    var e = threadIndex()[head.slug];
+    if (e) openPanel(threadPanel(e.t, e.d));
+  };
+  el.onkeydown = function(ev){
+    if (ev.key === "Enter" || ev.key === " "){ ev.preventDefault(); el.click(); }
+  };
+}
+function renderDeltaStrip(){
+  var el = document.getElementById("deltastrip");
+  var deltas = (data.center && data.center.delta_strip) || [];
+  if (!deltas.length){ el.hidden = true; el.innerHTML = ""; return; }
+  el.hidden = false;
+  var parts = ['<span class="lbl">what changed</span>'];
+  var idx = threadIndex();
+  deltas.forEach(function(d){
+    var slug = d.slug || "";
+    var label = '<b>' + esc(slug) + "</b> — " + esc(d.desc || "");
+    if (idx[slug]){
+      parts.push('<span class="item" data-slug="' + esc(slug) + '">' + label + "</span>");
+    } else {
+      parts.push('<span class="item" style="cursor:default">' + label + "</span>");
+    }
+  });
+  el.innerHTML = parts.join("");
+  Array.prototype.forEach.call(el.querySelectorAll(".item[data-slug]"), function(node){
+    node.addEventListener("click", function(){
+      var e = threadIndex()[node.dataset.slug];
+      if (e) openPanel(threadPanel(e.t, e.d));
+    });
+  });
+}
+
 /* ── constellation ─────────────────────────────────────────────────── */
-function nodeButton(t, dept){
+function nodeButton(t, dept, isLoud){
   var tint = tintOf(dept.id);
-  var b = h("button", "node");
+  var b = h("button", "node" + (isLoud ? " loud" : " dim"));
   b.type = "button";
   b.dataset.state = t.state;
+  b.dataset.slug = t.slug;
   b.style.color = tint;
   b.setAttribute("aria-label", t.title + " — " + t.state);
   var dot = h("span", "dot");
@@ -704,8 +949,8 @@ function renderConstellation(){
   var W = stage.clientWidth, H = stage.clientHeight;
   wires.setAttribute("viewBox", "0 0 " + W + " " + H);
   wires.innerHTML = "";
-  var cx = W * 0.5, cy = H * 0.485;
-  var rx = Math.min(W * 0.335, 470), ry = Math.min(H * 0.315, 300);
+  var cx = W * 0.5, cy = H * 0.5;
+  var rx = Math.min(W * 0.36, 460), ry = Math.min(H * 0.34, 310);
 
   // center node
   var c = h("button", null, null); c.id = "center"; c.type = "button";
@@ -718,6 +963,7 @@ function renderConstellation(){
 
   var nodePos = {};   // slug → {x,y} of the placed sub-node
   var nodeEls = {};   // slug → button element
+  var loud = loudSet();
 
   var depts = data.departments;
   var n = depts.length;
@@ -755,9 +1001,9 @@ function renderConstellation(){
       var nx = hx + dist * Math.cos(na), ny = hy + dist * Math.sin(na);
       // keep on-stage
       nx = Math.max(30, Math.min(W - 30, nx));
-      ny = Math.max(70, Math.min(H - 70, ny));
+      ny = Math.max(40, Math.min(H - 70, ny));
       line(hx, hy, nx, ny, "color-mix(in srgb," + tint + " 26%,transparent)", 1);
-      var b = nodeButton(t, d);
+      var b = nodeButton(t, d, !!loud[t.slug]);
       b.style.left = nx + "px"; b.style.top = ny + "px";
       if (Math.cos(na) < -0.15) b.classList.add("flip"); // label toward outer edge
       nodePos[t.slug] = {x: nx, y: ny};
@@ -771,8 +1017,6 @@ function renderConstellation(){
   });
 
   // ── entity edges: shared-entity curves between threads ──
-  // Appended after the spokes so they paint above them; sub-nodes are
-  // HTML (z-index 8) and always sit above the SVG. Hidden until hover.
   var SVGNS = "http://www.w3.org/2000/svg";
   var edgesG = document.createElementNS(SVGNS, "g");
   edgesG.id = "entity-edges";
@@ -782,15 +1026,11 @@ function renderConstellation(){
     var A = nodePos[e.a], B = nodePos[e.b];
     if (!A || !B) return;
     var mx = (A.x + B.x) / 2, my = (A.y + B.y) / 2;
-    // control point pushed away from the center hub so curves arc
-    // around it instead of slicing through
     var dx = mx - cx, dy = my - cy, dd = Math.sqrt(dx*dx + dy*dy);
     var span = Math.sqrt((B.x-A.x)*(B.x-A.x) + (B.y-A.y)*(B.y-A.y)) || 1;
     var lift = Math.min(130, 36 + span * 0.18);
     var ux, uy;
     if (dd < 24){
-      // midpoint sits (nearly) on the center hub — arc perpendicular
-      // to the chord instead, preferring upward
       ux = -(B.y - A.y) / span; uy = (B.x - A.x) / span;
       if (uy > 0){ ux = -ux; uy = -uy; }
     } else {
@@ -800,7 +1040,6 @@ function renderConstellation(){
     var p = document.createElementNS(SVGNS, "path");
     p.setAttribute("d", "M" + A.x + " " + A.y + " Q " + qx + " " + qy + " " + B.x + " " + B.y);
     edgesG.appendChild(p);
-    // warm flow dot at the curve's midpoint (t=0.5 on the quadratic)
     var dot = document.createElementNS(SVGNS, "circle");
     dot.setAttribute("cx", 0.25*A.x + 0.5*qx + 0.25*B.x);
     dot.setAttribute("cy", 0.25*A.y + 0.5*qy + 0.25*B.y);
@@ -894,34 +1133,64 @@ function renderCards(){
 
 /* ── chrome ────────────────────────────────────────────────────────── */
 function renderLegend(){
+  // Kept as an off-screen a11y-only listing; the constellation UI
+  // stopped shipping a visible legend row in the 2026-08-06 refactor.
   var lg = document.getElementById("legend");
   lg.innerHTML = STATE_LEGEND.map(function(s){
-    return '<span><span class="lg node-inline node" data-state="' + s[0] +
-      '" style="color:#8f9bb0;position:static;transform:none;display:inline-flex">' +
-      '<span class="dot" style="width:7px;height:7px;border-width:1px"></span></span>' + s[1] + "</span>";
-  }).join("") + '<span><span class="lg" style="background:' + WARM + ';width:5px;height:5px"></span>overdue</span>' +
-  '<span><svg width="20" height="8" viewBox="0 0 20 8" aria-hidden="true" style="flex:none">' +
-    '<path d="M1 6.5 Q 10 -2 19 6.5" fill="none" stroke="#5EBFA9" stroke-width="1" stroke-dasharray="3 2" opacity=".5"/></svg>' +
-  'hover a node — cross-thread entanglement, shared entities drawn as edges</span>';
+    return "<span>" + s[1] + "</span>";
+  }).join("");
 }
 function renderStamp(){
   document.getElementById("stamp").textContent =
     "as of " + data.generated_at_human + " · " + source;
 }
 function renderAll(){
+  renderAttentionHead();
+  renderDeltaStrip();
   renderConstellation();
   renderCards();
   renderLegend();
   renderStamp();
+  // If the panel was in default mode, keep it there; a re-render
+  // shouldn't yank the user out of a detail view they were reading.
+  if (panelMode === "default") closePanel();
 }
+
+/* ── salience toggle (show all · loud only), persisted in localStorage ── */
+var SAL_KEY = "mikai.cockpit.salience";
+function applySalienceMode(mode){
+  stage.classList.toggle("loud-only", mode === "loud-only");
+  var buttons = document.querySelectorAll("#salience-toggle button");
+  Array.prototype.forEach.call(buttons, function(btn){
+    btn.classList.toggle("on", btn.dataset.mode === mode);
+  });
+}
+(function initSalience(){
+  var stored = "show-all";
+  try {
+    var v = localStorage.getItem(SAL_KEY);
+    if (v === "loud-only" || v === "show-all") stored = v;
+  } catch (err){}
+  document.querySelectorAll("#salience-toggle button").forEach(function(btn){
+    btn.addEventListener("click", function(){
+      var m = btn.dataset.mode;
+      try { localStorage.setItem(SAL_KEY, m); } catch (err){}
+      applySalienceMode(m);
+    });
+  });
+  // apply after first render — renderAll runs at the bottom of this IIFE
+  setTimeout(function(){ applySalienceMode(stored); }, 0);
+})();
 
 /* ── star grain ────────────────────────────────────────────────────── */
 function grain(){
   var cv = document.getElementById("grain");
-  cv.width = innerWidth; cv.height = innerHeight;
+  var r = cv.getBoundingClientRect();
+  cv.width = r.width || innerWidth;
+  cv.height = r.height || innerHeight;
   var g = cv.getContext("2d");
   g.clearRect(0, 0, cv.width, cv.height);
-  for (var i = 0; i < 130; i++){
+  for (var i = 0; i < 120; i++){
     var x = Math.random() * cv.width, y = Math.random() * cv.height;
     g.fillStyle = "rgba(200,215,235," + (Math.random() * 0.16 + 0.03) + ")";
     g.beginPath(); g.arc(x, y, Math.random() * 0.9 + 0.2, 0, 7); g.fill();
@@ -1004,10 +1273,6 @@ function askFootHTML(r){
     " · prompt: " + (r.prompt_chars != null ? r.prompt_chars.toLocaleString() : "?") +
     " chars";
 }
-// Skeleton for a streaming ask: header + empty answer body + retrieved
-// footnote slot + status pill. Chunks append into #ask-answer-body; the
-// foot is populated the instant the 'retrieved' event arrives; the
-// pulsing dot in the pill vanishes on 'done'.
 function askSkeletonHTML(query){
   return '<div class="eyebrow">ask · grounded in your substrate</div>' +
     "<h2>" + esc(query) + "</h2>" +
@@ -1072,8 +1337,6 @@ function submitAsk(){
     return;
   }
 
-  // Watchdog: if nothing arrives in 30s we bail. The server side has its
-  // own 5-min hard timeout on the LLM subprocess.
   var watchdog = setTimeout(function(){
     if (askBusy) fail("no response from the ask endpoint after 30s");
   }, 30000);
@@ -1103,8 +1366,6 @@ function submitAsk(){
     clearTimeout(watchdog);
     try {
       var payload = JSON.parse(ev.data || "{}");
-      // Prefer the server's final `answer` (already stripped) so trailing
-      // whitespace across the stream doesn't affect the rendered version.
       if (typeof payload.answer === "string" && payload.answer){
         raw = payload.answer;
         if (body) body.innerHTML = mdHTML(raw);
@@ -1116,7 +1377,6 @@ function submitAsk(){
     clearTimeout(watchdog);
     var msg = "";
     try { msg = (JSON.parse(ev.data || "{}") || {}).error || ""; } catch (e){}
-    // EventSource fires a plain 'error' event on network drop too — no data.
     if (!msg) msg = "the stream ended unexpectedly (endpoint down, or CORS?)";
     fail(msg);
   });
@@ -1137,6 +1397,8 @@ window.addEventListener("resize", function(){
 grain();
 renderAll();
 tryRefresh(false);
+try { localStorage.setItem("mikai:last_open", String(Date.now())); }
+catch (err) {}
 })();
 </script>
 </body>

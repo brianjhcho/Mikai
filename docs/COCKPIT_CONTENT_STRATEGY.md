@@ -84,3 +84,15 @@ Not customer-release — the cockpit becoming the product experience the substra
 ## 7. Is the constellation decoration?
 
 Half right. As built, the *spatial* layer is cosmetic: node position encodes only hub membership — static, memorized after two mornings, the grounds on which the prior survey convicted Roam's graph. But the comparables argue for keeping the register, not the geometry: every functional alternative is a calendar or a list, and a list-cockpit collapses MIKAI into the todo-app category `COMPARISON.md` positions against; AI-first surfaces (Limitless; Cursor, Windsurf — general knowledge, not fetched) center ask, which §5 adopts. **Verdict: keep the sky, on probation.** Items 1–2 move salience, stall, and delta into it; if a morning with that sky still decides nothing a Things-style Today list wouldn't, demote the portrait to ambience and lead with the attention head and delta strip as text.
+
+## Appendix — shipped 2026-08-06 · items 1 + 2 + delta-strip
+
+Ranked build items 1, 2, and 3 landed in `infra/cockpit/`. Additive to the constellation — no palette, hover-panel, or ask-bar changes.
+
+**Attention head.** `compute_attention()` in `infra/cockpit/__init__.py` ranks every non-completed thread by attention-owed (overdue×10 · stall×5 · acting-due-in-7d×3 · decided>5d×4). Top scorer wired to `dashboard.center["attention_head"]`; rendered as a one-line strip above the sky (warm when stalled/overdue, cool when acting, muted when quiet). Zero-score wins → muted "All quiet — nothing owed."
+
+**Salience budget.** `dashboard.center["loud_slugs"]` names ≤4 loud slugs (head + next 3 by score). Non-loud sub-nodes get a `.dim` class (opacity + desaturate). Bottom-right toggle chip (`show all · loud only`) persists via `localStorage["mikai.cockpit.salience"]`; loud-only mode hides scenery entirely.
+
+**Delta strip.** `infra/cockpit/snapshot.py` writes `state/cockpit_last_snapshot.json` after every full build. Next build diffs against it, emits ≤3 transitions (state-change > new > became-overdue) to `dashboard.center["delta_strip"]`. Renders as compact mono line under the attention head; hidden entirely when no change. First run after `rm cockpit_last_snapshot.json` is silent by design.
+
+Verified: `python -m unittest infra.cockpit.tests.test_attention` (18 tests green). Live cockpit on 2026-08-06 shows head `▲ Breathing + posture — daily practice · acting, 22d · next: Log a rib-flare check-in with photo evidence` (overdue by 3d, score 30), loud=[breathing-daily-practice], delta strip hidden (no prior snapshot at the moment of writing).
