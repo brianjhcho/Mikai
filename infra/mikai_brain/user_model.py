@@ -1,36 +1,37 @@
 """UserModel — compiled model of Brian, built from the whole substrate.
 
-Motivation: MIKAI's mention-count filters (`hydrator.py`,
-`latent_threads.py`) treat importance as repetition. That surfaces
-tooling noise and buries dormant-but-load-bearing threads (dry-eye
-research, plant care, China proposal). Frequency is a floor, not a
-signal. See docs/USER_MODEL_RESEARCH.md for the survey and design
-lessons.
+Reconciled to Fable's verdict (docs/USER_CONTEXT_SUBSTRATE.md §3):
+ONE file, TWO sections, 2,048-byte cap, error on overflow.
 
-This module compiles a bounded, human-legible `USER_MODEL.md` from the
-substrate — the Karpathy LLM-wiki idea applied to user modeling. One
-interactive LLM call (or a small map-reduce for large substrates)
-synthesizes:
+    Durable — merges values + interaction preferences (Hermes USER.md
+              register): stable identity, how Brian works, format /
+              tool / communication preferences.
+    Current — merges themes + unresolved loops (rotating slot):
+              topics he is actively circling, open loops MIKAI has
+              detected but Brian has not decided.
 
-    values         — one-liner strings, near-permanent
-    themes         — thread-shape topics MIKAI has evidence for
-    preferences    — data-format / interaction preferences
-    unresolved     — open loops detected but not decided
-    source_signals — provenance for each entry (audit trail)
+Everything else previously proposed (Values / Themes / Preferences /
+Unresolved as separate headers; Obsessions / Aphorisms / Ideas /
+Expertise) is out. Depth-ranked inductive content lives in the wiki as
+dream-derived pages (`wiki-obsessions.md`, `wiki-aphorisms.md`,
+`wiki-ideas.md`, `wiki-expertise.md`), retrieved at query time by
+mikai_ask. That preserves Karpathy's "pages emerge from ingestion"
+pattern without violating Fable's compact-index minimalism.
+
+`source_signals` is no longer part of the injected file — audit trail
+that spent context bytes for nothing. It now appends to an audit log:
+
+    ~/.mikai/brain/state/user_model_signals.log
 
 Downstream (latent-threads ranker, hydrator, mikai_ask composer) reads
-the compiled model instead of raw counts. Rebuilt weekly by
-`dream_bootstrap.py user-model` — never on the request path (that's
-the ChatGPT-memory prompt-injection attack surface).
+`UserModel.current` (list of one-liners) for alignment scoring — the
+same shape the old `themes` + `unresolved` lists exposed, now merged
+into a single rotating slot per the Durable-vs-Current split.
 
-On-disk shape:
-
-    ~/.mikai/brain/USER_MODEL.md          human-legible, byte-capped
-    ~/.mikai/brain/state/user_model.json  structured, for programmatic use
-
-Hard byte cap on the markdown (Hermes-USER.md lesson: ~2 KB). Overflow
-raises RuntimeError — silent truncation would be worse than a failed
-rebuild, since downstream would score against a mutilated model.
+Rebuilt weekly by `dream_bootstrap.py user-model` — never on the
+request path (that's the ChatGPT-memory prompt-injection attack
+surface). Hard byte cap: overflow raises RuntimeError. Silent
+truncation would corrupt downstream ranking.
 """
 
 from __future__ import annotations
@@ -47,15 +48,12 @@ from . import BRAIN_ROOT, BRAIN_MD, ENTITIES_DIR, STATE_DIR, THREADS_DIR
 
 USER_MODEL_MD = BRAIN_ROOT / "USER_MODEL.md"
 USER_MODEL_JSON = STATE_DIR / "user_model.json"
+USER_MODEL_SIGNALS_LOG = STATE_DIR / "user_model_signals.log"
 
-# Hermes USER.md lesson: bounded so it can ride in every downstream
-# prompt without eating context. Overflow errors; never silently
-# truncates. Downstream would score against a mutilated model.
-# 4000B is generous vs Hermes' 1375-char USER.md but leaves headroom
-# for 5 rich lists + provenance signals without needing single-word
-# bullets. Still < 3% of the ~150K interactive-tier prompt budget.
-# Overflow errors — silent truncation would corrupt downstream ranking.
-MARKDOWN_BYTE_CAP = 4000
+# Fable §3: revert the unexplained 4,000-byte bump. Hermes' 1,375-char
+# USER.md proves the register works; 2,048 keeps headroom for two rich
+# sections without violating the compact-index minimalism.
+MARKDOWN_BYTE_CAP = 2048
 
 # Input budget for the synthesizer call. Wiki narrative + ontology can
 # be large; we sample rather than truncate blindly. Kept well under the
@@ -65,11 +63,10 @@ INPUT_CHAR_BUDGET = 100_000
 
 @dataclass
 class UserModel:
-    values: list[str] = field(default_factory=list)
-    themes: list[str] = field(default_factory=list)
-    preferences: list[str] = field(default_factory=list)
-    unresolved: list[str] = field(default_factory=list)
-    source_signals: list[str] = field(default_factory=list)
+    """Two sections per Fable §3. Legacy list fields removed."""
+
+    durable: list[str] = field(default_factory=list)
+    current: list[str] = field(default_factory=list)
     updated_at: str = ""
 
     # ── Serialization ────────────────────────────────────────────────
@@ -79,32 +76,40 @@ class UserModel:
 
     @classmethod
     def from_dict(cls, d: dict) -> "UserModel":
+        # Back-compat: if a legacy on-disk JSON is loaded (values /
+        # themes / preferences / unresolved), fold it into the new
+        # two-section shape so `load()` doesn't return an empty model.
+        # New builds overwrite this on the next dream-weekly rewrite.
+        if "durable" not in d and any(
+            k in d for k in ("values", "themes", "preferences", "unresolved")
+        ):
+            durable = list(d.get("values", [])) + list(d.get("preferences", []))
+            current = list(d.get("themes", [])) + list(d.get("unresolved", []))
+            return cls(
+                durable=durable,
+                current=current,
+                updated_at=str(d.get("updated_at", "")),
+            )
         return cls(
-            values=list(d.get("values", [])),
-            themes=list(d.get("themes", [])),
-            preferences=list(d.get("preferences", [])),
-            unresolved=list(d.get("unresolved", [])),
-            source_signals=list(d.get("source_signals", [])),
+            durable=list(d.get("durable", [])),
+            current=list(d.get("current", [])),
             updated_at=str(d.get("updated_at", "")),
         )
 
     def to_markdown(self) -> str:
-        """Human-legible USER_MODEL.md. Section order deliberately
-        matches how downstream will scan it: values (frame), themes
-        (ranker input), preferences (composer input), unresolved
-        (surface targets), signals (provenance)."""
+        """Human-legible USER_MODEL.md. Two sections only per Fable §3.
+        Durable rides first (identity frame); Current second (ranker
+        input for latent-threads + attention). No provenance, no
+        source_signals — that channel is the audit log, not this file."""
         ts = self.updated_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
         parts = [
             "# USER_MODEL.md — what MIKAI has observed about Brian",
             "",
             f"_Compiled by dream-weekly at {ts}. Do not hand-edit;"
-            " changes are overwritten. See docs/USER_MODEL_RESEARCH.md._",
+            " changes are overwritten. See docs/USER_CONTEXT_SUBSTRATE.md._",
             "",
-            _section("Values (near-permanent)", self.values),
-            _section("Themes (current thread-shape topics)", self.themes),
-            _section("Preferences (interaction / format)", self.preferences),
-            _section("Unresolved loops (detected, not decided)", self.unresolved),
-            _section("Source signals (provenance)", self.source_signals),
+            _section("Durable", self.durable),
+            _section("Current", self.current),
         ]
         return "\n".join(parts).rstrip() + "\n"
 
@@ -235,29 +240,32 @@ def collect_inputs(char_budget: int = INPUT_CHAR_BUDGET) -> str:
 _PROMPT_HEADER = """\
 You are the reflective layer of MIKAI, Brian's task-state awareness
 engine. Read the substrate below and synthesize a short, honest model
-of Brian AS A PERSON — not a mention-count summary.
+of Brian AS A PERSON in TWO sections — not a mention-count summary,
+not an eight-header taxonomy.
 
 Return ONLY a JSON object with these fields (no prose, no fences):
 
 {
-  "values":         [ "one-liner about how he works or what he weights" , ... ],
-  "themes":         [ "concrete topic he keeps returning to" , ... ],
-  "preferences":    [ "interaction/format/tool preference" , ... ],
-  "unresolved":     [ "open loop MIKAI has detected but Brian hasn't decided" , ... ],
-  "source_signals": [ "'<entry> ← <evidence>' — one per non-obvious entry" , ... ]
+  "durable":        [ "stable one-liner about who Brian is / how he works — identity, values, interaction or format preferences that persist across weeks" , ... ],
+  "current":        [ "concrete topic or open loop he is actively circling right now — thread-shape, refreshed each week" , ... ],
+  "source_signals": [ "'<entry> ← <evidence>' — one per non-obvious entry (goes to audit log, NOT the injected file)" , ... ]
 }
 
 Rules:
-- 3 to 8 items per list. No filler. If you can't back an item, drop it.
+- 3 to 6 items per list. No filler. If you can't back an item, drop it.
 - Prefer specific over generic: "prefers Fable 5 for reasoning, Opus for
   building" beats "cares about model choice".
-- Themes are life-topics, NOT tools. Skip 'git', 'python', 'claude-code'.
-- Unresolved = things Brian has been circling but hasn't picked. Not
-  every open todo — the ones that keep showing up undecided.
+- Durable = stable trait / preference / working style. Not a topic. Not
+  a project. Something that would still be true in three months.
+- Current = a topic / open loop / thread-shape thing Brian is actively
+  circling this week. Not tools ('git', 'python', 'claude-code'). Not
+  every open todo — the ones that keep showing up.
 - Source signals are audit rows so a human can check your work. Cite
   the file kind (PROFILE / ontology / thread / ledger) briefly.
-- Total output MUST fit in about 2500 characters when rendered as
-  markdown bullets. Be tight — prefer 5 sharp items to 8 fluffy ones.
+- Total OUTPUT MUST fit inside 2,048 bytes when rendered as two
+  sections of markdown bullets. Be tight — prefer 4 sharp items to 6
+  fluffy ones. The synthesizer errors on overflow; silent truncation
+  is refused.
 
 SUBSTRATE FOLLOWS:
 """
@@ -280,6 +288,26 @@ def _extract_json(text: str) -> dict:
         raise RuntimeError(f"synthesizer JSON invalid: {exc}: {m.group(0)[:200]!r}")
 
 
+def _append_signals(signals: list[str], ts: str) -> Path | None:
+    """Append the LLM's source_signals to the audit log. Non-fatal —
+    a failed audit-log write must not abort a successful build."""
+    if not signals:
+        return None
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        row = json.dumps(
+            {"ts": ts, "signals": [str(s) for s in signals]},
+            ensure_ascii=False,
+        )
+        with USER_MODEL_SIGNALS_LOG.open("a", encoding="utf-8") as f:
+            f.write(row + "\n")
+        return USER_MODEL_SIGNALS_LOG
+    except OSError as exc:
+        print(f"[user_model] signals audit-log write failed (non-fatal): {exc}",
+              file=sys.stderr)
+        return None
+
+
 def build(*, chat_fn=None, char_budget: int = INPUT_CHAR_BUDGET) -> UserModel:
     """Compile a UserModel from the whole substrate.
 
@@ -298,12 +326,18 @@ def build(*, chat_fn=None, char_budget: int = INPUT_CHAR_BUDGET) -> UserModel:
     model = UserModel.from_dict(payload)
     model.updated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
+    # Route source_signals to the audit log rather than the injected
+    # file. Fable §3: audit is a channel, not a section.
+    signals = payload.get("source_signals") or []
+    if isinstance(signals, list):
+        _append_signals([str(s) for s in signals], model.updated_at)
+
     if not model.within_cap():
         raise RuntimeError(
             f"USER_MODEL.md would exceed {MARKDOWN_BYTE_CAP}-byte cap "
             f"({len(model.to_markdown().encode('utf-8'))} bytes). "
             "Tighten the synthesizer prompt or shrink field counts. "
-            "Silent truncation is refused (see docs/USER_MODEL_RESEARCH.md)."
+            "Silent truncation is refused (see docs/USER_CONTEXT_SUBSTRATE.md)."
         )
     return model
 
@@ -322,11 +356,14 @@ def _backup(path: Path) -> Path | None:
 
 def save(model: UserModel) -> tuple[Path, Path]:
     """Write both artifacts atomically-ish (tmp + rename). Backs up
-    any prior USER_MODEL.md so a bad rebuild is recoverable."""
+    any prior USER_MODEL.md AND user_model.json so a bad rebuild is
+    recoverable (the migration to the 2-section shape counts as a bad
+    rebuild for anything upstream expecting themes/values)."""
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     BRAIN_ROOT.mkdir(parents=True, exist_ok=True)
 
     _backup(USER_MODEL_MD)
+    _backup(USER_MODEL_JSON)
 
     md_tmp = USER_MODEL_MD.with_suffix(".md.tmp")
     md_tmp.write_text(model.to_markdown(), encoding="utf-8")
@@ -362,9 +399,8 @@ def _print_model(model: UserModel, stream=None) -> None:
     print(model.to_markdown(), file=stream)
     print(
         f"[user_model] {len(model.to_markdown().encode('utf-8'))} bytes "
-        f"(cap {MARKDOWN_BYTE_CAP}) — values={len(model.values)} "
-        f"themes={len(model.themes)} prefs={len(model.preferences)} "
-        f"unresolved={len(model.unresolved)} signals={len(model.source_signals)}",
+        f"(cap {MARKDOWN_BYTE_CAP}) — durable={len(model.durable)} "
+        f"current={len(model.current)}",
         file=sys.stderr,
     )
 

@@ -135,22 +135,16 @@ def _score(ent: OntologyEntity, um: user_model_mod.UserModel | None
         # how weak the signal is.
         return freq_component, f"frequency-only ({ent.mentions} mentions)", ""
 
-    bonus, theme = _theme_alignment(ent.slug, um.themes)
+    # Fable §3: themes + unresolved are one rotating slot now (`current`).
+    # Alignment scoring stays: any current-list item that matches the
+    # slug earns the ranker bonus. The old "themes stronger than
+    # unresolved" tie-break is gone with the merge.
+    bonus, matched = _theme_alignment(ent.slug, um.current)
     if bonus > 0:
         return freq_component + bonus, (
-            f"aligns with theme '{theme}' (bonus {bonus:.1f}) "
+            f"aligns with current '{matched}' (bonus {bonus:.1f}) "
             f"+ {ent.mentions} mentions"
-        ), theme
-
-    # Unresolved-loop alignment is the second-strongest signal — Brian
-    # is circling this and hasn't picked. Any latent thread that shares
-    # tokens with an unresolved loop is worth surfacing even at low
-    # mention counts.
-    unres_bonus, unres_match = _theme_alignment(ent.slug, um.unresolved)
-    if unres_bonus > 0:
-        return freq_component + unres_bonus * 0.8, (
-            f"aligns with unresolved '{unres_match}' + {ent.mentions} mentions"
-        ), unres_match
+        ), matched
 
     return freq_component, f"frequency-only ({ent.mentions} mentions)", ""
 
@@ -249,8 +243,8 @@ def run(
         print("latent-threads: no USER_MODEL.md yet — running frequency-only")
     elif verbose:
         print(
-            f"latent-threads: using UserModel ({len(um.themes)} themes, "
-            f"{len(um.unresolved)} unresolved loops)"
+            f"latent-threads: using UserModel "
+            f"({len(um.current)} current items, {len(um.durable)} durable)"
         )
 
     candidates = select_candidates(

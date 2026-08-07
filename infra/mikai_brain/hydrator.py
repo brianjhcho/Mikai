@@ -215,9 +215,11 @@ def select_candidates(
     Without a UserModel present, falls back to old frequency ordering.
     """
     # Local import — avoid module-load cycle (user_model may load lazily).
+    # Fable §3: themes + unresolved collapsed into `current`; hydrator
+    # scores against that single rotating list (same alignment semantics).
     from . import user_model as _um_mod
     um = _um_mod.load()
-    themes = um.themes if um is not None else []
+    themes = um.current if um is not None else []
 
     existing = existing_entity_slugs()
     # First pass: filter by hard rules (existing/flagged/type/proposed).

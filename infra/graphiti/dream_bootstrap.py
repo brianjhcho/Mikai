@@ -947,9 +947,8 @@ def run_user_model(budget: Budget, dry_run: bool, verbose: bool) -> str:
     print(f"[pass D] wrote {md_path} ({md_path.stat().st_size}B)")
     print(f"[pass D] wrote {json_path}")
     return (
-        f"user-model rebuild: {len(model.themes)} themes, "
-        f"{len(model.unresolved)} unresolved, "
-        f"{len(model.values)} values"
+        f"user-model rebuild: {len(model.durable)} durable, "
+        f"{len(model.current)} current"
     )
 
 

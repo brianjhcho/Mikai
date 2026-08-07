@@ -1,4 +1,8 @@
-"""Tests for the UserModel compiler.
+"""Tests for the UserModel compiler (post Fable §3 migration).
+
+Two sections (Durable, Current). 2,048-byte cap. `source_signals` emit
+to the audit log, not the injected file. Downstream (latent-threads)
+scores against `current` — the merged themes-plus-unresolved list.
 
 Isolation pattern matches test_hydrator.py / test_end_to_end.py: HOME
 repointed at a tempdir, package reloaded so BRAIN_ROOT rebinds. No
@@ -47,14 +51,23 @@ _FIXTURE_BRAIN = """\
 - Ship USER_MODEL.md
 """
 
+# Post-migration shape: two sections. `source_signals` still requested
+# from the LLM (routed to audit log, stripped from the injected file).
 _STUB_JSON = {
-    "values": ["ships fast", "asks for pushback"],
-    "themes": ["dry-eye ophthalmology", "plant care (monstera)",
-               "China proposal for Germaine"],
-    "preferences": ["propose-to-inbox over autonomous overwrite"],
-    "unresolved": ["specify province for the China proposal"],
-    "source_signals": ["dry-eye ← perplexity + claude-thread",
-                       "china-proposal ← wiki narrative"],
+    "durable": [
+        "ships fast, asks for pushback",
+        "prefers propose-to-inbox over autonomous overwrite",
+    ],
+    "current": [
+        "dry-eye ophthalmology",
+        "plant care (monstera)",
+        "China proposal for Germaine",
+        "specify province for the China proposal",
+    ],
+    "source_signals": [
+        "dry-eye ← perplexity + claude-thread",
+        "china-proposal ← wiki narrative",
+    ],
 }
 
 
@@ -102,22 +115,45 @@ class UserModelTests(unittest.TestCase):
             os.environ["MIKAI_WIKI_ONTOLOGY"] = self._orig_ontology
         shutil.rmtree(self.home, ignore_errors=True)
 
-    # ── build() ─────────────────────────────────────────────────────────
+    # ── build() — two-section shape ────────────────────────────────────
 
-    def test_build_structures_response(self) -> None:
+    def test_build_structures_response_two_sections(self) -> None:
         model = self.user_model.build(chat_fn=lambda p: json.dumps(_STUB_JSON))
-        self.assertIn("ships fast", model.values)
-        self.assertIn("dry-eye ophthalmology", model.themes)
+        self.assertIn("ships fast, asks for pushback", model.durable)
+        self.assertIn("dry-eye ophthalmology", model.current)
         self.assertTrue(model.updated_at)
         self.assertTrue(model.within_cap())
+        self.assertFalse(hasattr(model, "themes"),
+                         "themes attribute must be gone post-Fable §3")
+        self.assertFalse(hasattr(model, "values"),
+                         "values attribute must be gone post-Fable §3")
 
     def test_build_tolerates_code_fence(self) -> None:
         raw = "```json\n" + json.dumps(_STUB_JSON) + "\n```"
         model = self.user_model.build(chat_fn=lambda p: raw)
-        self.assertEqual(len(model.themes), 3)
+        self.assertEqual(len(model.current), 4)
+
+    def test_markdown_has_only_durable_and_current_sections(self) -> None:
+        model = self.user_model.build(chat_fn=lambda p: json.dumps(_STUB_JSON))
+        md = model.to_markdown()
+        self.assertIn("## Durable", md)
+        self.assertIn("## Current", md)
+        # Everything Fable killed:
+        for banned in ("## Values", "## Themes", "## Preferences",
+                       "## Unresolved", "## Source signals"):
+            self.assertNotIn(banned, md, f"banned section leaked: {banned}")
+
+    def test_markdown_stays_within_2kb_cap(self) -> None:
+        model = self.user_model.build(chat_fn=lambda p: json.dumps(_STUB_JSON))
+        self.assertLessEqual(
+            len(model.to_markdown().encode("utf-8")),
+            self.user_model.MARKDOWN_BYTE_CAP,
+        )
+        self.assertEqual(self.user_model.MARKDOWN_BYTE_CAP, 2048,
+                         "Fable §3 mandates 2,048-byte cap; the 4,000 bump is reverted")
 
     def test_build_errors_on_over_cap_output(self) -> None:
-        bloated = {**_STUB_JSON, "themes": ["x" * 200 for _ in range(30)]}
+        bloated = {**_STUB_JSON, "current": ["x" * 200 for _ in range(30)]}
         with self.assertRaises(RuntimeError):
             self.user_model.build(chat_fn=lambda p: json.dumps(bloated))
 
@@ -125,7 +161,32 @@ class UserModelTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.user_model.build(chat_fn=lambda p: "not json at all")
 
-    # ── save() / load() ─────────────────────────────────────────────────
+    # ── source_signals → audit log, NOT the injected file ─────────────
+
+    def test_source_signals_appended_to_audit_log_not_markdown(self) -> None:
+        self.user_model.build(chat_fn=lambda p: json.dumps(_STUB_JSON))
+        log = self.user_model.USER_MODEL_SIGNALS_LOG
+        self.assertTrue(log.exists(), "signals audit log not written")
+        row = json.loads(log.read_text().splitlines()[0])
+        self.assertIn("dry-eye ← perplexity + claude-thread", row["signals"])
+        self.assertIn("ts", row)
+
+    def test_source_signals_absent_from_markdown_and_persisted_json(self) -> None:
+        model = self.user_model.build(chat_fn=lambda p: json.dumps(_STUB_JSON))
+        md_path, json_path = self.user_model.save(model)
+        self.assertNotIn("source_signals", md_path.read_text())
+        self.assertNotIn("Source signals", md_path.read_text())
+        self.assertNotIn("source_signals", json_path.read_text(),
+                         "source_signals persisted into user_model.json — "
+                         "should live in audit log only")
+
+    def test_audit_log_appends_across_multiple_builds(self) -> None:
+        self.user_model.build(chat_fn=lambda p: json.dumps(_STUB_JSON))
+        self.user_model.build(chat_fn=lambda p: json.dumps(_STUB_JSON))
+        log = self.user_model.USER_MODEL_SIGNALS_LOG
+        self.assertEqual(len(log.read_text().splitlines()), 2)
+
+    # ── save() / load() ────────────────────────────────────────────────
 
     def test_save_and_load_roundtrip(self) -> None:
         model = self.user_model.build(chat_fn=lambda p: json.dumps(_STUB_JSON))
@@ -139,28 +200,51 @@ class UserModelTests(unittest.TestCase):
 
         loaded = self.user_model.load()
         self.assertIsNotNone(loaded)
-        self.assertEqual(loaded.themes, model.themes)
-        self.assertEqual(loaded.values, model.values)
+        self.assertEqual(loaded.current, model.current)
+        self.assertEqual(loaded.durable, model.durable)
 
     def test_backup_written_on_second_save(self) -> None:
         m1 = self.user_model.build(chat_fn=lambda p: json.dumps(_STUB_JSON))
         self.user_model.save(m1)
         m2 = self.user_model.build(chat_fn=lambda p: json.dumps(_STUB_JSON))
         self.user_model.save(m2)
-        backups = list(self.brain.BRAIN_ROOT.glob("USER_MODEL.md.bak-*"))
-        self.assertEqual(len(backups), 1)
+        md_backups = list(self.brain.BRAIN_ROOT.glob("USER_MODEL.md.bak-*"))
+        json_backups = list(self.brain.STATE_DIR.glob("user_model.json.bak-*"))
+        self.assertEqual(len(md_backups), 1)
+        self.assertEqual(len(json_backups), 1,
+                         "user_model.json also gets backed up now")
 
-    # ── downstream consumers pick it up ─────────────────────────────────
+    def test_legacy_json_shape_migrates_on_load(self) -> None:
+        # A stale user_model.json from before the migration still loads:
+        # values+preferences fold into durable; themes+unresolved into current.
+        self.brain.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        legacy = {
+            "values": ["ships fast"],
+            "themes": ["dry-eye"],
+            "preferences": ["propose to inbox"],
+            "unresolved": ["china province"],
+            "source_signals": ["irrelevant"],
+            "updated_at": "2026-08-06T00:00:00+00:00",
+        }
+        self.user_model.USER_MODEL_JSON.write_text(json.dumps(legacy))
+        loaded = self.user_model.load()
+        self.assertIsNotNone(loaded)
+        self.assertIn("ships fast", loaded.durable)
+        self.assertIn("propose to inbox", loaded.durable)
+        self.assertIn("dry-eye", loaded.current)
+        self.assertIn("china province", loaded.current)
 
-    def test_latent_threads_promotes_theme_aligned_candidates(self) -> None:
+    # ── downstream consumers pick up `current` ─────────────────────────
+
+    def test_latent_threads_promotes_current_aligned_candidates(self) -> None:
         # Without a UserModel, ranking is frequency-only; theme_match is
         # empty on every candidate that surfaces.
         candidates_before = self.latent_threads.select_candidates()
         self.assertTrue(all(c.theme_match == "" for c in candidates_before))
 
-        # Compile + save UserModel, then re-run: dry-eye now carries a
-        # theme_match citation and its ranker score climbs above the
-        # frequency-only equivalent.
+        # Compile + save UserModel; `current` includes "dry-eye
+        # ophthalmology" so the dry-eye entity now carries a match
+        # citation and its ranker score climbs.
         m = self.user_model.build(chat_fn=lambda p: json.dumps(_STUB_JSON))
         self.user_model.save(m)
 
@@ -168,9 +252,10 @@ class UserModelTests(unittest.TestCase):
         slugs_after = [c.slug for c in candidates_after]
         self.assertIn("dry-eye", slugs_after)
         winning = next(c for c in candidates_after if c.slug == "dry-eye")
-        self.assertTrue(winning.theme_match, "expected theme_match to be set")
-        # And its ranker reason cites the theme, not raw frequency.
-        self.assertIn("theme", winning.reason)
+        self.assertTrue(winning.theme_match,
+                        "expected theme_match to be set from `current`")
+        self.assertIn("current", winning.reason,
+                      "reason must cite the merged `current` slot, not `themes`")
 
 
 if __name__ == "__main__":
