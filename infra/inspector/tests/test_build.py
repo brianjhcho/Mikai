@@ -101,6 +101,11 @@ class BuildOutputsTests(unittest.TestCase):
         for key in ("wiki_bytes", "thread_count", "entity_count",
                     "tensions_count", "attention_last"):
             self.assertIn(key, st["substrate"])
+        # L4 SIGNALS + WIKI are wired
+        self.assertIn("l4_signals", st)
+        self.assertIn("source", st["l4_signals"])
+        self.assertIn("wiki", st)
+        self.assertIn("files", st["wiki"])
 
     def test_write_outputs_creates_both_files(self):
         st = self.B.build_state()
@@ -130,6 +135,12 @@ class BuildOutputsTests(unittest.TestCase):
         # HTML rail must NOT reference the deleted panels
         for gone in ("Obsessions", "Aphorisms", "Ideas", "Expertise"):
             self.assertNotIn(gone, html)
+        # The five real-data panels must be wired
+        for label in ("Tensions", "User Model", "L4 Signals",
+                      "Wiki", "Substrate"):
+            self.assertIn(label, html)
+        # Release button is present on tension cards
+        self.assertIn("release-btn", html)
 
 
 if __name__ == "__main__":

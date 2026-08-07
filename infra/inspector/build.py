@@ -12,7 +12,9 @@ MIKAI proposes to do about it.
 
 from __future__ import annotations
 
+import html as _html
 import json
+import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +30,16 @@ from .tensions import write_json as write_tensions_json
 USER_MODEL_MD = BRAIN_ROOT / "USER_MODEL.md"
 WIKI_NARRATIVE = WIKI_DIR / "wiki-narrative.md"
 WIKI_ONTOLOGY = WIKI_DIR / "wiki-ontology.md"
+SURFACING_HTML = BRAIN_ROOT / "surfacing.html"
+DELIVERY_LOG = STATE_DIR / "delivery_events.jsonl"
+
+# Per-file cap for embedded wiki content. wiki.md is ~33 MB, which is
+# too large to inline whole into the static page — we take the tail
+# (most recent sections, append-only file) plus a small head slice.
+# Everything under this cap gets embedded whole.
+_WIKI_INLINE_CAP = 800_000  # 800 KB per file
+_WIKI_LARGE_TAIL_BYTES = 600_000  # tail slice for wiki.md
+_WIKI_LARGE_HEAD_BYTES = 40_000   # small head slice for context
 
 
 # NOTE: The four canned-query panels (obsessions / aphorisms / ideas /
@@ -175,6 +187,162 @@ def _dismiss_rate_7d() -> tuple[float, int] | None:
     return (dismissed / responded, responded)
 
 
+# ─── L4 SIGNALS collector ────────────────────────────────────────────
+#
+# Absorbs the standalone ~/.mikai/brain/surfacing.html into the
+# Inspector. Two collection strategies (best-first):
+#   1. If surfacing.html exists, parse its <body> and hand back the
+#      raw HTML for each <section>. This preserves the exact rendering
+#      that already worked without us having to re-derive it.
+#   2. Fallback: derive a minimal signals snapshot straight from
+#      progress.jsonl + delivery_events.jsonl.
+# After the panel proves out, the standalone HTML gets deleted; the
+# fallback path remains as the only source of L4 signals.
+
+_SECTION_RE = re.compile(
+    r'<section\s+id="([^"]+)"[^>]*>(.*?)</section>', re.DOTALL)
+
+
+def _parse_surfacing_html() -> dict | None:
+    if not SURFACING_HTML.exists():
+        return None
+    try:
+        raw = SURFACING_HTML.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    sections: dict[str, str] = {}
+    for m in _SECTION_RE.finditer(raw):
+        sections[m.group(1)] = m.group(2).strip()
+    # Also capture the header stamp line ("as of ...") for provenance.
+    stamp_m = re.search(
+        r'<div class="stamp">\s*([^<]+?)(?:<button|</div)', raw, re.DOTALL)
+    stamp = stamp_m.group(1).strip() if stamp_m else None
+    return {
+        "source": "surfacing.html",
+        "mtime": _file_mtime(SURFACING_HTML),
+        "stamp": stamp,
+        "sections": sections,  # id → inner HTML
+    }
+
+
+def _derive_signals_from_logs() -> dict:
+    """Fallback if surfacing.html is gone: minimal live snapshot from
+    the progress + delivery logs. Deliberately terse — enough to show
+    the panel isn't dead, not a full re-implementation of surfacing.py."""
+    deliveries: list[dict] = []
+    if DELIVERY_LOG.exists():
+        try:
+            with DELIVERY_LOG.open("r", encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    deliveries.append(row)
+        except OSError:
+            pass
+    deliveries = deliveries[-20:]
+    ticks: list[dict] = []
+    if PROGRESS_LOG.exists():
+        try:
+            with PROGRESS_LOG.open("r", encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if row.get("mode") in ("standup", "figs-decide"):
+                        ticks.append(row)
+        except OSError:
+            pass
+    return {
+        "source": "logs",
+        "mtime": None,
+        "stamp": None,
+        "sections": {},
+        "deliveries": deliveries[-20:],
+        "ticks": ticks[-10:],
+    }
+
+
+def _build_l4_signals() -> dict:
+    parsed = _parse_surfacing_html()
+    if parsed and parsed["sections"]:
+        return parsed
+    return _derive_signals_from_logs()
+
+
+# ─── WIKI collector ──────────────────────────────────────────────────
+#
+# File browser + client-side search over ~/.mikai/wiki/*. The tab
+# lists every non-backup file in the directory (auto-discovered) and
+# inlines each file's content up to _WIKI_INLINE_CAP. wiki.md is too
+# large to inline whole; we take a small head slice + a large tail
+# slice (the file is append-only, so the tail is the recent content).
+
+_WIKI_INCLUDE_EXTS = (".md", ".log")
+
+
+def _read_wiki_file(path: Path) -> tuple[str, dict]:
+    """Read a wiki file, returning (embed_text, meta) where meta
+    carries size / truncation info for the UI."""
+    size = _file_bytes(path)
+    if size <= _WIKI_INLINE_CAP:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return "", {"error": "read failed"}
+        return text, {"truncated": False, "bytes": size, "shown_bytes": size}
+    # Large file — head + tail slices, joined by a marker so client-side
+    # search still hits both ends.
+    head = ""
+    tail = ""
+    try:
+        with path.open("rb") as f:
+            head = f.read(_WIKI_LARGE_HEAD_BYTES).decode("utf-8", "replace")
+            f.seek(max(0, size - _WIKI_LARGE_TAIL_BYTES))
+            tail = f.read().decode("utf-8", "replace")
+    except OSError:
+        pass
+    marker = (
+        f"\n\n<!-- inspector: {size - _WIKI_LARGE_HEAD_BYTES - _WIKI_LARGE_TAIL_BYTES} "
+        f"bytes elided between head and tail — open the file directly "
+        f"for the middle -->\n\n"
+    )
+    return head + marker + tail, {
+        "truncated": True,
+        "bytes": size,
+        "shown_bytes": len(head) + len(tail),
+    }
+
+
+def _build_wiki() -> dict:
+    if not WIKI_DIR.exists():
+        return {"dir": str(WIKI_DIR), "files": []}
+    files: list[dict] = []
+    for path in sorted(WIKI_DIR.iterdir()):
+        if not path.is_file():
+            continue
+        if path.suffix not in _WIKI_INCLUDE_EXTS:
+            continue
+        # Exclude .bak-* backup snapshots; they're noise for the
+        # builder view.
+        if ".bak-" in path.name or path.name.endswith(".bak"):
+            continue
+        text, meta = _read_wiki_file(path)
+        files.append({
+            "name": path.name,
+            "path": str(path),
+            "bytes": meta.get("bytes", 0),
+            "mtime": _file_mtime(path),
+            "truncated": meta.get("truncated", False),
+            "shown_bytes": meta.get("shown_bytes", 0),
+            "text": text,
+            "kind": "log" if path.suffix == ".log" else "md",
+        })
+    return {"dir": str(WIKI_DIR), "files": files}
+
+
 def _launchctl_mikai_jobs() -> list[str]:
     """Return the mikai-labelled entries from ``launchctl list``. Used
     on the Substrate panel so Brian can see at a glance whether the
@@ -225,6 +393,8 @@ def build_state() -> dict:
             "dismiss_responded_7d": dismiss[1] if dismiss else 0,
             "launchd_jobs": _launchctl_mikai_jobs(),
         },
+        "l4_signals": _build_l4_signals(),
+        "wiki": _build_wiki(),
         "endpoints": {
             "ask_stream": "http://localhost:8210/ask/stream",
         },

@@ -11,10 +11,18 @@ Deliberate design choices, so future edits stay honest to the brief:
 
   * The Inspector never asks the user to act. Every panel is a
     read-only lens on what MIKAI has noticed.
-  * Only three panels — TENSIONS, USER MODEL, SUBSTRATE — each backed
-    by real, parsed data. The over-taxonomy of canned-query panels
-    (obsessions / aphorisms / ideas / expertise) was deleted: the
-    bottom ASK bar covers those asks without dressing them as tabs.
+  * Five panels — TENSIONS, USER MODEL, L4 SIGNALS, WIKI, SUBSTRATE —
+    each backed by real, parsed data. The over-taxonomy of canned-query
+    panels (obsessions / aphorisms / ideas / expertise) was deleted:
+    the bottom ASK bar covers those asks without dressing them as tabs.
+  * L4 SIGNALS absorbs the standalone ~/.mikai/brain/surfacing.html —
+    same sections, one diagnostic surface. WIKI is an in-page browser
+    over ~/.mikai/wiki/* with client-side substring search.
+  * Tensions cards have a Release button that toggles holding ↔
+    released. State persists in localStorage as a client-side overlay
+    (no HTTP endpoint exists yet for writing back to
+    ~/.mikai/console/tensions.json; when one lands, wire it in
+    releaseTension()).
   * The bottom bar reuses the cockpit's ask contract exactly — same
     endpoint, same event shape — so we do not fork the streaming
     surface for a second UI.
@@ -256,6 +264,182 @@ _TEMPLATE = r"""<!doctype html>
     line-height:1.55;
   }
   .tcard-notes .n{margin-bottom:4px}
+  .tcard-actions{
+    display:flex;align-items:center;gap:12px;
+    margin-top:12px;padding-top:10px;
+    border-top:1px dotted var(--rule);
+  }
+  .release-btn{
+    padding:4px 12px;border:1px solid var(--ink);
+    font-family:var(--mono);font-size:9px;letter-spacing:.22em;
+    text-transform:uppercase;color:var(--ink);
+    background:var(--ground);border-radius:2px;
+  }
+  .release-btn:hover{background:var(--ink);color:var(--ground)}
+  .tcard.released .release-btn{
+    border-color:#4d7a4b;color:#4d7a4b;
+  }
+  .tcard.released .release-btn:hover{
+    background:#4d7a4b;color:var(--ground);
+  }
+  .release-note{
+    font-family:var(--mono);font-size:8.5px;letter-spacing:.14em;
+    color:var(--faint);text-transform:uppercase;
+  }
+
+  /* ── L4 SIGNALS panel ───────────────────────────────────────── */
+  .signals-stamp{
+    font-family:var(--mono);font-size:10px;letter-spacing:.16em;
+    color:var(--faint);text-transform:uppercase;
+    margin-bottom:20px;
+  }
+  .signals-wrap{display:flex;flex-direction:column;gap:24px;max-width:940px}
+  .signals-section{
+    background:var(--card);border:1px solid var(--rule);
+    padding:16px 20px;border-radius:2px;
+  }
+  .signals-section h3{
+    font-family:var(--mono);font-size:10px;letter-spacing:.24em;
+    text-transform:uppercase;color:var(--faint);
+    font-weight:500;
+    padding-bottom:8px;margin-bottom:10px;
+    border-bottom:1px dotted var(--rule);
+  }
+  .signals-body{
+    font-family:var(--serif);font-size:14.5px;color:var(--ink);
+    line-height:1.6;
+  }
+  /* Rehome surfacing.html's inline classes into our theme. */
+  .signals-body .head-line{
+    font-family:var(--serif);font-style:italic;
+    font-size:22px;line-height:1.35;margin:4px 0;
+  }
+  .signals-body .head-meta{
+    font-family:var(--mono);font-size:11px;color:var(--faint);
+    letter-spacing:.06em;
+  }
+  .signals-body .head-quiet{
+    font-family:var(--serif);font-style:italic;color:var(--faint);
+    font-size:18px;
+  }
+  .signals-body table{
+    border-collapse:collapse;width:100%;
+    font-family:var(--mono);font-size:11.5px;
+  }
+  .signals-body th, .signals-body td{
+    text-align:left;padding:6px 12px 6px 0;vertical-align:top;
+    border-bottom:1px dotted var(--rule);
+  }
+  .signals-body th{
+    color:var(--faint);font-weight:500;font-size:9px;
+    letter-spacing:.14em;text-transform:uppercase;
+  }
+  .signals-body td.wrap, .signals-body th.wrap{white-space:normal}
+  .signals-body td.num, .signals-body th.num{text-align:right;padding-right:14px}
+  .signals-body .muted{color:var(--faint)}
+  .signals-body .warm{color:var(--pink)}
+  .signals-body .cool{color:#4d7a4b}
+  .signals-body .quiet-list .item{
+    display:inline-block;margin-right:16px;
+    font-family:var(--mono);font-size:11px;color:var(--ink-soft);
+  }
+  .signals-body table.mini{font-size:11px}
+  .signals-empty{
+    padding:24px;font-style:italic;color:var(--faint);
+    background:var(--card);border:1px dashed var(--rule);
+  }
+
+  /* ── WIKI panel ─────────────────────────────────────────────── */
+  .wiki-shell{
+    display:grid;grid-template-columns:220px 1fr;gap:20px;
+    align-items:start;
+  }
+  .wiki-side{
+    display:flex;flex-direction:column;gap:2px;
+    border:1px solid var(--rule);background:var(--card);
+    border-radius:2px;padding:6px;
+  }
+  .wiki-file{
+    display:flex;flex-direction:column;align-items:flex-start;
+    padding:8px 10px;border-radius:2px;
+    text-align:left;cursor:pointer;
+    transition:background .12s ease;
+  }
+  .wiki-file:hover{background:var(--card-hover)}
+  .wiki-file.on{
+    background:var(--ground-2);
+    box-shadow:inset 2px 0 0 var(--pink);
+  }
+  .wf-name{
+    font-family:var(--mono);font-size:11.5px;color:var(--ink);
+  }
+  .wf-meta{
+    margin-top:2px;font-family:var(--mono);font-size:9px;
+    letter-spacing:.1em;color:var(--faint);
+  }
+  .wiki-main{
+    display:flex;flex-direction:column;gap:12px;min-width:0;
+  }
+  .wiki-search input{
+    width:100%;padding:8px 12px;
+    border:1px solid var(--rule);background:var(--card);
+    font-family:var(--serif);font-size:14px;color:var(--ink);
+    outline:none;border-radius:2px;
+  }
+  .wiki-search input:focus{border-color:var(--pink)}
+  .wiki-hint{
+    margin-top:6px;font-family:var(--mono);font-size:9px;
+    letter-spacing:.12em;color:var(--faint);text-transform:uppercase;
+  }
+  .wiki-body{
+    background:var(--card);border:1px solid var(--rule);
+    padding:20px 24px;border-radius:2px;overflow-x:auto;
+  }
+  .wiki-file-head{margin-bottom:14px;padding-bottom:10px;border-bottom:1px dotted var(--rule)}
+  .wfh-name{
+    font-family:var(--serif);font-style:italic;
+    font-size:20px;color:var(--ink);
+  }
+  .wfh-meta{
+    margin-top:4px;font-family:var(--mono);font-size:10px;
+    color:var(--faint);letter-spacing:.08em;
+  }
+  .wiki-log{
+    font-family:var(--mono);font-size:11px;line-height:1.55;
+    color:var(--ink-soft);white-space:pre;overflow-x:auto;
+  }
+  .wiki-md{max-width:none}
+  .wiki-results{
+    background:var(--card);border:1px solid var(--rule);
+    padding:12px 16px;border-radius:2px;
+    max-height:none;
+  }
+  .wiki-results-head{
+    font-family:var(--mono);font-size:10px;letter-spacing:.14em;
+    color:var(--faint);text-transform:uppercase;
+    margin-bottom:10px;padding-bottom:8px;
+    border-bottom:1px dotted var(--rule);
+  }
+  .wiki-hit{
+    padding:8px 0;border-bottom:1px dotted var(--rule);cursor:pointer;
+  }
+  .wiki-hit:last-child{border-bottom:none}
+  .wiki-hit:hover{background:var(--card-hover)}
+  .wh-file{
+    font-family:var(--mono);font-size:10px;letter-spacing:.1em;
+    color:var(--pink);text-transform:uppercase;margin-bottom:4px;
+  }
+  .wh-snip{
+    font-family:var(--mono);font-size:11.5px;color:var(--ink-soft);
+    white-space:pre-wrap;line-height:1.5;
+  }
+  .wh-snip mark{
+    background:var(--pink-soft);color:var(--ink);padding:0 2px;
+    border-radius:2px;
+  }
+  .wiki-noresults{
+    padding:16px;font-style:italic;color:var(--faint);
+  }
 
   /* ── user model panel ───────────────────────────────────────── */
   .um-column{
@@ -413,6 +597,8 @@ window.__INSPECTOR__ = __STATE__;
   var PANELS = [
     {id:"tensions",  label:"Tensions",  glyph:svgGlyph("dot")},
     {id:"user",      label:"User Model",glyph:svgGlyph("book")},
+    {id:"signals",   label:"L4 Signals",glyph:svgGlyph("wave")},
+    {id:"wiki",      label:"Wiki",      glyph:svgGlyph("stack")},
     {id:"substrate", label:"Substrate", glyph:svgGlyph("hex")},
   ];
 
@@ -421,9 +607,11 @@ window.__INSPECTOR__ = __STATE__;
     var c = 'fill="currentColor"';
     var base = '<svg viewBox="0 0 14 14" width="14" height="14" xmlns="http://www.w3.org/2000/svg">';
     var shapes = {
-      dot : '<circle cx="7" cy="7" r="4" '+c+'/>',
-      book: '<rect x="3" y="2.5" width="8" height="9" rx="0.7" '+c+'/><rect x="6.6" y="2.5" width="0.6" height="9" fill="#F4F1EA"/>',
-      hex : '<path d="M7 2.2l4 2.3v4.6l-4 2.3-4-2.3V4.5z" '+c+'/>',
+      dot  : '<circle cx="7" cy="7" r="4" '+c+'/>',
+      book : '<rect x="3" y="2.5" width="8" height="9" rx="0.7" '+c+'/><rect x="6.6" y="2.5" width="0.6" height="9" fill="#F4F1EA"/>',
+      hex  : '<path d="M7 2.2l4 2.3v4.6l-4 2.3-4-2.3V4.5z" '+c+'/>',
+      wave : '<path d="M2 8 Q4 4 7 7 T12 6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>',
+      stack: '<rect x="2.5" y="3" width="9" height="1.6" '+c+'/><rect x="2.5" y="6.2" width="9" height="1.6" '+c+'/><rect x="2.5" y="9.4" width="9" height="1.6" '+c+'/>',
     };
     return base + (shapes[kind]||shapes.dot) + '</svg>';
   }
@@ -471,6 +659,8 @@ window.__INSPECTOR__ = __STATE__;
     c.innerHTML = "";
     if (id === "tensions") return renderTensions(c);
     if (id === "user")     return renderUserModel(c);
+    if (id === "signals")  return renderSignals(c);
+    if (id === "wiki")     return renderWiki(c);
     if (id === "substrate")return renderSubstrate(c);
     // Unknown panel id (should not happen — rail is closed vocabulary)
     c.innerHTML = "<div class='panel-header'><div class='h'>—</div></div>";
@@ -491,12 +681,43 @@ window.__INSPECTOR__ = __STATE__;
     c.appendChild(list);
   }
 
+  // Tension-status override: released/holding toggle persists in
+  // localStorage. When a real POST endpoint against
+  // ~/.mikai/console/tensions.json lands, replace the localStorage
+  // write in releaseTension() with a fetch to it — the UI contract
+  // (button toggles class, chip flips) stays the same.
+  var TENSION_OVERRIDES_KEY = "mikai.inspector.tensionOverrides.v1";
+  function loadTensionOverrides(){
+    try { return JSON.parse(localStorage.getItem(TENSION_OVERRIDES_KEY) || "{}"); }
+    catch(_){ return {}; }
+  }
+  function saveTensionOverrides(o){
+    try { localStorage.setItem(TENSION_OVERRIDES_KEY, JSON.stringify(o)); }
+    catch(_){ /* quota/private mode — ignore */ }
+  }
+  function effectiveStatus(t){
+    var o = loadTensionOverrides();
+    return (o[t.slug] && o[t.slug].status) || t.status || "holding";
+  }
+  function toggleTensionStatus(slug){
+    var o = loadTensionOverrides();
+    var current = (o[slug] && o[slug].status) || null;
+    // If no override yet, default flips FROM whatever the card carried.
+    // We stash the flip target only — the render layer resolves.
+    var next = current === "released" ? "holding" : "released";
+    o[slug] = {status: next, at: new Date().toISOString()};
+    saveTensionOverrides(o);
+    return next;
+  }
+
   function tensionCard(t){
     var card = document.createElement("div");
-    card.className = "tcard" + (t.status === "released" ? " released" : "");
-    var chips = '<span class="chip dot status-'+(t.status||"holding")+'">'
-              + (t.status||"holding") + '</span>';
+    var status = effectiveStatus(t);
+    card.className = "tcard" + (status === "released" ? " released" : "");
+    var chips = '<span class="chip dot status-'+status+'" data-role="chip">'
+              + status + '</span>';
     if (t.section) chips += '<span class="chip">'+esc(t.section)+'</span>';
+    var releaseLabel = status === "released" ? "reopen" : "release";
     card.innerHTML =
       '<div class="tcard-head">'+
         '<div class="tcard-title">'+esc(t.title||"untitled")+'</div>'+
@@ -513,8 +734,29 @@ window.__INSPECTOR__ = __STATE__;
           ? '<div class="tcard-notes">'+ t.notes.map(function(n){
               return '<div class="n">· '+esc((n.at||"")+" — "+(n.text||""))+'</div>';
             }).join("") +'</div>'
-          : '');
-    card.addEventListener("click", function(){ card.classList.toggle("open"); });
+          : '')+
+        '<div class="tcard-actions">'+
+          '<button class="release-btn" data-role="release">'+releaseLabel+'</button>'+
+          '<span class="release-note">local override · not yet synced to console/tensions.json</span>'+
+        '</div>'+
+      '</div>';
+    card.addEventListener("click", function(ev){
+      // Ignore clicks on interactive descendants — the button owns them.
+      if (ev.target.closest("[data-role=release]")) return;
+      card.classList.toggle("open");
+    });
+    var btn = card.querySelector("[data-role=release]");
+    btn.addEventListener("click", function(ev){
+      ev.stopPropagation();
+      var next = toggleTensionStatus(t.slug);
+      // Repaint chip + card class + button label in place — no full
+      // re-render (keeps the card open + scroll position stable).
+      card.classList.toggle("released", next === "released");
+      var chip = card.querySelector("[data-role=chip]");
+      chip.className = "chip dot status-" + next;
+      chip.textContent = next;
+      btn.textContent = next === "released" ? "reopen" : "release";
+    });
     return card;
   }
 
@@ -539,6 +781,261 @@ window.__INSPECTOR__ = __STATE__;
     foot.textContent = "compiled by dream-weekly at " +
         (um.mtime||"—") + " · regenerate via `make user-model`";
     c.appendChild(foot);
+  }
+
+  // ── L4 SIGNALS ────────────────────────────────────────────────
+  // Absorbs the former standalone ~/.mikai/brain/surfacing.html.
+  // Two code paths:
+  //   1. state.l4_signals.sections has raw HTML per section
+  //      (parsed from surfacing.html) — render it wrapped in our chrome
+  //      so themes align with the rest of the Inspector.
+  //   2. state.l4_signals.deliveries/ticks — the fallback path when
+  //      surfacing.html is gone; render a small ledger + tick table.
+  function renderSignals(c){
+    var s = STATE.l4_signals || {};
+    var header = document.createElement("div");
+    header.className = "panel-header";
+    header.innerHTML =
+      '<div class="h">L4 Signals</div>'+
+      '<div class="sub">what MIKAI is surfacing · Sumimasen ledger</div>'+
+      '<div class="count">'+esc(s.source||"—")+
+        (s.mtime ? ' · '+esc(s.mtime.slice(0,19).replace("T"," ")) : '')+
+        '</div>';
+    c.appendChild(header);
+
+    if (s.stamp){
+      var stamp = document.createElement("div");
+      stamp.className = "signals-stamp";
+      stamp.textContent = s.stamp;
+      c.appendChild(stamp);
+    }
+
+    var wrap = document.createElement("div");
+    wrap.className = "signals-wrap";
+
+    var sections = s.sections || {};
+    var order = ["attention-head","scored","deliveries",
+                 "transitions","engine","quiet"];
+    var titles = {
+      "attention-head":"Attention head",
+      "scored":"Also scoring above zero",
+      "deliveries":"Recent deliveries (Sumimasen ledger)",
+      "transitions":"Recent state transitions",
+      "engine":"Attention Engine — last ticks",
+      "quiet":"What MIKAI is choosing to be silent about",
+    };
+    var rendered = 0;
+    order.forEach(function(id){
+      if (!sections[id]) return;
+      var sec = document.createElement("section");
+      sec.className = "signals-section";
+      sec.innerHTML =
+        '<h3>'+esc(titles[id]||id)+'</h3>'+
+        '<div class="signals-body">'+ sections[id] +'</div>';
+      wrap.appendChild(sec);
+      rendered++;
+    });
+
+    // Fallback (source=logs) — render mini tables when we don't have
+    // surfacing.html HTML to hand back.
+    if (rendered === 0){
+      var dels = (s.deliveries||[]);
+      var ticks = (s.ticks||[]);
+      if (dels.length){
+        var d = document.createElement("section");
+        d.className = "signals-section";
+        d.innerHTML = '<h3>Recent deliveries</h3>' +
+          '<div class="signals-body"><table class="mini"><thead>'+
+          '<tr><th>ts</th><th>thread</th><th>verdict</th><th>note</th></tr>'+
+          '</thead><tbody>'+
+          dels.map(function(row){
+            var v = row.verdict || row.outcome || "—";
+            return '<tr><td class="mono">'+esc((row.ts||"").slice(5,16))+
+              '</td><td>'+esc(row.thread||row.slug||"—")+
+              '</td><td>'+esc(v)+
+              '</td><td>'+esc(truncate(row.note||row.next_step||"",90))+'</td></tr>';
+          }).join("") + '</tbody></table></div>';
+        wrap.appendChild(d);
+      }
+      if (ticks.length){
+        var e = document.createElement("section");
+        e.className = "signals-section";
+        e.innerHTML = '<h3>Attention Engine ticks</h3>' +
+          '<div class="signals-body"><table class="mini"><thead>'+
+          '<tr><th>ts</th><th>mode</th><th>surf</th><th>summary</th></tr>'+
+          '</thead><tbody>'+
+          ticks.map(function(row){
+            return '<tr><td class="mono">'+esc((row.ts||"").slice(5,16))+
+              '</td><td>'+esc(row.mode||"")+
+              '</td><td>'+esc(String(row.surfaced||0))+
+              '</td><td>'+esc(truncate(row.did||"",90))+'</td></tr>';
+          }).join("") + '</tbody></table></div>';
+        wrap.appendChild(e);
+      }
+      if (!dels.length && !ticks.length){
+        var empty = document.createElement("div");
+        empty.className = "signals-empty";
+        empty.textContent = "no signals — surfacing.html missing and "+
+          "no delivery/progress log entries yet.";
+        wrap.appendChild(empty);
+      }
+    }
+
+    c.appendChild(wrap);
+  }
+
+  // ── WIKI ──────────────────────────────────────────────────────
+  // File browser + client-side substring search over the wiki dir.
+  // Content is pre-inlined at build time; the sidecar's FTS index is
+  // ignored here (it needs a live HTTP endpoint — not this static page).
+  function renderWiki(c){
+    var w = STATE.wiki || {files:[]};
+    var files = w.files || [];
+    var header = document.createElement("div");
+    header.className = "panel-header";
+    header.innerHTML =
+      '<div class="h">Wiki</div>'+
+      '<div class="sub">'+esc(w.dir||"~/.mikai/wiki")+'</div>'+
+      '<div class="count">'+files.length+' file(s)</div>';
+    c.appendChild(header);
+
+    if (!files.length){
+      var e = document.createElement("div");
+      e.className = "signals-empty";
+      e.textContent = "no wiki files discovered.";
+      c.appendChild(e);
+      return;
+    }
+
+    var shell = document.createElement("div");
+    shell.className = "wiki-shell";
+
+    // File list
+    var side = document.createElement("nav");
+    side.className = "wiki-side";
+    files.forEach(function(f, i){
+      var li = document.createElement("button");
+      li.className = "wiki-file" + (i===0 ? " on" : "");
+      li.dataset.idx = String(i);
+      li.innerHTML =
+        '<span class="wf-name">'+esc(f.name)+'</span>'+
+        '<span class="wf-meta">'+
+          (f.bytes>1e6 ? (f.bytes/1e6).toFixed(1)+" MB"
+                       : (f.bytes/1024).toFixed(0)+" KB")+
+          (f.truncated ? " · truncated" : "")+
+        '</span>';
+      side.appendChild(li);
+    });
+    shell.appendChild(side);
+
+    // Main pane
+    var main = document.createElement("div");
+    main.className = "wiki-main";
+    var search = document.createElement("div");
+    search.className = "wiki-search";
+    search.innerHTML =
+      '<input id="wiki-q" type="text" placeholder="substring search across all files (case-insensitive)…" autocomplete="off"/>'+
+      '<div class="wiki-hint">note: this searches the embedded slices only — full FTS requires the sidecar.</div>';
+    main.appendChild(search);
+    var results = document.createElement("div");
+    results.className = "wiki-results";
+    results.id = "wiki-results";
+    results.style.display = "none";
+    main.appendChild(results);
+    var body = document.createElement("div");
+    body.className = "wiki-body";
+    body.id = "wiki-body";
+    main.appendChild(body);
+    shell.appendChild(main);
+    c.appendChild(shell);
+
+    function showFile(idx){
+      var f = files[idx];
+      if (!f) return;
+      Array.prototype.forEach.call(side.children, function(el, i){
+        el.classList.toggle("on", i === idx);
+      });
+      var head = '<div class="wiki-file-head">'+
+        '<div class="wfh-name">'+esc(f.name)+'</div>'+
+        '<div class="wfh-meta">'+
+          esc(f.path)+
+          ' · '+ (f.bytes/1024).toFixed(0) +' KB · mtime '+esc(f.mtime||"—")+
+          (f.truncated ? ' · showing '+((f.shown_bytes||0)/1024).toFixed(0)+' KB (head+tail slice)' : '')+
+        '</div></div>';
+      var content;
+      if (f.kind === "log"){
+        content = '<pre class="wiki-log">'+esc(f.text||"")+'</pre>';
+      } else {
+        // Reuse the tiny markdown-lite pass. For wiki.md (large), this
+        // is still lightweight — no async parsing library needed.
+        content = '<div class="um-column wiki-md">'+markdownLite(f.text||"")+'</div>';
+      }
+      body.innerHTML = head + content;
+      results.style.display = "none";
+      body.style.display = "block";
+    }
+    Array.prototype.forEach.call(side.children, function(el){
+      el.addEventListener("click", function(){
+        showFile(parseInt(el.dataset.idx, 10));
+      });
+    });
+
+    var q = search.querySelector("#wiki-q");
+    var searchTimer;
+    q.addEventListener("input", function(){
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(function(){ runSearch(q.value); }, 120);
+    });
+    function runSearch(needle){
+      needle = String(needle||"").trim();
+      if (needle.length < 2){
+        results.style.display = "none";
+        body.style.display = "block";
+        return;
+      }
+      var lower = needle.toLowerCase();
+      var hits = [];
+      files.forEach(function(f, idx){
+        var text = f.text || "";
+        var lc = text.toLowerCase();
+        var pos = 0;
+        while ((pos = lc.indexOf(lower, pos)) !== -1 && hits.length < 60){
+          var start = Math.max(0, pos - 60);
+          var end   = Math.min(text.length, pos + needle.length + 80);
+          hits.push({
+            file: f.name,
+            idx: idx,
+            snippet: (start>0?"…":"") + text.slice(start, end) + (end<text.length?"…":""),
+            offset: pos,
+          });
+          pos = pos + needle.length;
+        }
+      });
+      if (!hits.length){
+        results.innerHTML = '<div class="wiki-noresults">no matches for '+esc(needle)+'</div>';
+      } else {
+        results.innerHTML = '<div class="wiki-results-head">'+hits.length+' match(es) · click to open file</div>' +
+          hits.map(function(h){
+            var snip = esc(h.snippet).replace(
+              new RegExp("("+esc(needle).replace(/[-/\\^$*+?.()|[\]{}]/g,"\\$&")+")","gi"),
+              "<mark>$1</mark>");
+            return '<div class="wiki-hit" data-idx="'+h.idx+'">'+
+              '<div class="wh-file">'+esc(h.file)+'</div>'+
+              '<div class="wh-snip">'+snip+'</div></div>';
+          }).join("");
+        Array.prototype.forEach.call(
+          results.querySelectorAll(".wiki-hit"), function(el){
+            el.addEventListener("click", function(){
+              showFile(parseInt(el.dataset.idx, 10));
+            });
+        });
+      }
+      results.style.display = "block";
+      body.style.display = "none";
+    }
+
+    // First file selected by default
+    showFile(0);
   }
 
   // ── SUBSTRATE ─────────────────────────────────────────────────
