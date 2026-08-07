@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MIKAI Ingestion Flow — Sources · wiki.md · Dream</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Newsreader:ital,wght@0,400;0,500;1,400;1,500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ground:#F4F1EA;
+    --ground-2:#EDE8DD;
+    --ink:#1B2430;
+    --ink-2:#3B4655;
+    --muted:#6B7482;
+    --line:#C9C1B0;
+    --line-2:#D8D2C2;
+    --accent:#D4816F;
+    --accent-soft:#EBB9AB;
+    --card:#FBF8F2;
+    --card-warm:#F6EDDF;
+    --serif:"Newsreader", Georgia, "Times New Roman", serif;
+    --sans:"Archivo", -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    --mono:"IBM Plex Mono", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);}
+  body{
+    background:
+      radial-gradient(1600px 900px at 85% -10%, #EFEADC 0%, transparent 55%),
+      radial-gradient(1200px 700px at -10% 100%, #EEE7D6 0%, transparent 50%),
+      var(--ground);
+    line-height:1.55;-webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1280px;margin:0 auto;padding:56px 40px 96px;}
+
+  /* header */
+  header{
+    display:flex;justify-content:space-between;align-items:flex-end;gap:32px;
+    flex-wrap:wrap;border-bottom:1px solid var(--line);
+    padding-bottom:24px;margin-bottom:44px;
+  }
+  .brow{
+    font-family:var(--mono);font-size:11px;letter-spacing:.24em;
+    text-transform:uppercase;color:var(--accent);margin:0 0 10px;
+  }
+  h1{
+    font-family:var(--serif);font-weight:500;font-size:44px;
+    letter-spacing:-.015em;line-height:1.05;margin:0 0 8px;color:var(--ink);
+  }
+  h1 em{font-style:italic;color:var(--ink-2);font-weight:400;}
+  .sub{
+    font-family:var(--serif);font-style:italic;font-size:17px;
+    color:var(--ink-2);max-width:640px;margin:0;line-height:1.5;
+  }
+  .meta{
+    text-align:right;font-family:var(--mono);font-size:11px;
+    color:var(--muted);letter-spacing:.05em;line-height:1.8;
+  }
+  .meta .k{color:var(--ink);}
+
+  /* stage headers above columns */
+  .stage-row{
+    display:grid;grid-template-columns:1fr 1.4fr 1.15fr;
+    gap:36px;margin-bottom:14px;
+  }
+  .stage-row .stage{
+    font-family:var(--mono);font-size:10.5px;letter-spacing:.22em;
+    text-transform:uppercase;color:var(--muted);
+    display:flex;align-items:center;gap:10px;
+  }
+  .stage-row .stage::after{
+    content:"";flex:1;height:1px;background:var(--line-2);
+  }
+  .stage-row .stage .num{
+    display:inline-flex;align-items:center;justify-content:center;
+    width:22px;height:22px;border:1px solid var(--line);border-radius:50%;
+    font-size:10px;color:var(--ink);background:var(--card);
+  }
+
+  /* svg diagram */
+  .diagram{
+    background:var(--card);
+    border:1px solid var(--line-2);
+    border-radius:18px;
+    padding:36px 28px 28px;
+    box-shadow:0 1px 0 rgba(255,255,255,.6) inset, 0 20px 60px -40px rgba(27,36,48,.25);
+  }
+  svg{display:block;width:100%;height:auto;}
+
+  /* consumers row */
+  .consumers{
+    margin-top:22px;
+    display:flex;justify-content:flex-end;gap:14px;flex-wrap:wrap;
+    padding:16px 20px;background:var(--ground-2);
+    border:1px dashed var(--line);border-radius:12px;
+  }
+  .consumers .lbl{
+    font-family:var(--mono);font-size:10px;letter-spacing:.2em;
+    text-transform:uppercase;color:var(--muted);margin-right:auto;
+    align-self:center;
+  }
+  .cons{
+    background:var(--card);border:1px solid var(--line-2);
+    border-radius:10px;padding:8px 12px;min-width:190px;
+    font-family:var(--mono);font-size:11px;color:var(--ink);
+    line-height:1.5;
+  }
+  .cons b{color:var(--accent);font-weight:600;}
+  .cons.gap{border:1px solid var(--accent-soft);background:#FBEEE8;}
+  .cons small{color:var(--muted);display:block;font-size:9.5px;letter-spacing:.06em;margin-top:2px;text-transform:uppercase;}
+
+  /* legend */
+  .legend{
+    margin-top:28px;display:flex;gap:26px;flex-wrap:wrap;
+    padding:14px 20px;font-family:var(--mono);font-size:10.5px;
+    color:var(--muted);letter-spacing:.04em;
+    border-top:1px solid var(--line-2);
+  }
+  .legend .item{display:inline-flex;align-items:center;gap:9px;}
+  .swatch{width:28px;height:2px;background:var(--ink);border-radius:2px;}
+  .swatch.dashed{background:transparent;border-top:1.5px dashed var(--muted);height:0;}
+  .swatch.dot{width:10px;height:10px;border-radius:50%;background:var(--accent);}
+  .swatch.node{width:10px;height:10px;border-radius:50%;background:var(--ink);}
+  .swatch.pill{width:22px;height:12px;border-radius:6px;background:var(--card-warm);border:1px solid var(--line);}
+
+  /* prose */
+  .prose{
+    margin-top:52px;
+    display:grid;grid-template-columns:1.4fr 1fr;gap:44px;
+    padding-top:32px;border-top:1px solid var(--line);
+  }
+  .prose h2{
+    font-family:var(--serif);font-weight:500;font-size:24px;
+    letter-spacing:-.01em;margin:0 0 14px;color:var(--ink);
+  }
+  .prose h2 em{font-style:italic;color:var(--accent);}
+  .prose p{
+    font-family:var(--serif);font-size:16px;line-height:1.65;
+    color:var(--ink-2);margin:0 0 14px;
+  }
+  .prose p b{color:var(--ink);font-weight:600;}
+  .prose code{
+    font-family:var(--mono);font-size:13px;color:var(--ink);
+    background:var(--ground-2);padding:1px 5px;border-radius:4px;
+  }
+  .prose .aside h3{
+    font-family:var(--mono);font-size:10.5px;letter-spacing:.2em;
+    text-transform:uppercase;color:var(--accent);margin:0 0 8px;
+  }
+  .prose .aside{
+    background:var(--card);border:1px solid var(--line-2);
+    border-radius:14px;padding:22px 24px;
+  }
+  .prose .aside p{font-size:14px;line-height:1.55;font-style:normal;font-family:var(--sans);color:var(--ink-2);}
+  .prose .aside .flag{
+    display:inline-block;font-family:var(--mono);font-size:10px;
+    letter-spacing:.16em;text-transform:uppercase;
+    background:var(--accent);color:var(--card);
+    padding:3px 8px;border-radius:4px;margin-bottom:10px;
+  }
+
+  footer{
+    margin-top:56px;color:var(--muted);
+    font-family:var(--mono);font-size:11px;letter-spacing:.08em;
+    display:flex;justify-content:space-between;
+    padding-top:20px;border-top:1px solid var(--line-2);
+  }
+  footer .r{text-align:right;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div>
+    <p class="brow">Ingestion Flow · Wiki Substrate · Dream Derivations</p>
+    <h1>How data <em>enters, settles, and is re-dreamt</em></h1>
+    <p class="sub">A narrow slice of MIKAI: seven ingestion sources converge on a single append-only wiki, from which four scheduled dream passes distil small, LLM-friendly derived files.</p>
+  </div>
+  <div class="meta">
+    <span class="k">docs/INGESTION_FLOW.html</span><br>
+    2026-08-06 · pear-seashore<br>
+    <span class="k">wiki.md</span> · 27MB · 8,049 sections<br>
+    companion to <span class="k">ARCHITECTURE_FLOW</span>
+  </div>
+</header>
+
+<div class="stage-row">
+  <div class="stage"><span class="num">1</span>Sources</div>
+  <div class="stage"><span class="num">2</span>Port &amp; Wiki Substrate</div>
+  <div class="stage"><span class="num">3</span>Dream Derivations</div>
+</div>
+
+<div class="diagram">
+<svg viewBox="0 0 1180 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="MIKAI ingestion flow diagram">
+  <defs>
+    <!-- arrowheads -->
+    <marker id="arr" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="10" markerHeight="10" orient="auto-start-reverse">
+      <path d="M0,1 L11,6 L0,11 z" fill="#1B2430"/>
+    </marker>
+    <marker id="arr-pink" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="10" markerHeight="10" orient="auto-start-reverse">
+      <path d="M0,1 L11,6 L0,11 z" fill="#D4816F"/>
+    </marker>
+    <marker id="arr-muted" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="9" markerHeight="9" orient="auto-start-reverse">
+      <path d="M0,1 L11,6 L0,11 z" fill="#6B7482"/>
+    </marker>
+
+    <!-- soft column backdrops -->
+    <linearGradient id="colGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#EDE8DD" stop-opacity=".55"/>
+      <stop offset="1" stop-color="#EDE8DD" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- column backdrops -->
+  <rect x="10"  y="10" width="290" height="700" rx="14" fill="url(#colGrad)"/>
+  <rect x="330" y="10" width="470" height="700" rx="14" fill="url(#colGrad)"/>
+  <rect x="830" y="10" width="340" height="700" rx="14" fill="url(#colGrad)"/>
+
+  <!-- ============================================= -->
+  <!-- COLUMN 1 : SOURCES                             -->
+  <!-- ============================================= -->
+  <g font-family="IBM Plex Mono, monospace" font-size="12" fill="#1B2430">
+
+    <!-- Apple Notes -->
+    <circle cx="60" cy="60" r="9" fill="#1B2430"/>
+    <text x="82" y="58">Apple Notes</text>
+    <text x="82" y="73" font-size="10" fill="#6B7482">FSEvents watcher</text>
+
+    <!-- iMessage -->
+    <circle cx="60" cy="130" r="9" fill="#1B2430"/>
+    <text x="82" y="128">iMessage</text>
+    <text x="82" y="143" font-size="10" fill="#6B7482">SQLite watcher · chat.db</text>
+
+    <!-- Claude threads -->
+    <circle cx="60" cy="200" r="9" fill="#1B2430"/>
+    <text x="82" y="198">Claude threads</text>
+    <text x="82" y="213" font-size="10" fill="#6B7482">daily cookie-decrypt pull</text>
+
+    <!-- Perplexity -->
+    <circle cx="60" cy="270" r="9" fill="#1B2430"/>
+    <text x="82" y="268">Perplexity</text>
+    <text x="82" y="283" font-size="10" fill="#6B7482">browser cookie / API poll</text>
+
+    <!-- Gmail -->
+    <circle cx="60" cy="340" r="9" fill="#1B2430"/>
+    <text x="82" y="338">Gmail</text>
+    <text x="82" y="353" font-size="10" fill="#6B7482">MCP polling</text>
+
+    <!-- Drop folder -->
+    <circle cx="60" cy="410" r="9" fill="#1B2430"/>
+    <text x="82" y="408">Drop folder</text>
+    <text x="82" y="423" font-size="10" fill="#6B7482">~/.mikai/brain/inbox/ · manual</text>
+
+    <!-- separator -->
+    <line x1="30" y1="470" x2="290" y2="470" stroke="#C9C1B0" stroke-dasharray="3 4"/>
+    <text x="30" y="490" font-size="9.5" letter-spacing="1.6" fill="#6B7482">HISTORICAL · ONE-SHOT</text>
+
+    <!-- Historical backfill -->
+    <circle cx="60" cy="530" r="9" fill="#D4816F"/>
+    <text x="82" y="528">Neo4j backfill</text>
+    <text x="82" y="543" font-size="10" fill="#6B7482">2026-08-06 · 8,048 episodes</text>
+  </g>
+
+  <!-- Arrows from sources into port -->
+  <g stroke="#1B2430" stroke-width="1.1" fill="none" marker-end="url(#arr)">
+    <path d="M 155 60  C 240 60,  260 210, 340 260"/>
+    <path d="M 165 130 C 240 130, 265 220, 340 268"/>
+    <path d="M 175 200 C 250 200, 270 235, 340 275"/>
+    <path d="M 175 270 C 250 270, 275 275, 340 282"/>
+    <path d="M 175 340 C 250 340, 275 315, 340 289"/>
+    <path d="M 175 410 C 250 410, 275 345, 340 296"/>
+  </g>
+  <g stroke="#D4816F" stroke-width="1.1" fill="none" marker-end="url(#arr-pink)" stroke-dasharray="4 3">
+    <path d="M 175 530 C 260 530, 280 380, 340 310"/>
+  </g>
+
+  <!-- ============================================= -->
+  <!-- COLUMN 2 : PORT + WIKI                         -->
+  <!-- ============================================= -->
+
+  <!-- Port pill -->
+  <g>
+    <rect x="345" y="245" width="260" height="80" rx="14" fill="#FBF8F2" stroke="#1B2430" stroke-width="1.2"/>
+    <text x="360" y="270" font-family="Archivo" font-size="10.5" letter-spacing="2" fill="#D4816F">L3 PORT</text>
+    <text x="360" y="292" font-family="IBM Plex Mono, monospace" font-size="12" font-weight="600" fill="#1B2430">L3Backend.ingest_episode(</text>
+    <text x="360" y="308" font-family="IBM Plex Mono, monospace" font-size="11" fill="#3B4655">  source, content, reference_time )</text>
+  </g>
+
+  <!-- Port -> WikiAdapter arrow -->
+  <g stroke="#1B2430" stroke-width="1.4" fill="none" marker-end="url(#arr)">
+    <path d="M 475 325 L 475 360"/>
+  </g>
+  <text x="482" y="348" font-family="IBM Plex Mono, monospace" font-size="10" fill="#6B7482">active adapter</text>
+
+  <!-- WikiAdapter -->
+  <g>
+    <rect x="380" y="360" width="200" height="42" rx="8" fill="#F6EDDF" stroke="#C9C1B0"/>
+    <text x="480" y="380" font-family="Archivo" font-size="11" font-weight="600" text-anchor="middle" fill="#1B2430">WikiAdapter</text>
+    <text x="480" y="394" font-family="IBM Plex Mono, monospace" font-size="10" text-anchor="middle" fill="#6B7482">append verbatim · dated · source-tagged</text>
+  </g>
+
+  <!-- Arrow WikiAdapter -> wiki.md -->
+  <g stroke="#1B2430" stroke-width="1.4" fill="none" marker-end="url(#arr)">
+    <path d="M 480 405 L 480 440"/>
+  </g>
+
+  <!-- wiki.md — stacked pages glyph, central -->
+  <g transform="translate(390 448)">
+    <!-- back pages -->
+    <rect x="14" y="12" width="176" height="200" rx="6" fill="#EDE8DD" stroke="#C9C1B0"/>
+    <rect x="8"  y="6"  width="176" height="200" rx="6" fill="#F1EBDD" stroke="#C9C1B0"/>
+    <rect x="0"  y="0"  width="176" height="200" rx="6" fill="#FBF8F2" stroke="#1B2430" stroke-width="1.4"/>
+
+    <!-- title -->
+    <text x="18" y="26" font-family="IBM Plex Mono, monospace" font-size="13" font-weight="600" fill="#1B2430">wiki.md</text>
+    <text x="18" y="42" font-family="IBM Plex Mono, monospace" font-size="10" fill="#6B7482">~/.mikai/wiki/</text>
+
+    <line x1="18" y1="54" x2="158" y2="54" stroke="#C9C1B0"/>
+
+    <!-- lines -->
+    <g font-family="IBM Plex Mono, monospace" font-size="9.5" fill="#3B4655">
+      <text x="18" y="72">## 2026-08-06 [notes]</text>
+      <text x="18" y="88" fill="#6B7482">  &lt;verbatim text&gt;</text>
+      <text x="18" y="104">## 2026-08-06 [imsg]</text>
+      <text x="18" y="120" fill="#6B7482">  &lt;verbatim text&gt;</text>
+      <text x="18" y="136">## 2026-08-06 [claude]</text>
+      <text x="18" y="152" fill="#6B7482">  &lt;verbatim text&gt;</text>
+      <text x="18" y="168">## 2026-08-06 [drop]</text>
+      <text x="18" y="184" fill="#6B7482">  ...</text>
+    </g>
+
+    <!-- footer chip -->
+    <rect x="18" y="192" width="86" height="14" rx="7" fill="#F6EDDF" stroke="#C9C1B0"/>
+    <text x="61" y="202" font-family="IBM Plex Mono, monospace" font-size="9" text-anchor="middle" fill="#1B2430">append-only</text>
+  </g>
+
+  <!-- companion files (right of wiki) -->
+  <g font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#1B2430">
+    <!-- wiki-episodes.log -->
+    <g transform="translate(620 470)">
+      <rect width="160" height="46" rx="7" fill="#FBF8F2" stroke="#C9C1B0"/>
+      <text x="12" y="19" font-weight="600">wiki-episodes.log</text>
+      <text x="12" y="35" font-size="9.5" fill="#6B7482">iso-ts · source · bytes</text>
+    </g>
+
+    <!-- wiki.index -->
+    <g transform="translate(620 528)">
+      <rect width="160" height="46" rx="7" fill="#FBF8F2" stroke="#C9C1B0"/>
+      <text x="12" y="19" font-weight="600">wiki.index</text>
+      <text x="12" y="35" font-size="9.5" fill="#6B7482">WikiIndex · byte-offsets</text>
+    </g>
+
+    <!-- wiki.fts.db -->
+    <g transform="translate(620 586)">
+      <rect width="160" height="46" rx="7" fill="#FBF8F2" stroke="#C9C1B0"/>
+      <text x="12" y="19" font-weight="600">wiki.fts.db</text>
+      <text x="12" y="35" font-size="9.5" fill="#6B7482">WikiFTS · SQLite BM25</text>
+    </g>
+  </g>
+
+  <!-- ties from wiki to companion files -->
+  <g stroke="#6B7482" stroke-width="1" fill="none" stroke-dasharray="2 3" marker-end="url(#arr-muted)">
+    <path d="M 566 500 L 615 492"/>
+    <path d="M 566 548 L 615 550"/>
+    <path d="M 566 596 L 615 608"/>
+  </g>
+
+  <!-- corpus stats badge -->
+  <g transform="translate(345 668)">
+    <rect width="435" height="28" rx="6" fill="#F6EDDF" stroke="#C9C1B0"/>
+    <text x="14" y="18" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#1B2430">CORPUS · <tspan fill="#D4816F">27MB</tspan> · <tspan fill="#D4816F">8,049 sections</tspan> · one write path · zero synthesis at ingest</text>
+  </g>
+
+  <!-- ============================================= -->
+  <!-- COLUMN 3 : DREAM DERIVATIONS                   -->
+  <!-- ============================================= -->
+
+  <text x="850" y="42" font-family="IBM Plex Mono, monospace" font-size="10" letter-spacing="1.8" fill="#6B7482">DREAM PASSES · READ WIKI · WRITE DERIVED</text>
+
+  <!-- narrative -->
+  <g transform="translate(850 66)">
+    <rect width="300" height="82" rx="10" fill="#1B2430"/>
+    <text x="18" y="26" font-family="Archivo" font-size="13" font-weight="600" fill="#F4F1EA">narrative</text>
+    <text x="18" y="44" font-family="IBM Plex Mono, monospace" font-size="10" fill="#EBB9AB">nightly + weekly full · 1 LLM call</text>
+    <text x="18" y="66" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#F4F1EA">→ wiki-narrative.md</text>
+    <text x="230" y="66" font-family="IBM Plex Mono, monospace" font-size="9.5" fill="#6B7482">~25KB</text>
+  </g>
+
+  <!-- ontology -->
+  <g transform="translate(850 168)">
+    <rect width="300" height="82" rx="10" fill="#1B2430"/>
+    <text x="18" y="26" font-family="Archivo" font-size="13" font-weight="600" fill="#F4F1EA">ontology</text>
+    <text x="18" y="44" font-family="IBM Plex Mono, monospace" font-size="10" fill="#EBB9AB">weekly Sun 06:00 · 1 LLM call</text>
+    <text x="18" y="66" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#F4F1EA">→ wiki-ontology.md</text>
+    <text x="220" y="66" font-family="IBM Plex Mono, monospace" font-size="9.5" fill="#6B7482">~27KB · 375</text>
+  </g>
+
+  <!-- user-model -->
+  <g transform="translate(850 270)">
+    <rect width="300" height="82" rx="10" fill="#1B2430"/>
+    <text x="18" y="26" font-family="Archivo" font-size="13" font-weight="600" fill="#F4F1EA">user-model</text>
+    <text x="18" y="44" font-family="IBM Plex Mono, monospace" font-size="10" fill="#EBB9AB">weekly · after ontology · 1 LLM call</text>
+    <text x="18" y="66" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#F4F1EA">→ USER_MODEL.md</text>
+    <text x="220" y="66" font-family="IBM Plex Mono, monospace" font-size="9.5" fill="#6B7482">2KB · 2 §</text>
+  </g>
+
+  <!-- compact -->
+  <g transform="translate(850 372)">
+    <rect width="300" height="82" rx="10" fill="#1B2430"/>
+    <text x="18" y="26" font-family="Archivo" font-size="13" font-weight="600" fill="#F4F1EA">compact</text>
+    <text x="18" y="44" font-family="IBM Plex Mono, monospace" font-size="10" fill="#EBB9AB">monthly 1st · 0 LLM calls · deterministic</text>
+    <text x="18" y="66" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#F4F1EA">↻ rewrites wiki.md</text>
+    <text x="220" y="66" font-family="IBM Plex Mono, monospace" font-size="9.5" fill="#6B7482">deduped</text>
+  </g>
+
+  <!-- arrows FROM wiki.md TO each derivation -->
+  <!-- source anchor: right edge of wiki page ~ (566, 550) -->
+  <g stroke="#1B2430" stroke-width="1.2" fill="none" marker-end="url(#arr)">
+    <path d="M 570 470 C 700 470, 750 110, 848 108"/>          <!-- to narrative -->
+    <path d="M 570 500 C 720 500, 760 210, 848 210"/>          <!-- to ontology -->
+    <path d="M 570 540 C 720 540, 760 312, 848 312"/>          <!-- to user-model -->
+    <path d="M 570 580 C 720 580, 760 414, 848 414"/>          <!-- to compact -->
+  </g>
+
+  <!-- pink LLM-call dots along the arrows (0 for compact) -->
+  <g fill="#D4816F">
+    <circle cx="720" cy="288" r="4.5"/>   <!-- narrative -->
+    <circle cx="720" cy="330" r="4.5"/>   <!-- ontology -->
+    <circle cx="720" cy="370" r="4.5"/>   <!-- user-model -->
+  </g>
+  <!-- compact: no dot; annotate with muted zero -->
+  <text x="716" y="418" font-family="IBM Plex Mono, monospace" font-size="9.5" fill="#6B7482">0</text>
+
+  <!-- user-model depends on ontology (thin curve) -->
+  <g stroke="#6B7482" stroke-width="1" fill="none" stroke-dasharray="2 3" marker-end="url(#arr-muted)">
+    <path d="M 1000 250 C 1030 262, 1030 275, 1000 275"/>
+  </g>
+  <text x="1044" y="266" font-family="IBM Plex Mono, monospace" font-size="9" fill="#6B7482">depends on</text>
+  <text x="1044" y="278" font-family="IBM Plex Mono, monospace" font-size="9" fill="#6B7482">ontology</text>
+
+  <!-- roadmap ghost cards -->
+  <g transform="translate(850 474)">
+    <rect width="300" height="66" rx="10" fill="none" stroke="#D4816F" stroke-dasharray="4 3"/>
+    <text x="18" y="24" font-family="Archivo" font-size="12" font-weight="600" fill="#D4816F">tensions · not yet a dream pass</text>
+    <text x="18" y="42" font-family="IBM Plex Mono, monospace" font-size="10" fill="#6B7482">26 tensions in wiki.md · no regenerator</text>
+    <text x="18" y="56" font-family="IBM Plex Mono, monospace" font-size="10" fill="#6B7482">Inspector reads them today · manual</text>
+  </g>
+
+  <g transform="translate(850 560)">
+    <rect width="300" height="52" rx="10" fill="none" stroke="#C9C1B0" stroke-dasharray="4 3"/>
+    <text x="18" y="22" font-family="Archivo" font-size="12" font-weight="600" fill="#6B7482">vector embeddings · deferred</text>
+    <text x="18" y="40" font-family="IBM Plex Mono, monospace" font-size="10" fill="#6B7482">fires only if trigger conditions met</text>
+  </g>
+
+</svg>
+</div>
+
+<!-- Consumers row -->
+<div class="consumers">
+  <div class="lbl">Consumers · who reads what</div>
+  <div class="cons">
+    <b>mikai_ask</b>
+    <small>read path</small>
+    USER_MODEL + ontology + narrative + FTS
+  </div>
+  <div class="cons">
+    <b>Inspector</b>
+    <small>read path</small>
+    wiki.md ## Tensions + USER_MODEL
+  </div>
+  <div class="cons">
+    <b>Cockpit</b>
+    <small>read path</small>
+    threads · not wiki
+  </div>
+  <div class="cons gap">
+    <b>Attention Engine</b>
+    <small>stale-substrate drift</small>
+    reads threads, not dream files
+  </div>
+</div>
+
+<!-- Legend -->
+<div class="legend">
+  <span class="item"><span class="swatch node"></span>ingestion source</span>
+  <span class="item"><span class="swatch"></span>data flow · verbatim write</span>
+  <span class="item"><span class="swatch dashed"></span>metadata / dependency link</span>
+  <span class="item"><span class="swatch dot"></span>LLM call on the arrow (0 = deterministic)</span>
+  <span class="item"><span class="swatch pill"></span>append-only substrate</span>
+</div>
+
+<!-- ================== PROSE ==================== -->
+<section class="prose">
+  <div>
+    <h2>Two halves of one <em>Karpathy design</em></h2>
+    <p><b>The write side is dumb.</b> Every source funnels into the same port method, <code>L3Backend.ingest_episode()</code>. The active <code>WikiAdapter</code> appends the content verbatim, tagged with a date header and a source token, and writes one audit line to <code>wiki-episodes.log</code>. No extraction, no summarisation, no dedup, no re-encoding. The substrate accumulates raw material at ingest cost and nothing else. That intentional dumbness is why the corpus can grow to 27MB across eight sources without a coordination story: the union of writers cannot break each other because none of them share state beyond byte offsets.</p>
+    <p><b>The read side is compressed.</b> Dream passes are the projection lens. <code>narrative</code>, <code>ontology</code>, and <code>user-model</code> each read the raw corpus, spend one LLM call, and emit a small file downstream consumers can afford to hold in a prompt. <code>compact</code> is the deterministic garbage-collector: it rewrites <code>wiki.md</code> deduped, no model in the loop. Together they turn an ever-growing log into a handful of always-fresh, prompt-shaped views — Karpathy's read/write asymmetry realised as file operations rather than embeddings.</p>
+    <p><b>The one broken arrow to flag.</b> The Attention Engine still reads live threads, not the derived files. That is the "stale-substrate drift" the parallel <code>ARCHITECTURE_FLOW.html</code> audit called out in its top-three simplifications: two attention paths, one grounded in raw threads and one in dream outputs, will keep disagreeing until they collapse onto the same substrate.</p>
+  </div>
+
+  <aside class="aside">
+    <span class="flag">Roadmap · not shown yet</span>
+    <h3>What the diagram doesn't have — yet</h3>
+    <p><b>A <code>tensions</code> dream pass.</b> There are already 26 tensions living inside <code>wiki.md</code>, written by hand or by earlier extraction. No current pass regenerates them from the corpus; the Inspector reads them straight from the raw file. A fifth dream pass with the same shape as <code>narrative</code> would close that loop.</p>
+    <p><b>Vector embeddings.</b> Not required today. The FTS index handles retrieval well enough at 27MB. The plan is to add an embedding pass only if trigger conditions fire — corpus growth, recall degradation, or a consumer that specifically needs semantic search over the raw substrate.</p>
+    <p><b>Historical backfill was a one-shot.</b> The Neo4j → wiki migration on 2026-08-06 (8,048 episodes) is drawn dashed because it will never run again. Steady-state ingestion is only the six live sources above it.</p>
+  </aside>
+</section>
+
+<footer>
+  <span>docs/INGESTION_FLOW.html · scoped: sources · wiki · dream</span>
+  <span class="r">companion diagram to <span style="color:var(--ink)">docs/ARCHITECTURE_FLOW.html</span></span>
+</footer>
+
+</div>
+</body>
+</html>
