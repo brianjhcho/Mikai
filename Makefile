@@ -4,7 +4,7 @@
 
 PY := python3
 
-.PHONY: standup standup-dry triage triage-no-llm consolidate-dry consolidate consolidate-brain-md test test-writeback test-exec smoke cockpit install-consolidate-cron install-dream-crons install-health-check act act-dry ask ask-dry test-ask latent-threads latent-threads-dry
+.PHONY: standup standup-dry triage triage-no-llm consolidate-dry consolidate consolidate-brain-md test test-writeback test-exec smoke cockpit install-consolidate-cron install-dream-crons install-health-check act act-dry ask ask-dry test-ask latent-threads latent-threads-dry inspector inspector-refresh inspector-tensions test-inspector
 
 standup:
 	$(PY) -m infra.mikai_brain.standup
@@ -107,3 +107,19 @@ latent-threads:
 
 latent-threads-dry:
 	$(PY) -m infra.mikai_brain.latent_threads --dry-run --verbose
+
+# Inspector — builder's diagnostic surface, companion to the cockpit.
+# Light theme (cream ground, dark ink, pink accents). Reads-only: parses
+# wiki.md tensions, embeds USER_MODEL.md, exposes canned queries against
+# the /ask/stream endpoint. Never mutates thread / brain state.
+inspector:
+	$(PY) -m infra.inspector.main
+
+inspector-refresh:
+	$(PY) -m infra.inspector.main --refresh-only
+
+inspector-tensions:
+	$(PY) -m infra.inspector.tensions
+
+test-inspector:
+	$(PY) -m unittest discover -s infra/inspector/tests -t . -v
