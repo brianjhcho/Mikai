@@ -1,0 +1,65 @@
+diff --git a/docs/MEMORY_ARCHITECTURE.md b/docs/MEMORY_ARCHITECTURE.md
+index d88abb2..d35a24b 100644
+--- a/docs/MEMORY_ARCHITECTURE.md
++++ b/docs/MEMORY_ARCHITECTURE.md
+@@ -679,7 +679,7 @@ prerequisite for evolving each independently.
+ | Class | Frequency | Volume/day | Quality bar | Current backend |
+ |---|---|---|---|---|
+ | **Interactive query** — user asks MIKAI something in Claude | ad-hoc | 0–20 | high (user-facing reasoning) | Claude Max via MCP tool (D-040) |
+-| **Real-time decision** — FIGS deciding what to surface | scheduled 3×/day | ~10 calls | high (single-user-facing output) | Claude via `claude -p` (Max first-party OAuth) |
++| **Real-time decision** — Surface Engine deciding what to surface | scheduled 3×/day | ~10 calls | high (single-user-facing output) | Claude via `claude -p` (Max first-party OAuth) |
+ | **Background synthesis** — nightly dream, echoes composition | 1×/day | ~5 calls | medium (structured output, no reasoning ceiling) | DeepSeek V3 today; consolidation adds ~60 more |
+ | **High-volume extraction** — Graphiti entity/edge extraction per episode | per-ingest | 100s | low-medium (JSON output only) | DeepSeek V3 via patched adapter |
+ 
+@@ -714,7 +714,7 @@ changes.
+ - **Interactive query** → Claude Max subscription — zero marginal cost;
+   already paid. Constraint: rate limits shared with the user's own
+   chat quota. Not usable for background batch.
+-- **Real-time decision (FIGS)** → Claude Max via `claude -p` — same
++- **Real-time decision (Surface Engine)** → Claude Max via `claude -p` — same
+   subscription pool. At 3 daily ticks × 3–5 LLM invocations per tick,
+   well within limits.
+ - **Background synthesis** → cheapest capable cloud model.
+@@ -740,7 +740,7 @@ cloud LLM as the escape hatch for ambiguity; local LLM once available.**
+ 
+ **Consolidate the sidecar's LLM client into a formal `LlmBackend` protocol.**
+ Ship implementations for DeepSeek (current), Gemini Flash Lite (upgrade
+-path), Ollama (deferred), and Claude via `claude -p` (FIGS's current
++path), Ollama (deferred), and Claude via `claude -p` (Surface Engine's current
+ pattern, generalized). Add an env-var-driven backend selection so per-run
+ routing (e.g., `MIKAI_LLM_BACKEND=gemini`) is possible without code
+ changes.
+@@ -824,7 +824,7 @@ The full-corpus wiki surfaced content invisible to every other lens
+ 
+ ### K.5 The downstream
+ 
+-FIGS immediately points at the ontology wiki as PRIMARY LENS (see
++Surface Engine immediately points at the ontology wiki as PRIMARY LENS (see
+ pear-seashore commit on 2026-07-04 wiring `ontology_wiki_content` into
+ DECIDE_PROMPT with new Rule 0: "at least 1 of 2-5 items must come from
+ the ontology wiki, not the needs registry"). First live tick with the
+@@ -843,7 +843,7 @@ graph density lens on their own.
+   right; wiki synthesis performs concept unification for free at read time.
+ - **V2 consolidation is deferred, not killed.** Under the wiki-first
+   architecture, graph consolidation is an optimization for whoever consumes
+-  the graph directly. FIGS reads the wiki first; graph is background.
++  the graph directly. Surface Engine reads the wiki first; graph is background.
+ - **Ontology + LLM synthesis IS the "gradient loss function" the user
+   intuited** — Palantir-shape ontology (DIMENSIONS.md) as the teacher
+   signal, LLM synthesis as the update mechanism, wiki as the compressed
+diff --git a/docs/research/consolidation-approaches-2026-07.md b/docs/research/consolidation-approaches-2026-07.md
+index 7481cec..e2671a7 100644
+--- a/docs/research/consolidation-approaches-2026-07.md
++++ b/docs/research/consolidation-approaches-2026-07.md
+@@ -238,9 +238,9 @@ cost — already paid. The 2026-04-20 MCP eval validated this pattern
+ 
+ Constraint: same rate limit as Brian's own chat. If a background job
+ saturates that pool, interactive queries starve. This is the reason
+-FIGS and consolidation cannot use `claude -p` for high-volume batch.
++Surface Engine and consolidation cannot use `claude -p` for high-volume batch.
+ 
+-### 5.2 Real-time decision (FIGS tick)
++### 5.2 Real-time decision (Surface Engine tick)
+ 
+ Volume: 3 scheduled ticks/day, ~3–5 LLM calls each = ~10–15/day total.
+ Quality bar: high (single user-facing output).
