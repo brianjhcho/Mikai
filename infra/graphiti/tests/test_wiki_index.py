@@ -231,6 +231,35 @@ class WikiAdapterIndexTest(unittest.TestCase):
             rows_after_first,
         )
 
+    def test_ingest_dedup_ignores_content_diff(self) -> None:
+        """Regression: identity-only dedup. A second ingest with the same
+        (reference_time, source, name) but a DIFFERENT body must still
+        be skipped — this is the truncated-duplicate scenario that put
+        two copies of TSA 2.0::006::human in wiki.md before 2026-08-07."""
+        first = self._episode()
+        asyncio.run(self.adapter.ingest_episode(first))
+        wiki = self.root / "wiki.md"
+        size_after_first = wiki.stat().st_size
+        rows_after_first = len(
+            WikiIndex.load(self.root / "wiki.index").records
+        )
+        truncated = Episode(
+            content="Fresh episode content 🚀 …[truncated]",
+            source_description=first.source_description,
+            reference_time=first.reference_time,
+            name=first.name,
+        )
+        asyncio.run(self.adapter.ingest_episode(truncated))
+        self.assertEqual(
+            wiki.stat().st_size, size_after_first,
+            "wiki.md must not grow on same-identity re-ingest",
+        )
+        self.assertEqual(
+            len(WikiIndex.load(self.root / "wiki.index").records),
+            rows_after_first,
+            "wiki.index must not gain a row on same-identity re-ingest",
+        )
+
     def test_search_uses_index_never_whole_file(self) -> None:
         """search() returns matching sections via the index; results are
         capped and never require reading all of wiki.md."""

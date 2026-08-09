@@ -24,6 +24,7 @@ drag in graphiti_core, which only exists in the sidecar venv.
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
 import sys
 import types
@@ -135,7 +136,19 @@ def _priorities_text() -> str:
 def _fts_hits(query: str, k: int = FTS_TOP_K) -> list[dict]:
     """BM25 top-k over the wiki. Returns WikiFTS.search() rows. Empty on
     a missing wiki or FTS5-less interpreter — callers fall back to the
-    WikiIndex window."""
+    WikiIndex window.
+
+    Recursive-contamination filter: same-day claude-code sections are
+    dropped from results by default. Reason: every mikai_ask call over
+    a MIKAI-related question is itself ingested (via the claude-thread
+    watcher's coverage of active claude-code sessions), and the ingested
+    turns contain dense matches for the query's own vocabulary ("key
+    insights", "cite specific turns", …). Left unfiltered, retrieval
+    for a question about a historical thread returns the CURRENT
+    conversation asking the question. Verified 2026-08-07: every hit
+    for "Task State Awareness 2.0" came from that morning's own ask
+    turns. Filter is skipped when MIKAI_ASK_ALLOW_SAMEDAY_CLAUDECODE=1.
+    We overfetch (k * 3) before filtering so the top-k doesn't shrink."""
     wiki_md = _wiki_dir() / "wiki.md"
     if not wiki_md.exists():
         return []
@@ -145,9 +158,22 @@ def _fts_hits(query: str, k: int = FTS_TOP_K) -> list[dict]:
     if fts is None:
         return []
     try:
-        return fts.search(query, limit=k)
+        raw = fts.search(query, limit=k * 3)
     finally:
         fts.close()
+    if os.environ.get("MIKAI_ASK_ALLOW_SAMEDAY_CLAUDECODE") == "1":
+        return raw[:k]
+    today_iso = datetime.now(timezone.utc).date().isoformat()
+    kept: list[dict] = []
+    for h in raw:
+        source = str(h.get("source", ""))
+        header_ts = str(h.get("header_ts", ""))
+        if source.startswith("claude-code") and header_ts.startswith(today_iso):
+            continue
+        kept.append(h)
+        if len(kept) >= k:
+            break
+    return kept
 
 
 def _load_index(wiki_index_mod, wiki_md: Path):

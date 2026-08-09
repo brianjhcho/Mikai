@@ -494,8 +494,17 @@ class WikiAdapter(L3Backend):
         content_bytes = len(episode.content.rstrip().encode("utf-8"))
 
         idx = self._get_index()
+        # Identity-only dedup: (reference_time, source, name). Passing
+        # content_bytes here would allow duplicate writes whenever the
+        # same episode is re-ingested with a different body — the exact
+        # scenario that produced truncated-duplicate sections when
+        # claude-threads re-fetched a turn whose export payload shrank
+        # (see wiki.md before the 2026-08-07 cleanup: TSA 2.0::006::human
+        # appeared twice, second copy truncated mid-sentence). If the
+        # body legitimately changed for a real reason, that belongs in a
+        # separate "revise section" path, not a silent second append.
         if idx.has_section(
-            ref_iso, episode.source_description, title, content_bytes
+            ref_iso, episode.source_description, title
         ):
             logger.info(
                 "wiki ingest skipped (duplicate): %s — %s — %s",

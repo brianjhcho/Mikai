@@ -155,13 +155,25 @@ class WikiFTS:
         path = db_path or default_db_path()
         fts = cls(path, cls._connect(path))
         conn = fts._conn
+        # Slug dedup during rebuild: wiki.md occasionally holds two
+        # sections with the same header identity (pre-2026-08-07 truncated
+        # re-ingest bug; see wiki_adapter.ingest_episode dedup notes).
+        # WikiIndex records both, but the FTS table has no unique-slug
+        # constraint (FTS5 virtual tables don't support them). Deduping
+        # here — keep the FIRST occurrence per slug — prevents a truncated
+        # copy from out-ranking the original at BM25 time.
+        seen: set[str] = set()
         def _rows():
             for record in wiki_index.records:
+                slug = _slug(record)
+                if slug in seen:
+                    continue
+                seen.add(slug)
                 text = wiki_index.read_section(wiki_path, record)
                 yield (
                     record.get("name", ""),
                     _section_body(text),
-                    _slug(record),
+                    slug,
                     record.get("header_ts", ""),
                     record.get("source", ""),
                     record.get("byte_start", -1),
@@ -176,8 +188,8 @@ class WikiFTS:
                 _rows(),
             )
         logger.info(
-            "wiki.fts rebuilt: %d sections → %s",
-            len(wiki_index.records), path,
+            "wiki.fts rebuilt: %d unique / %d total sections → %s",
+            len(seen), len(wiki_index.records), path,
         )
         return fts
 
@@ -199,10 +211,16 @@ class WikiFTS:
         fts = cls.load(path)
         if fts is None:
             return None
-        if fts.count() != len(wiki_index.records):
+        # Compare against unique-slug count, not raw record count: build()
+        # dedups duplicate slugs, so a wiki.index with N records where M
+        # are duplicates produces N-M FTS rows. Comparing against N would
+        # rebuild every call. Cheap enough at 8K-section scale to compute
+        # the unique set per adapter load.
+        expected = len({_slug(r) for r in wiki_index.records})
+        if fts.count() != expected:
             logger.info(
-                "wiki.fts stale (%d rows vs %d sections) — rebuilding",
-                fts.count(), len(wiki_index.records),
+                "wiki.fts stale (%d rows vs %d unique sections) — rebuilding",
+                fts.count(), expected,
             )
             fts.close()
             return cls.build(wiki_index, wiki_path, path)

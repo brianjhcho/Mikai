@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MIKAI — The Consolidation Layer</title>
+<style>
+  :root {
+    --bg: #0b0d12;
+    --fg: #e6e6e6;
+    --muted: #8b93a5;
+    --grey-fill: #2a2f3a;
+    --grey-stroke: #4a5262;
+    --purple-fill: #3a2f4a;
+    --purple-stroke: #7b5aa3;
+    --amber: #d4a04a;
+    --blue: #6c9ce6;
+    --blue-arc: #3a5faf;
+    --amber-arc: #b8860b;
+    --cyan-tab: #4a8b9a;
+    --danger: #d4665a;
+    --success: #6bb26b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 40px 32px 60px;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+    line-height: 1.55;
+    font-size: 15px;
+  }
+  header { max-width: 1600px; margin: 0 auto 24px; }
+  h1 {
+    font-size: 32px;
+    font-weight: 700;
+    margin: 0 0 6px;
+    letter-spacing: -0.5px;
+  }
+  .tagline { color: var(--muted); margin: 0 0 24px; font-size: 17px; }
+  .formula {
+    background: #14181f;
+    border: 1px solid var(--grey-stroke);
+    border-radius: 8px;
+    padding: 18px 22px;
+    font-family: "SF Mono", "JetBrains Mono", ui-monospace, monospace;
+    font-size: 15px;
+    color: var(--fg);
+    margin: 0 0 28px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+  .formula .label {
+    color: var(--muted);
+    font-family: -apple-system, sans-serif;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .formula code {
+    color: var(--fg);
+    background: none;
+    padding: 0;
+  }
+  .formula .term { color: var(--blue); }
+  .formula .op { color: var(--muted); }
+  .diagram-wrap {
+    max-width: 1600px;
+    margin: 0 auto;
+    overflow-x: auto;
+    background: #0d1017;
+    border: 1px solid #1a1f2a;
+    border-radius: 12px;
+    padding: 24px 12px;
+  }
+  svg { display: block; margin: 0 auto; }
+  .footer {
+    max-width: 1600px;
+    margin: 32px auto 0;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 32px;
+  }
+  .footer-block h3 {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--muted);
+    margin: 0 0 12px;
+    font-weight: 600;
+  }
+  .footer-block p { margin: 0 0 10px; font-size: 14px; }
+  .footer-block .key {
+    color: var(--amber);
+    font-weight: 600;
+  }
+  .pattern-callout {
+    max-width: 1600px;
+    margin: 32px auto 0;
+    background: linear-gradient(90deg, #14181f 0%, #1a2028 100%);
+    border-left: 3px solid var(--amber);
+    padding: 20px 24px;
+    border-radius: 4px;
+  }
+  .pattern-callout .lede { color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: 0.8px; margin: 0 0 6px; }
+  .pattern-callout .body { font-size: 16px; margin: 0; }
+  .pattern-callout .missing { color: var(--amber); font-weight: 600; }
+
+  /* SVG styling */
+  .stage-grey rect {
+    fill: var(--grey-fill);
+    stroke: var(--grey-stroke);
+    stroke-width: 1.5;
+  }
+  .stage-purple rect {
+    fill: var(--purple-fill);
+    stroke: var(--purple-stroke);
+    stroke-width: 1.5;
+    stroke-dasharray: 6 3;
+  }
+  .stage-label {
+    fill: var(--fg);
+    font-family: -apple-system, sans-serif;
+    font-size: 13px;
+    font-weight: 600;
+    text-anchor: middle;
+  }
+  .stage-sub {
+    fill: var(--muted);
+    font-family: -apple-system, sans-serif;
+    font-size: 10.5px;
+    text-anchor: middle;
+  }
+  .stage-num {
+    fill: var(--muted);
+    font-family: "SF Mono", ui-monospace, monospace;
+    font-size: 10px;
+    text-anchor: start;
+  }
+  .side-tab {
+    fill: #1c2530;
+    stroke: var(--cyan-tab);
+    stroke-width: 1;
+  }
+  .side-tab-text {
+    fill: var(--cyan-tab);
+    font-family: -apple-system, sans-serif;
+    font-size: 10px;
+    font-style: italic;
+    text-anchor: middle;
+  }
+  .flow-arrow { stroke: var(--muted); stroke-width: 1.8; fill: none; marker-end: url(#arrow); }
+  .loop-a { stroke: var(--blue-arc); stroke-width: 1.8; fill: none; marker-end: url(#arrow-blue); stroke-dasharray: none; }
+  .loop-b { stroke: var(--amber-arc); stroke-width: 1.8; fill: none; marker-end: url(#arrow-amber); }
+  .loop-label {
+    font-family: -apple-system, sans-serif;
+    font-size: 11px;
+    fill: var(--muted);
+  }
+  .loop-a-label { fill: var(--blue); }
+  .loop-b-label { fill: var(--amber); }
+  .valve {
+    fill: #3a2020;
+    stroke: var(--danger);
+    stroke-width: 1.8;
+  }
+  .human-icon {
+    fill: var(--amber);
+  }
+  .human-label {
+    fill: var(--amber);
+    font-family: -apple-system, sans-serif;
+    font-size: 10.5px;
+    text-anchor: middle;
+  }
+  .cylinder-fill { fill: var(--grey-fill); stroke: var(--grey-stroke); stroke-width: 1.5; }
+  .ghost {
+    fill: #1c2530;
+    stroke: none;
+    opacity: 0.7;
+  }
+  .ghost-label {
+    fill: #4a5262;
+    font-family: -apple-system, sans-serif;
+    font-size: 9.5px;
+    font-style: italic;
+    text-anchor: middle;
+  }
+  .scroll-icon {
+    fill: #2a2013;
+    stroke: var(--amber);
+    stroke-width: 1;
+  }
+  .scroll-label {
+    fill: var(--amber);
+    font-family: -apple-system, sans-serif;
+    font-size: 10px;
+    font-weight: 600;
+    text-anchor: middle;
+  }
+  .legend-box {
+    fill: #14181f;
+    stroke: var(--grey-stroke);
+    stroke-width: 1;
+  }
+  .legend-title {
+    fill: var(--muted);
+    font-family: -apple-system, sans-serif;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+  }
+  .legend-text {
+    fill: var(--fg);
+    font-family: -apple-system, sans-serif;
+    font-size: 11px;
+  }
+  .adjacent-strip {
+    fill: #14181f;
+    stroke: #2a2f3a;
+    stroke-width: 1;
+    stroke-dasharray: 3 2;
+  }
+  .adjacent-title {
+    fill: var(--danger);
+    font-family: -apple-system, sans-serif;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+  }
+  .adjacent-item {
+    fill: var(--muted);
+    font-family: -apple-system, sans-serif;
+    font-size: 11px;
+  }
+  .adjacent-reason { fill: #6a7080; font-style: italic; }
+  .exit-callout {
+    fill: var(--success);
+    font-family: -apple-system, sans-serif;
+    font-size: 9.5px;
+    font-style: italic;
+    text-anchor: middle;
+  }
+  .warn-glyph {
+    fill: var(--danger);
+    font-weight: bold;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>The Consolidation Layer</h1>
+  <p class="tagline">Cheap authorship behind a real gate — the missing quadrant between pre-LLM systems (gates + expensive humans) and post-LLM systems (cheap authorship + no gate).</p>
+  <div class="formula">
+    <span class="label">Consolidation priority S(c,t)</span>
+    <code><span class="term">w₁</span>·log(density) <span class="op">+</span> <span class="term">w₂</span>·Σᵢ(t−tᵢ)<sup>−d</sup> <span class="op">+</span> <span class="term">w₃</span>·spread <span class="op">+</span> <span class="term">w₄</span>·max-sim(c, goals ∪ profile)</code>
+  </div>
+</header>
+
+<div class="diagram-wrap">
+<svg viewBox="0 0 1600 780" width="100%" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Consolidation architecture flow diagram">
+  <defs>
+    <marker id="arrow" viewBox="0 -5 10 10" refX="9" refY="0" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0,-5L10,0L0,5" fill="#8b93a5"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 -5 10 10" refX="9" refY="0" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0,-5L10,0L0,5" fill="#3a5faf"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 -5 10 10" refX="9" refY="0" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0,-5L10,0L0,5" fill="#b8860b"/>
+    </marker>
+  </defs>
+
+  <!-- Legend -->
+  <g transform="translate(1340, 20)">
+    <rect class="legend-box" x="0" y="0" width="240" height="150" rx="6"/>
+    <text class="legend-title" x="14" y="22">Legend</text>
+    <!-- deterministic -->
+    <rect x="14" y="34" width="18" height="14" fill="var(--grey-fill)" stroke="var(--grey-stroke)" stroke-width="1.5"/>
+    <text class="legend-text" x="40" y="45">deterministic (rules, scoring)</text>
+    <!-- LLM -->
+    <rect x="14" y="56" width="18" height="14" fill="var(--purple-fill)" stroke="var(--purple-stroke)" stroke-width="1.5" stroke-dasharray="4 2" rx="3"/>
+    <text class="legend-text" x="40" y="67">LLM-called (language work only)</text>
+    <!-- human -->
+    <circle cx="23" cy="86" r="6" class="human-icon"/>
+    <text class="legend-text" x="40" y="90">human touchpoint (audit)</text>
+    <!-- loop A -->
+    <line x1="14" y1="107" x2="32" y2="107" stroke="var(--blue-arc)" stroke-width="1.8"/>
+    <text class="legend-text" x="40" y="111">L4 goal-alignment feedback</text>
+    <!-- loop B -->
+    <line x1="14" y1="126" x2="32" y2="126" stroke="var(--amber-arc)" stroke-width="1.8"/>
+    <text class="legend-text" x="40" y="130">human verdicts → policy doc</text>
+  </g>
+
+  <!-- STAGE ROW (y ~120-260) -->
+
+  <!-- 1: wiki.md cylinder -->
+  <g transform="translate(30, 130)">
+    <text class="stage-num" x="0" y="-6">1</text>
+    <!-- cylinder top ellipse -->
+    <ellipse class="cylinder-fill" cx="70" cy="10" rx="60" ry="10"/>
+    <!-- body -->
+    <path class="cylinder-fill" d="M10,10 L10,110 A60,10 0 0 0 130,110 L130,10"/>
+    <!-- bottom ellipse (front only) -->
+    <path d="M10,110 A60,10 0 0 0 130,110" fill="none" stroke="var(--grey-stroke)" stroke-width="1.5"/>
+    <text class="stage-label" x="70" y="60">wiki.md</text>
+    <text class="stage-sub" x="70" y="76">27MB · 8k+ sections</text>
+    <text class="stage-sub" x="70" y="92">+ wiki.fts.db</text>
+  </g>
+  <!-- arrow 1→2 -->
+  <path class="flow-arrow" d="M170,190 L200,190"/>
+
+  <!-- 2: Signal extraction (grey) -->
+  <g class="stage-grey" transform="translate(200, 140)">
+    <text class="stage-num" x="0" y="-6">2</text>
+    <rect x="0" y="0" width="150" height="100" rx="6"/>
+    <text class="stage-label" x="75" y="24">Signal extraction</text>
+    <text class="stage-sub" x="75" y="46">mention density</text>
+    <text class="stage-sub" x="75" y="60">thread spread</text>
+    <text class="stage-sub" x="75" y="74">recency curve</text>
+    <text class="stage-sub" x="75" y="90" fill="var(--muted)" font-style="italic">from FTS5</text>
+  </g>
+  <!-- arrow 2→3 -->
+  <path class="flow-arrow" d="M350,190 L385,190"/>
+
+  <!-- 3: Consolidation scoring S(c,t) (grey, taller — the load-bearing box) -->
+  <g class="stage-grey" transform="translate(385, 125)">
+    <text class="stage-num" x="0" y="-6">3</text>
+    <rect x="0" y="0" width="200" height="130" rx="6"/>
+    <text class="stage-label" x="100" y="22">Consolidation scoring</text>
+    <text class="stage-label" x="100" y="40" font-family="'SF Mono',monospace" font-size="13">S(c, t)</text>
+    <!-- input ports labels -->
+    <text class="stage-sub" x="100" y="60">w₁ log(density)</text>
+    <text class="stage-sub" x="100" y="74">w₂ Σ(t−tᵢ)⁻ᵈ  recency</text>
+    <text class="stage-sub" x="100" y="88">w₃ thread spread</text>
+    <text class="stage-sub" x="100" y="102" fill="var(--blue)">w₄ goal-alignment  ←</text>
+    <text class="stage-sub" x="100" y="120" fill="var(--muted)" font-style="italic">deterministic + inspectable</text>
+    <!-- input port markers (left edge) -->
+    <circle cx="0" cy="60" r="2.5" fill="var(--muted)"/>
+    <circle cx="0" cy="74" r="2.5" fill="var(--muted)"/>
+    <circle cx="0" cy="88" r="2.5" fill="var(--muted)"/>
+    <circle cx="0" cy="102" r="3.5" fill="var(--blue)"/>
+  </g>
+  <!-- side tab: ACT-R -->
+  <g transform="translate(385, 100)">
+    <rect class="side-tab" x="30" y="0" width="140" height="18" rx="3"/>
+    <text class="side-tab-text" x="100" y="13">↑ ACT-R base-level activation</text>
+  </g>
+  <!-- ghost silhouette behind box 3 (Luhmann) -->
+  <g transform="translate(430, 275)">
+    <ellipse class="ghost" cx="55" cy="10" rx="55" ry="10"/>
+    <text class="ghost-label" x="55" y="26">Luhmann / org-mode:</text>
+    <text class="ghost-label" x="55" y="38">the human this replaces</text>
+  </g>
+  <!-- arrow 3→4 -->
+  <path class="flow-arrow" d="M585,190 L620,190"/>
+
+  <!-- 4: Threshold + hysteresis (valve glyph) -->
+  <g transform="translate(620, 130)">
+    <text class="stage-num" x="0" y="-6">4</text>
+    <!-- valve = funnel neck -->
+    <path class="valve" d="M0,20 L110,20 L80,80 L80,110 L30,110 L30,80 Z"/>
+    <text class="stage-label" x="55" y="55" fill="var(--fg)">Gate</text>
+    <text class="stage-sub" x="55" y="72" fill="#e6b8b0">threshold +</text>
+    <text class="stage-sub" x="55" y="86" fill="#e6b8b0">hysteresis</text>
+    <text class="stage-sub" x="55" y="105" fill="#e6b8b0">demote ≠ promote</text>
+    <!-- amber human icon BESIDE the valve, upper right -->
+    <g transform="translate(115, 20)">
+      <circle class="human-icon" cx="8" cy="8" r="7"/>
+      <text class="human-label" x="8" y="32">sampled audit</text>
+      <text class="human-label" x="8" y="45">1-in-10</text>
+    </g>
+    <!-- dotted tap-off from valve to human -->
+    <path d="M100,35 L120,32" stroke="var(--amber)" stroke-width="1" stroke-dasharray="2 2" fill="none"/>
+  </g>
+  <!-- arrow 4→5 -->
+  <path class="flow-arrow" d="M745,190 L790,190"/>
+
+  <!-- 5: Canonicalization (purple, split internally) -->
+  <g transform="translate(790, 130)">
+    <text class="stage-num" x="0" y="-6">5</text>
+    <!-- outer purple rounded -->
+    <rect x="0" y="0" width="170" height="120" rx="10" fill="var(--purple-fill)" stroke="var(--purple-stroke)" stroke-width="1.5" stroke-dasharray="6 3"/>
+    <text class="stage-label" x="85" y="20">Canonicalization</text>
+    <!-- inner grey strip (deterministic first) -->
+    <rect x="10" y="30" width="150" height="34" rx="4" fill="var(--grey-fill)" stroke="var(--grey-stroke)" stroke-width="1"/>
+    <text class="stage-sub" x="85" y="45">alias table + embedding</text>
+    <text class="stage-sub" x="85" y="58">kNN over existing names</text>
+    <!-- inner purple strip (LLM only if kNN found candidates) -->
+    <rect x="10" y="70" width="150" height="36" rx="4" fill="#4a2f3a" stroke="var(--purple-stroke)" stroke-width="1" stroke-dasharray="4 2"/>
+    <text class="stage-sub" x="85" y="85" fill="#e0c0ff">LLM merge adjudication</text>
+    <text class="stage-sub" x="85" y="98" fill="#e0c0ff">(only when kNN hits)</text>
+    <!-- mint new name exit -->
+    <path d="M85,120 L85,140" stroke="var(--success)" stroke-width="1" stroke-dasharray="3 2" fill="none" marker-end="url(#arrow)"/>
+    <text class="exit-callout" x="85" y="156">mint new name only</text>
+    <text class="exit-callout" x="85" y="168">after resolution fails</text>
+  </g>
+  <!-- side tab: Wikipedia redirects -->
+  <g transform="translate(790, 105)">
+    <rect class="side-tab" x="15" y="0" width="140" height="18" rx="3"/>
+    <text class="side-tab-text" x="85" y="13">↑ Wikipedia redirects</text>
+  </g>
+  <!-- arrow 5→6 -->
+  <path class="flow-arrow" d="M960,190 L1000,190"/>
+
+  <!-- 6: Concept-page authoring (purple) -->
+  <g transform="translate(1000, 140)">
+    <text class="stage-num" x="0" y="-6">6</text>
+    <rect x="0" y="0" width="160" height="100" rx="10" fill="var(--purple-fill)" stroke="var(--purple-stroke)" stroke-width="1.5" stroke-dasharray="6 3"/>
+    <text class="stage-label" x="80" y="22">Concept-page</text>
+    <text class="stage-label" x="80" y="38">authoring</text>
+    <!-- markdown file glyph -->
+    <g transform="translate(50, 50)">
+      <path d="M0,0 L48,0 L60,12 L60,40 L0,40 Z" fill="#1c2530" stroke="var(--purple-stroke)" stroke-width="1"/>
+      <path d="M48,0 L48,12 L60,12" fill="none" stroke="var(--purple-stroke)" stroke-width="1"/>
+      <text x="30" y="20" text-anchor="middle" fill="var(--muted)" font-family="monospace" font-size="9">---</text>
+      <text x="30" y="30" text-anchor="middle" fill="var(--fg)" font-family="monospace" font-size="8">frontmatter</text>
+    </g>
+  </g>
+  <!-- side tab: GraphRAG -->
+  <g transform="translate(1000, 115)">
+    <rect class="side-tab" x="10" y="0" width="140" height="18" rx="3"/>
+    <text class="side-tab-text" x="80" y="13">↑ GraphRAG community summaries</text>
+  </g>
+  <!-- arrow 6→7 -->
+  <path class="flow-arrow" d="M1160,190 L1200,190"/>
+
+  <!-- 7: Wikilink insertion (grey) -->
+  <g class="stage-grey" transform="translate(1200, 140)">
+    <text class="stage-num" x="0" y="-6">7</text>
+    <rect x="0" y="0" width="150" height="100" rx="6"/>
+    <text class="stage-label" x="75" y="24">Wikilink</text>
+    <text class="stage-label" x="75" y="42">insertion</text>
+    <text class="stage-sub" x="75" y="66" font-family="monospace">[[canonical-slug]]</text>
+    <text class="stage-sub" x="75" y="82">rewrite over wiki.md</text>
+    <text class="stage-sub" x="75" y="94" font-style="italic" fill="var(--muted)">deterministic</text>
+  </g>
+  <!-- side tab: Roam warning -->
+  <g transform="translate(1200, 250)">
+    <rect class="side-tab" x="0" y="0" width="150" height="30" rx="3" stroke="var(--danger)"/>
+    <text class="warn-glyph" x="12" y="18" font-size="12">⚠</text>
+    <text class="side-tab-text" x="80" y="14" fill="var(--danger)">Roam:</text>
+    <text class="side-tab-text" x="80" y="26" fill="var(--danger)">no gate = hairball</text>
+  </g>
+  <!-- future PageRank hint below -->
+  <g transform="translate(1200, 295)">
+    <rect x="0" y="0" width="150" height="46" rx="4" fill="none" stroke="var(--muted)" stroke-width="1" stroke-dasharray="3 2"/>
+    <text class="stage-sub" x="75" y="16" fill="var(--muted)">later:</text>
+    <text class="stage-sub" x="75" y="28" fill="var(--muted)">link-topology (PageRank)</text>
+    <text class="stage-sub" x="75" y="40" fill="#6a7080" font-style="italic">once link density exists</text>
+  </g>
+  <!-- dashed arrow from future PageRank hint back to scoring (stage 3) -->
+  <path d="M1200,318 Q900,360 585,180" stroke="var(--muted)" stroke-width="1" stroke-dasharray="4 3" fill="none" opacity="0.5"/>
+
+  <!-- 8: Retrieval consumption (grey) -->
+  <g class="stage-grey" transform="translate(1200, 400)">
+    <text class="stage-num" x="0" y="-6">8</text>
+    <rect x="0" y="0" width="150" height="80" rx="6"/>
+    <text class="stage-label" x="75" y="22">Retrieval</text>
+    <text class="stage-label" x="75" y="40">consumption</text>
+    <text class="stage-sub" x="75" y="60">BM25 + concept pages</text>
+    <text class="stage-sub" x="75" y="74">→ L4 / cockpit</text>
+  </g>
+  <!-- side tab: Anthropic contextual (RETRIEVAL side, OUTSIDE the gate) -->
+  <g transform="translate(1200, 488)">
+    <rect class="side-tab" x="0" y="0" width="150" height="30" rx="3"/>
+    <text class="side-tab-text" x="75" y="14">↑ Anthropic contextual retrieval</text>
+    <text class="side-tab-text" x="75" y="26" fill="var(--muted)" font-style="normal">retrieval-side, outside gate</text>
+  </g>
+  <!-- arrow 7→8 -->
+  <path class="flow-arrow" d="M1275,240 L1275,400"/>
+
+  <!-- L4 / cockpit chip (source of loop A) -->
+  <g transform="translate(1130, 570)">
+    <rect x="0" y="0" width="120" height="44" rx="10" fill="#1c2530" stroke="var(--blue)" stroke-width="1.5"/>
+    <text class="stage-label" x="60" y="20" fill="var(--blue)">L4 / cockpit</text>
+    <text class="stage-sub" x="60" y="35" fill="var(--blue)">active tasks · goals</text>
+  </g>
+
+  <!-- LOOP A: L4 goals → scoring's w4 port. Blue, right→left, bottom arc -->
+  <path class="loop-a" d="M1130,592 Q700,660 385,227"/>
+  <text class="loop-a-label" x="820" y="670">active task states + long-term goals → goal-alignment term (w₄)</text>
+
+  <!-- Scroll icon: promotion-policy doc (visual anchor of loop B) -->
+  <g transform="translate(690, 700)">
+    <path class="scroll-icon" d="M0,10 Q0,0 10,0 L60,0 Q70,0 70,10 L70,40 Q70,50 60,50 L10,50 Q0,50 0,40 Z"/>
+    <text class="scroll-label" x="35" y="22">promotion-</text>
+    <text class="scroll-label" x="35" y="34">policy doc</text>
+  </g>
+  <!-- LOOP B: human audit → policy doc → both purple stages (5 and 6) -->
+  <!-- from human icon (at valve, ~735,153) down to scroll -->
+  <path class="loop-b" d="M735,168 Q720,400 720,700"/>
+  <!-- from scroll UP to stage 5 -->
+  <path class="loop-b" d="M760,720 Q900,620 875,250"/>
+  <!-- from scroll UP to stage 6 -->
+  <path class="loop-b" d="M760,720 Q1000,600 1080,240"/>
+  <!-- from scroll UP to gate (threshold tuning) -->
+  <path class="loop-b" d="M690,720 Q650,500 675,240"/>
+  <text class="loop-b-label" x="380" y="722">accept / reject / rename / merge verdicts</text>
+  <text class="loop-b-label" x="380" y="738">→ written rules the LLM judge reads on every call</text>
+
+  <!-- ADJACENT NOT IN-PATH strip (bottom left) -->
+  <g transform="translate(20, 570)">
+    <rect class="adjacent-strip" x="0" y="0" width="1080" height="90" rx="8"/>
+    <text class="adjacent-title" x="16" y="22">Adjacent — NOT in-path — no gate</text>
+    <text class="adjacent-item" x="16" y="46">
+      <tspan font-weight="600">MemGPT</tspan>
+      <tspan class="adjacent-reason"> — myopic (per-session promotion)</tspan>
+    </text>
+    <text class="adjacent-item" x="290" y="46">
+      <tspan font-weight="600">HippoRAG</tspan>
+      <tspan class="adjacent-reason"> — extracts-all (no notability)</tspan>
+    </text>
+    <text class="adjacent-item" x="560" y="46">
+      <tspan font-weight="600">RAPTOR</tspan>
+      <tspan class="adjacent-reason"> — unnamed clusters (unaddressable)</tspan>
+    </text>
+    <text class="adjacent-item" x="850" y="46">
+      <tspan font-weight="600">Mem0 / Cognee</tspan>
+      <tspan class="adjacent-reason"> — no scarcity</tspan>
+    </text>
+    <text class="adjacent-item" x="16" y="72" fill="var(--muted)" font-style="italic">Their absence from the pipeline is the point: cheap authorship without a gate reproduces the failure of Roam and Notion databases at graph scale.</text>
+  </g>
+</svg>
+</div>
+
+<div class="pattern-callout">
+  <p class="lede">The historical pattern</p>
+  <p class="body">Pre-LLM systems (Wikipedia, Zettelkasten, org-mode) had good <span class="missing">gates</span> powered by expensive humans. Post-LLM systems (MemGPT, GraphRAG, RAPTOR, Mem0) have cheap <span class="missing">authorship</span> and no gate at all. MIKAI's Consolidation Layer is the missing quadrant: <strong>cheap LLM authorship behind a deterministic, human-tunable gate.</strong> GraphRAG is the nearest neighbor; the delta is incremental maintenance, human-legible pages, and a personal (not corpus-statistical) salience function.</p>
+</div>
+
+<div class="footer">
+  <div class="footer-block">
+    <h3>Reframe worth internalizing</h3>
+    <p>"Worthy" is <span class="key">not</span> a property of the concept. It's a property of <strong>(concept × current goals × time)</strong>. Salience is non-stationary — "Graphiti patching" was page-worthy in May and is ambient now. The system needs <span class="key">demotion</span> as a first-class, cheap operation. Once demotion is cheap, promotion errors are cheap, and full automation stops being risky. This is the real unlock — more than better LLM judgment.</p>
+  </div>
+  <div class="footer-block">
+    <h3>The consistency wobble</h3>
+    <p>A frontier model on good evidence makes reasonable one-shot promotion calls. What it <em>cannot</em> do is hold a stable threshold across thousands of independent calls over months. Uncalibrated per-item judgment drifts. Fix: make <span class="key">S deterministic</span>; let the LLM only do what needs language understanding (boundary drawing, merge adjudication, page authoring). "LLM decides" means "LLM operates inside a scoring-and-policy harness" — never freelances the whole decision.</p>
+  </div>
+  <div class="footer-block">
+    <h3>Path 2 wins the bootstrap</h3>
+    <p>Brian seeds ~10 exemplars ("these deserve pages, roughly this order, one-line reasons") + 5 explicit negatives. System fits <code>S</code>'s weights to reproduce the ranking, then proposes the next 20 candidates as a <span class="key">ranked batch</span> with evidence cards. Verdicts become text in a promotion-policy doc that conditions every future LLM judge call — constitutional, like DECISIONS.md. After ~20 verdicts, per-item review ends; drop to 1-in-10 sampled audits + unconditional demotion. <strong>Path 1 (approval queue) already empirically failed</strong> — 24 proposals rotting in the inbox is the evidence.</p>
+  </div>
+  <div class="footer-block">
+    <h3>Naming — Wikipedia's hard-won lesson</h3>
+    <p>Concepts don't self-canonicalize. "Agent Memory" / "Memory Consolidation" / "Dual-memory problem" are the same topic; an LLM asked in three sessions mints all three unless resolution comes <span class="key">before</span> mint. Pipeline: normalized alias-table exact match → embedding kNN over existing names+aliases → LLM merge adjudication only when candidates exist → mint new name only if all resolve empty. Aliases append-only; merges/renames logged and reversible. Without this apparatus, concept promotion is <strong>worse than no promotion</strong> — duplicated near-synonym pages fragment retrieval mass.</p>
+  </div>
+</div>
+
+</body>
+</html>

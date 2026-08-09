@@ -87,6 +87,32 @@ ONTOLOGY_OUT = WIKI_DIR / "wiki-ontology.md"
 CHECKPOINT = WIKI_DIR / ".dream-bootstrap-ontology.checkpoint.jsonl"
 NARRATIVE_STATE = WIKI_DIR / ".narrative-state.json"
 
+# Consolidation MVP (Pass E — promote):
+CONCEPTS_DIR = WIKI_DIR / "concepts"
+SALIENCE_LEDGER = WIKI_DIR / "wiki-salience.md"
+USER_MODEL_MD = Path.home() / ".mikai" / "brain" / "USER_MODEL.md"
+
+DECAY_RATE = 0.5              # ACT-R d = 0.5 (Anderson & Schooler 1991)
+PROMOTE_DEFAULT_THRESHOLD = 4.0
+PROMOTE_DEFAULT_CAP = 10
+NGRAM_MIN_COUNT = 5
+NGRAM_MIN_NONSTOP_CHARS = 8
+
+# Build 1 (Fable's SALIENCE_MVP_DIAGNOSIS.md): case-blind extraction.
+# Lowercase phrases need a higher frequency floor than capitalized ones
+# because common English 1–3-grams flood the counter. 15 is the "posture
+# has 723 mentions but graphiti has 591 and got promoted, so 15 leaves
+# real signal without noise flood" threshold.
+LOWERCASE_NGRAM_MIN_COUNT = 15
+LOWERCASE_NGRAM_MIN_NONSTOP_CHARS = 5
+
+# Self-corpus stoplist path. If missing, the pass auto-generates from
+# repo file/dir names (things named as MIKAI infrastructure — sidecar,
+# graphiti, wiki_index, cockpit, dream_bootstrap, etc. — are removed as
+# candidates so the promotion pass doesn't reward "MIKAI ingests its own
+# build sessions" self-referential vocabulary).
+SELF_CORPUS_STOPLIST = Path.home() / ".mikai" / "brain" / "self-corpus-stoplist.txt"
+
 CHUNK_CHAR_BUDGET = 150_000   # safe LLM context margin per call
 NARRATIVE_TARGET_CHUNKS = 5   # aim for <= this many Pass A calls
 RATE_LIMIT_S = 2.0            # min seconds between LLM calls
@@ -952,6 +978,648 @@ def run_user_model(budget: Budget, dry_run: bool, verbose: bool) -> str:
     )
 
 
+# ── Pass E: promote (Consolidation MVP) ───────────────────────────────────
+#
+# The magnum-opus formula (see docs/SALIENCE_FORMULA.md):
+#     S(c, t) = w₁·ln(Σᵢ (t−tᵢ)⁻ᵈ) + w₂·spread(c) + w₃·goal_overlap(c)
+#
+# MVP form: all weights = 1, d = 0.5, hand-set threshold. The four LLM
+# entry points Fable enumerated (E1 canonicalization, E2 goal inference,
+# E3 importance rating I(c), E4 promotion gate) are DEFERRED — none run
+# in the MVP. The only LLM call per pass is one 3-sentence summary per
+# promoted concept (Budget-capped).
+#
+# "No taxonomy" per Brian's 2026-08-08 call: candidates come from BOTH
+# wiki-ontology.md (entity-flavored) AND capitalized-phrase extraction
+# over wiki.md (concept-flavored). One scoring loop, one output dir, one
+# ledger. Entity vs concept is a v2 sort — the formula is agnostic.
+#
+# Output surfaces:
+# - ~/.mikai/wiki/concepts/<slug>.md  — one page per promoted candidate
+# - ~/.mikai/wiki/wiki-salience.md    — ranked audit ledger (every score,
+#                                        every term, promoted marker)
+
+_NGRAM_STOP = frozenset("""
+the this that these those my our your his her their its
+a an and or but for nor so yet as if in on at by to of from with
+he she they we you it i me us them him her
+is are was were be being been have has had do does did
+will would could should may might must shall can
+not no yes than then when where while why how what who whom whose
+about above across after against along among around because before below
+between during into like near off onto out over past since through
+throughout under until upon within without also just more most other
+some such very much many few little several own same each every any
+here there now today yesterday tomorrow later earlier soon still already
+""".split())
+
+_NGRAM_RE = re.compile(
+    r"\b(?:[A-Z][a-z0-9]+(?:-[A-Za-z0-9]+)?)"
+    r"(?:\s+[A-Z][a-z0-9]+(?:-[A-Za-z0-9]+)?){1,3}\b"
+)
+
+# Lowercase 1–3 word token pattern (Build 1). Deliberately permissive
+# because filtering happens after — _ngram_ok_lower drops leading/trailing
+# stopwords and length-2 all-common phrases. Words are ≥3 chars to skip
+# noise like "as", "is", "at" that _NGRAM_STOP might miss in some forms.
+_NGRAM_RE_LOWER = re.compile(
+    r"\b([a-z][a-z0-9]{2,}(?:-[a-z0-9]+)?"
+    r"(?:\s+[a-z][a-z0-9]{2,}(?:-[a-z0-9]+)?){0,2})\b"
+)
+
+
+def _slugify(name: str) -> str:
+    """Concept name → kebab-case filename slug."""
+    s = name.strip().lower()
+    s = re.sub(r"[^\w\s-]", "", s)
+    s = re.sub(r"\s+", "-", s)
+    s = re.sub(r"-+", "-", s).strip("-")
+    return s or "unknown"
+
+
+def _ngram_ok(phrase: str) -> bool:
+    """N-gram candidate filter: no leading stopword, enough real letters.
+    Kills 'The System', 'This Approach', 'Next Step' — keeps 'Task State
+    Awareness', 'Agent Memory', 'Attention Head'."""
+    words = phrase.split()
+    if not words:
+        return False
+    if words[0].lower() in _NGRAM_STOP:
+        return False
+    non_stop_chars = sum(len(w) for w in words if w.lower() not in _NGRAM_STOP)
+    return non_stop_chars >= NGRAM_MIN_NONSTOP_CHARS
+
+
+def _ngram_ok_lower(phrase: str) -> bool:
+    """Lowercase-phrase filter (Build 1). Same shape as _ngram_ok but
+    with a lower char threshold — single-word lowercase candidates like
+    'posture' (7 chars) and 'workout' (7 chars) are the point of this
+    pass and would fail an 8-char rule. Rejects candidates whose FIRST
+    OR LAST word is a stopword, so 'posture correction' passes but
+    'the posture' and 'posture is' don't."""
+    words = phrase.split()
+    if not words:
+        return False
+    if words[0] in _NGRAM_STOP or words[-1] in _NGRAM_STOP:
+        return False
+    non_stop_chars = sum(len(w) for w in words if w not in _NGRAM_STOP)
+    return non_stop_chars >= LOWERCASE_NGRAM_MIN_NONSTOP_CHARS
+
+
+def parse_ontology_candidates(path: Path) -> list[dict]:
+    """Parse wiki-ontology.md's markdown table → [{name, kind, type}].
+    Mentions/tᵢ recomputed at scan time (ontology counts can be stale)."""
+    if not path.exists():
+        return []
+    out = []
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line.startswith("|"):
+            continue
+        # skip header/separator rows
+        if line.startswith("|---") or line.lower().startswith("| entity"):
+            continue
+        cols = [c.strip() for c in line.strip("|").split("|")]
+        if len(cols) < 6:
+            continue
+        name, typ = cols[0], cols[1]
+        if not name or typ not in _ALLOWED_TYPES:
+            continue
+        out.append({"name": name, "kind": "entity", "type": typ})
+    return out
+
+
+def extract_ngram_candidates(idx: WikiIndex, wiki_md: Path) -> list[dict]:
+    """Scan every wiki.md section body once. Return capitalized 2-4 word
+    phrases (per _NGRAM_RE) appearing >= NGRAM_MIN_COUNT times, filtered
+    by _ngram_ok. These are the concept-flavored candidates that ontology
+    extraction (proper-nouns-only) never surfaces."""
+    from collections import Counter
+    counter: Counter = Counter()
+    for rec in idx.records:
+        try:
+            text = idx.read_section(wiki_md, rec)
+        except Exception:  # noqa: BLE001 — one bad section shouldn't abort
+            continue
+        # skip header line + ingested-comment line
+        body_start = text.find("\n") + 1
+        body = _INGESTED_RE.sub("", text[body_start:])
+        for m in _NGRAM_RE.finditer(body):
+            phrase = m.group(0).strip()
+            if _ngram_ok(phrase):
+                counter[phrase] += 1
+    return [{"name": name, "kind": "concept"}
+            for name, count in counter.items()
+            if count >= NGRAM_MIN_COUNT]
+
+
+def extract_lowercase_ngram_candidates(idx: WikiIndex,
+                                       wiki_md: Path) -> list[dict]:
+    """Build 1: scan every wiki.md section body once for LOWERCASE 1-3
+    word phrases. Same output shape as extract_ngram_candidates. Uses a
+    higher frequency floor (LOWERCASE_NGRAM_MIN_COUNT=15) than the
+    capitalized pass to keep noise bounded.
+
+    Diagnosis 2026-08-08: 'posture' (~723 mentions), 'workout' (~256),
+    'parents' (~185), 'startup' (~426), 'proposal spot' (~130) never
+    became candidates because the capitalized-only regex excluded them.
+    This function is the fix.
+
+    De-duplication is per-section: a phrase that appears twice in one
+    section counts once toward its frequency total (prevents dense-
+    section outliers from inflating counts). Overlapping phrases within
+    a section ('posture correction' + 'posture') each count for their
+    own row."""
+    from collections import Counter
+    counter: Counter = Counter()
+    for rec in idx.records:
+        try:
+            text = idx.read_section(wiki_md, rec)
+        except Exception:  # noqa: BLE001
+            continue
+        body_start = text.find("\n") + 1
+        body = _INGESTED_RE.sub("", text[body_start:]).lower()
+        section_phrases: set[str] = set()
+        for m in _NGRAM_RE_LOWER.finditer(body):
+            phrase = m.group(1).strip()
+            if _ngram_ok_lower(phrase):
+                section_phrases.add(phrase)
+        for p in section_phrases:
+            counter[p] += 1
+    return [{"name": name, "kind": "concept-lower"}
+            for name, count in counter.items()
+            if count >= LOWERCASE_NGRAM_MIN_COUNT]
+
+
+def _build_self_corpus_stoplist() -> set[str]:
+    """Build 1: identifiers appearing as file/dir names in MIKAI's own
+    repo become an exclusion set. Counters the self-referential-corpus
+    bias — 'dream_bootstrap', 'wiki_adapter', 'sidecar' should not
+    compete for salience as if they were topics Brian thinks about.
+
+    Uses a hand-maintained file if present (~/.mikai/brain/
+    self-corpus-stoplist.txt, one term per line, comments ignored).
+    Otherwise auto-generates from the repo the script lives in — file
+    stems + directory names, kebab-cased.
+
+    Never returns empty when the auto path runs: at minimum it seeds
+    ['infra', 'sidecar', 'graphiti', 'wiki', 'cockpit', 'mikai'] so a
+    first run without a hand-list still filters obvious infra
+    vocabulary — the '.mikai/wiki/wiki.md' path itself would otherwise
+    make 'wiki' rank high as a bare concept."""
+    stoplist: set[str] = set()
+    if SELF_CORPUS_STOPLIST.exists():
+        for raw in SELF_CORPUS_STOPLIST.read_text().splitlines():
+            line = raw.strip()
+            if line and not line.startswith("#"):
+                stoplist.add(line.lower())
+        return stoplist
+    # Auto-generate from repo file/dir names.
+    for p in _REPO.rglob("*"):
+        if any(part.startswith(".") for part in p.parts[len(_REPO.parts):]):
+            continue
+        if p.is_file():
+            stem = p.stem.lower().replace("_", "-")
+            if len(stem) >= 3:
+                stoplist.add(stem)
+        for part in p.parts[len(_REPO.parts):]:
+            norm = part.lower().replace("_", "-")
+            if len(norm) >= 3 and "." not in norm:
+                stoplist.add(norm)
+    # Seed the obvious ones so tests + fresh runs behave.
+    stoplist.update({
+        "infra", "sidecar", "graphiti", "wiki", "cockpit", "mikai",
+        "dream", "brain", "concepts",
+    })
+    return stoplist
+
+
+# ── Build 2: deterministic alias folding (E1-lite) ───────────────────────
+
+
+def _alias_key(name: str) -> str:
+    """Normalize a candidate name into an alias-grouping key.
+    'Claude Code', 'claude-code', 'Claude-Code', 'claude  code', 'Claude
+    Codes' all fold to 'claude code'. Preserves multi-word structure so
+    'Family Day' and 'Family Controls' stay separate — v0 does NOT do
+    modifier-variant folding ('Mint Monstera' → 'monstera'); that
+    requires embedding cosine (Fable's spec), deferred to v1."""
+    s = name.lower().strip()
+    s = re.sub(r"[-_/]+", " ", s)     # unify separators
+    s = re.sub(r"\s+", " ", s).strip()
+    words = s.split()
+    # Strip trailing plural 's' from words >3 chars to fold 'threads'→'thread',
+    # while leaving 'os', 'as', 'is' alone.
+    words = [w[:-1] if len(w) > 3 and w.endswith("s") else w for w in words]
+    return " ".join(words)
+
+
+def _fold_aliases(candidates: list[dict]) -> list[dict]:
+    """Group candidates by alias key. Each group produces ONE head
+    candidate with an 'aliases' list of the other member names.
+
+    Head selection rules:
+    1. If any group member is an ontology entry (kind='entity'), it wins
+       — ontology carries type (person/org/thing/place) that shouldn't be
+       lost to a capitalized-phrase variant.
+    2. Otherwise the SHORTEST name wins — 'monstera' beats 'monstera-adansonii'.
+    3. Ties break alphabetically for determinism.
+
+    Every returned candidate has an 'aliases' key (possibly empty list),
+    so downstream code can uniformly pass the dict to find_mention_records.
+    Ledger + concept-page writers use 'aliases' to show constituents."""
+    from collections import defaultdict
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for c in candidates:
+        groups[_alias_key(c["name"])].append(c)
+    out: list[dict] = []
+    for _, group in groups.items():
+        if len(group) == 1:
+            group[0].setdefault("aliases", [])
+            out.append(group[0])
+            continue
+        onto = [c for c in group if c.get("kind") == "entity"]
+        pool = onto if onto else group
+        head = min(pool, key=lambda c: (len(c["name"]), c["name"]))
+        aliases = sorted({c["name"] for c in group if c is not head})
+        head["aliases"] = aliases
+        out.append(head)
+    return out
+
+
+def find_mention_records(candidate, records, wiki_md: Path) -> list[dict]:
+    """Sections whose body contains the candidate as a WHOLE-WORD match
+    (case-insensitive). Word boundaries are essential — plain substring
+    matching would count 'mem' inside 'memory'/'member'/'remember', 'pri'
+    inside 'priority', 'mark' inside 'market' — inflating short-name
+    counts by 100x+ and flooding the ledger with fragment candidates.
+
+    `records` is a list of WikiIndex record dicts (was WikiIndex before
+    the 2026-08-09 multiprocessing refactor — records are pickleable,
+    a full WikiIndex is not so cheaply). `candidate` may be either a
+    str OR a dict with 'name' + 'aliases' — in the dict shape the
+    returned mention set is the UNION over head + all aliases,
+    deduplicated by byte_start.
+
+    Returns [{header_ts, source_stream, byte_start, section_name}]."""
+    if isinstance(candidate, dict):
+        names = [candidate["name"]] + list(candidate.get("aliases") or [])
+    else:
+        names = [candidate]
+    alts = "|".join(re.escape(n.lower()) for n in names if n)
+    if not alts:
+        return []
+    pattern = re.compile(r"\b(?:" + alts + r")\b", re.IGNORECASE)
+    seen: set[int] = set()
+    out = []
+    for rec in records:
+        try:
+            text = WikiIndex.read_section(wiki_md, rec)
+        except Exception:  # noqa: BLE001
+            continue
+        if pattern.search(text):
+            key = rec.get("byte_start", 0)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({
+                "header_ts": rec.get("header_ts", ""),
+                "source_stream": source_stream(rec.get("source", "")),
+                "byte_start": key,
+                "section_name": rec.get("name", ""),
+            })
+    return out
+
+
+# ── Build 2.5: multiprocessing scoring workers ────────────────────────────
+# Pure-Python regex scoring over ~5000 candidates × 8000 sections was
+# ~40 min single-threaded. multiprocessing.Pool over CPU cores drops
+# that to ~5-10 min. Workers are initialized once per process with the
+# index records list, wiki path, goals text, and reference timestamp —
+# all pickleable — via `initializer`. Each `_promote_worker_score(cand)`
+# call is stateless w.r.t. the pool (writes only to its own return
+# value); the parent aggregates.
+
+_PROMOTE_WORKER_CTX: dict = {}
+
+
+def _promote_worker_init(records: list, wiki_md_str: str,
+                         goals_text: str, now_iso: str) -> None:
+    """One-time per-worker setup. Runs in each Pool worker on startup."""
+    _PROMOTE_WORKER_CTX["records"] = records
+    _PROMOTE_WORKER_CTX["wiki_md"] = Path(wiki_md_str)
+    _PROMOTE_WORKER_CTX["goals_text"] = goals_text
+    _PROMOTE_WORKER_CTX["now"] = datetime.fromisoformat(now_iso)
+
+
+def _promote_worker_score(cand: dict):
+    """Per-candidate work unit. Returns (cand, score, mentions) or None.
+    None when the candidate has zero mentions (dropped from the ledger)."""
+    ctx = _PROMOTE_WORKER_CTX
+    mentions = find_mention_records(cand, ctx["records"], ctx["wiki_md"])
+    if not mentions:
+        return None
+    score = compute_score(cand, mentions, ctx["goals_text"], ctx["now"])
+    return (cand, score, mentions)
+
+
+def _load_user_goals() -> str:
+    """USER_MODEL.md's Current section (lowercased) — the goal-overlap
+    keyword pool for w₃. Empty string when the file is missing. The
+    embedding upgrade (max-sim over Voyage embeddings) is v2 — this
+    keyword variant is enough to prove the term earns its place."""
+    if not USER_MODEL_MD.exists():
+        return ""
+    text = USER_MODEL_MD.read_text().lower()
+    m = re.search(r"##\s*current(.*?)(?=^## |\Z)", text,
+                  re.MULTILINE | re.DOTALL)
+    return m.group(1) if m else text
+
+
+def compute_score(candidate: dict, mentions: list[dict],
+                  goals_text: str, now: datetime) -> dict:
+    """S = base_activation + spread + goal_overlap. All weights = 1.
+
+    base_activation = ln(Σᵢ (t_now − tᵢ)⁻⁰·⁵) with tᵢ in DAYS. ACT-R form.
+    spread = distinct source streams (Notes / Claude / code / …). ACT-R
+             lacks this; it's cross-context validity evidence.
+    goal_overlap = count of non-trivial tokens the candidate name shares
+                   with USER_MODEL.md's Current section.
+
+    Returns full breakdown dict so the ledger prints term-by-term.
+    """
+    import math
+    activations = []
+    for m in mentions:
+        try:
+            ts = parse_ts(m["header_ts"])
+            age_days = max(1.0, (now - ts).total_seconds() / 86400.0)
+            activations.append(age_days ** -DECAY_RATE)
+        except Exception:  # noqa: BLE001
+            continue
+    base = math.log(sum(activations)) if activations else 0.0
+    streams = {m["source_stream"] for m in mentions if m["source_stream"]}
+    spread = float(len(streams))
+    goal_tokens = set(re.findall(r"[a-z]{4,}", goals_text))
+    cand_tokens = set(re.findall(r"[a-z]{4,}", candidate["name"].lower()))
+    goal_overlap = float(len(cand_tokens & goal_tokens))
+    return {
+        "S": base + spread + goal_overlap,
+        "base_activation": base,
+        "spread": spread,
+        "goal_overlap": goal_overlap,
+        "n_mentions": len(mentions),
+        "streams": sorted(streams),
+    }
+
+
+def _concept_summary_llm(candidate: dict, sample_excerpts: list[str],
+                         budget: Budget) -> str | None:
+    """One 3-sentence factual summary via interactive tier. Returns None
+    on LLM failure — page still writes with a placeholder note."""
+    if not sample_excerpts:
+        return None
+    prompt = (
+        f"Write a 3-sentence factual summary of the concept "
+        f"'{candidate['name']}' based ONLY on these excerpts from Brian's "
+        f"personal notes and Claude threads. Do not invent. If the "
+        f"excerpts don't support a claim, say so plainly. No preamble.\n\n"
+        f"---\n"
+        + "\n\n---\n".join(sample_excerpts[:8])
+    )
+    return budget.chat(
+        prompt, f"promote-summary:{_slugify(candidate['name'])}"
+    )
+
+
+def _write_concept_page(candidate: dict, score: dict, mentions: list[dict],
+                        summary: str | None, out_dir: Path) -> Path:
+    """Write ~/.mikai/wiki/concepts/<slug>.md — idempotent overwrite."""
+    slug = _slugify(candidate["name"])
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"{slug}.md"
+    aliases = candidate.get("aliases") or []
+    lines = [
+        "---",
+        f"name: {candidate['name']}",
+        f"slug: {slug}",
+        f"kind: {candidate.get('kind', 'unknown')}",
+        f"promoted_at: {datetime.now(timezone.utc).isoformat()}",
+        f"salience_score: {score['S']:.3f}",
+        f"n_mentions: {score['n_mentions']}",
+        f"aliases: [{', '.join(aliases)}]" if aliases
+        else "aliases: []",
+        "---",
+        "",
+        f"# {candidate['name']}",
+        "",
+        summary or "_(no summary — LLM call skipped or failed)_",
+        "",
+        "## Salience breakdown",
+        "",
+        f"- **S = {score['S']:.3f}**",
+        f"- base_activation (ACT-R ln Σ(Δt)⁻⁰·⁵): {score['base_activation']:.3f}",
+        f"- spread (distinct source streams): {int(score['spread'])}"
+        f" — {', '.join(score['streams']) if score['streams'] else '—'}",
+        f"- goal_overlap (∩ USER_MODEL.md Current): {int(score['goal_overlap'])}",
+        "",
+        f"## Mentions ({score['n_mentions']} sections)",
+        "",
+    ]
+    for m in mentions[:100]:  # cap link list at 100 for page readability
+        ts = m["header_ts"]
+        name = m["section_name"]
+        lines.append(
+            f"- [[{ts} — {name}]]  _(source: {m['source_stream']})_"
+        )
+    if len(mentions) > 100:
+        lines.append(f"- _(…and {len(mentions) - 100} more)_")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def _write_salience_ledger(
+    ranked: list[tuple[dict, dict, list[dict]]],
+    threshold: float,
+    cap: int,
+    promoted_slugs: set[str],
+    path: Path,
+) -> None:
+    """Write wiki-salience.md — every scored candidate + term breakdown.
+    Audit surface AND the labeling instrument the afternoon test needs."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    lines = [
+        f"# Salience Ledger — {today}",
+        "",
+        f"- candidates scored: {len(ranked)}",
+        f"- threshold: {threshold:.2f}",
+        f"- promotion cap: {cap}/night",
+        f"- promoted this pass: {len(promoted_slugs)}",
+        "",
+        "Formula: `S = ln(Σ(Δt)^-0.5) + spread + goal_overlap`,"
+        " all weights = 1, d = 0.5",
+        "",
+        "## Ranked candidates",
+        "",
+        "| Rank | Concept | S | base | spread | goal | mentions | Promoted? |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    lines[-2] = ("| Rank | Concept | S | base | spread | goal | mentions"
+                 " | aliases | Promoted? |")
+    lines[-1] = "|---|---|---|---|---|---|---|---|---|"
+    for i, (cand, score, _) in enumerate(ranked, 1):
+        slug = _slugify(cand["name"])
+        promoted = "✓" if slug in promoted_slugs else ""
+        aliases = cand.get("aliases") or []
+        alias_cell = ", ".join(aliases[:3]) + (
+            f" (+{len(aliases) - 3})" if len(aliases) > 3 else ""
+        ) if aliases else ""
+        lines.append(
+            f"| {i} | {cand['name']} | {score['S']:.2f} | "
+            f"{score['base_activation']:.2f} | {int(score['spread'])} | "
+            f"{int(score['goal_overlap'])} | {score['n_mentions']} | "
+            f"{alias_cell} | {promoted} |"
+        )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def run_promote(idx: WikiIndex, budget: Budget, threshold: float, cap: int,
+                dry_run: bool, verbose: bool) -> str:
+    """Consolidation MVP: score all candidates, promote top-N above
+    threshold to concept pages, write salience ledger."""
+    print("[pass E] loading candidates")
+    onto_cands = parse_ontology_candidates(ONTOLOGY_OUT)
+    ngram_cands = extract_ngram_candidates(idx, WIKI_MD)
+    ngram_lower_cands = extract_lowercase_ngram_candidates(idx, WIKI_MD)
+    # union across three sources — ontology entries take precedence on
+    # name conflict (they carry entity/place/org typing), then capitalized
+    # n-grams, then lowercase (the Build 1 addition).
+    seen_names = {c["name"].lower() for c in onto_cands}
+    def _add_new(pool: list[dict]) -> list[dict]:
+        out = []
+        for c in pool:
+            if c["name"].lower() not in seen_names:
+                seen_names.add(c["name"].lower())
+                out.append(c)
+        return out
+    merged = onto_cands + _add_new(ngram_cands) + _add_new(ngram_lower_cands)
+    # Build 1: self-corpus stoplist — exclude infrastructure vocabulary
+    # BEFORE scoring so it never appears in the ledger.
+    stoplist = _build_self_corpus_stoplist()
+    dropped = [c for c in merged
+               if c["name"].lower() in stoplist
+               or _slugify(c["name"]) in stoplist]
+    merged = [c for c in merged
+              if c["name"].lower() not in stoplist
+              and _slugify(c["name"]) not in stoplist]
+    print(
+        f"[pass E] candidates: {len(onto_cands)} ontology + "
+        f"{len(ngram_cands)} capitalized + {len(ngram_lower_cands)} lowercase "
+        f"= {len(merged) + len(dropped)} raw, "
+        f"{len(dropped)} dropped by self-corpus stoplist "
+        f"({len(stoplist)} entries), {len(merged)} to score"
+    )
+    if verbose and dropped:
+        sample = ", ".join(c["name"] for c in dropped[:10])
+        print(f"[pass E] stoplist drops (sample): {sample}"
+              + (f", …+{len(dropped) - 10} more" if len(dropped) > 10 else ""))
+
+    # Build 2: fold aliases so 'Claude Code' / 'claude-code' collapse to
+    # one row and 'Mint Monstera' folds into its head. Head candidate
+    # keeps type; aliases list rides in dict['aliases'].
+    pre_fold_count = len(merged)
+    merged = _fold_aliases(merged)
+    print(f"[pass E] alias folding: {pre_fold_count} → {len(merged)} "
+          f"({pre_fold_count - len(merged)} aliases folded into heads)")
+
+    goals_text = _load_user_goals()
+    if goals_text:
+        goal_tokens = len(set(re.findall(r"[a-z]{4,}", goals_text)))
+        print(
+            f"[pass E] loaded USER_MODEL.md Current section: "
+            f"{goal_tokens} distinct tokens for goal_overlap"
+        )
+    else:
+        print("[pass E] no USER_MODEL.md — goal_overlap term will be 0")
+
+    now = datetime.now(timezone.utc)
+    # Build 2.5: multiprocessing scoring. CPU-bound regex over ~8k
+    # sections × ~5k candidates was ~40 min single-threaded; Pool over
+    # ~8 cores brings it under 10 min. Records list is pickleable; the
+    # index and wiki_md path go through the worker initializer once.
+    import multiprocessing as mp
+    import os as _os
+    workers = min(_os.cpu_count() or 4, 8)
+    print(f"[pass E] scoring {len(merged)} candidates across {workers} workers "
+          f"(mp.Pool over multiprocessing — expect ~5–10 min)")
+    with mp.Pool(
+        processes=workers,
+        initializer=_promote_worker_init,
+        initargs=(idx.records, str(WIKI_MD), goals_text, now.isoformat()),
+    ) as pool:
+        # imap_unordered lets us print progress as results stream in
+        scored: list[tuple[dict, dict, list[dict]]] = []
+        done = 0
+        for result in pool.imap_unordered(
+            _promote_worker_score, merged, chunksize=8,
+        ):
+            done += 1
+            if verbose and done % 200 == 0:
+                print(f"  scored {done}/{len(merged)}")
+            if result is not None:
+                scored.append(result)
+    scored.sort(key=lambda x: x[1]["S"], reverse=True)
+
+    if verbose or dry_run:
+        print(f"[pass E] top 20 by S:")
+        for cand, score, _ in scored[:20]:
+            print(f"  S={score['S']:.2f}  base={score['base_activation']:.2f}  "
+                  f"spread={int(score['spread'])}  "
+                  f"goal={int(score['goal_overlap'])}  {cand['name']}")
+
+    to_promote = [x for x in scored if x[1]["S"] >= threshold][:cap]
+    print(
+        f"[pass E] {len(to_promote)} of {len(scored)} pass threshold "
+        f"({threshold}, cap {cap})"
+    )
+
+    promoted_slugs: set[str] = set()
+    if not dry_run:
+        for cand, score, mentions in to_promote:
+            # gather 8 sample excerpts for the LLM summary
+            excerpts = []
+            wanted = {m["byte_start"] for m in mentions[:8]}
+            for r in idx.records:
+                if r.get("byte_start") in wanted:
+                    try:
+                        text = idx.read_section(WIKI_MD, r)
+                        excerpts.append(excerpt(text, 300))
+                    except Exception:  # noqa: BLE001
+                        pass
+                    if len(excerpts) >= 8:
+                        break
+            summary = _concept_summary_llm(cand, excerpts, budget)
+            page = _write_concept_page(cand, score, mentions, summary,
+                                       CONCEPTS_DIR)
+            promoted_slugs.add(_slugify(cand["name"]))
+            print(f"[pass E] promoted -> {page}")
+    else:
+        for cand, _, _ in to_promote:
+            promoted_slugs.add(_slugify(cand["name"]))
+            print(f"[pass E] would promote: {cand['name']}")
+
+    if not dry_run:
+        _write_salience_ledger(scored, threshold, cap, promoted_slugs,
+                               SALIENCE_LEDGER)
+        print(f"[pass E] ledger -> {SALIENCE_LEDGER}")
+    else:
+        print(f"[pass E] would write ledger with {len(scored)} rows "
+              f"-> {SALIENCE_LEDGER}")
+
+    return (f"promote: scored {len(scored)}, promoted {len(promoted_slugs)} "
+            f"(threshold {threshold}, cap {cap})")
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────
 
 
@@ -962,12 +1630,24 @@ def main() -> None:
     )
     ap.add_argument(
         "which", nargs="?", default="all",
-        choices=["all", "narrative", "ontology", "compact", "user-model"],
+        choices=["all", "narrative", "ontology", "compact", "user-model",
+                 "promote"],
         help="which pass to run (default: all = narrative + ontology; "
-             "compact and user-model run only when named explicitly. "
-             "user-model rebuilds ~/.mikai/brain/USER_MODEL.md via 1 "
-             "interactive LLM call — attached to dream-weekly, not nightly)",
+             "compact, user-model, and promote run only when named "
+             "explicitly. user-model rebuilds ~/.mikai/brain/USER_MODEL.md "
+             "via 1 interactive LLM call — attached to dream-weekly, not "
+             "nightly. promote is the Consolidation MVP — scores every "
+             "candidate concept and promotes top-N above --promote-threshold "
+             "to ~/.mikai/wiki/concepts/*.md, one 3-sentence LLM summary "
+             "per promotion.)",
     )
+    ap.add_argument("--promote-threshold", type=float,
+                    default=PROMOTE_DEFAULT_THRESHOLD,
+                    help="salience score threshold for promotion "
+                         f"(default {PROMOTE_DEFAULT_THRESHOLD})")
+    ap.add_argument("--promote-cap", type=int, default=PROMOTE_DEFAULT_CAP,
+                    help="max promotions per pass "
+                         f"(default {PROMOTE_DEFAULT_CAP}/night)")
     ap.add_argument("--narrative-days", type=int, default=30)
     ap.add_argument("--incremental", action="store_true",
                     help="narrative only: nightly delta since the last "
@@ -1013,6 +1693,14 @@ def main() -> None:
             run_compact(idx, args.dry_run, args.verbose)
         if args.which == "user-model":
             summary = run_user_model(budget, args.dry_run, args.verbose)
+        if args.which == "promote":
+            summary = run_promote(
+                idx, budget,
+                threshold=args.promote_threshold,
+                cap=args.promote_cap,
+                dry_run=args.dry_run,
+                verbose=args.verbose,
+            )
         if args.ledger_mode and not args.dry_run:
             _ledger_trace(args.ledger_mode, summary or "completed", budget)
     except BudgetExceeded as exc:

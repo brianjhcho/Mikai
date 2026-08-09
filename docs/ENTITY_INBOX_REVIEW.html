@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Entity Inbox Review — 30 proposals</title>
+<style>
+  :root {
+    --bg: #0b0d12;
+    --fg: #e6e6e6;
+    --muted: #8b93a5;
+    --card: #14181f;
+    --card-border: #2a2f3a;
+    --success: #6bb26b;
+    --success-bg: rgba(107,178,107,0.08);
+    --warn: #d4a04a;
+    --warn-bg: rgba(212,160,74,0.08);
+    --danger: #d4665a;
+    --danger-bg: rgba(212,102,90,0.08);
+    --accent: #6c9ce6;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 40px 32px 60px;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+    line-height: 1.55;
+    font-size: 14px;
+  }
+  header { max-width: 1200px; margin: 0 auto 24px; }
+  h1 { font-size: 28px; font-weight: 700; margin: 0 0 8px; letter-spacing: -0.4px; }
+  .subtitle { color: var(--muted); margin: 0 0 20px; font-size: 15px; }
+  .instructions {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    padding: 18px 22px;
+    margin: 0 0 32px;
+    font-size: 14px;
+  }
+  .instructions h3 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--muted);
+    margin: 0 0 12px;
+  }
+  .instructions ul { margin: 0; padding-left: 18px; }
+  .instructions li { margin-bottom: 6px; }
+  .instructions code { background: #1c2530; padding: 1px 6px; border-radius: 3px; font-size: 12.5px; color: var(--accent); }
+  main { max-width: 1200px; margin: 0 auto; }
+  .group {
+    margin-bottom: 40px;
+  }
+  .group-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 14px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--card-border);
+  }
+  .group-title {
+    font-size: 15px;
+    font-weight: 700;
+    margin: 0;
+  }
+  .group-count {
+    color: var(--muted);
+    font-size: 12.5px;
+  }
+  .group-verdict {
+    margin-left: auto;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    padding: 3px 10px;
+    border-radius: 3px;
+  }
+  .verdict-approve { color: var(--success); background: var(--success-bg); border: 1px solid var(--success); }
+  .verdict-review { color: var(--warn); background: var(--warn-bg); border: 1px solid var(--warn); }
+  .verdict-reject { color: var(--danger); background: var(--danger-bg); border: 1px solid var(--danger); }
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 12px;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-left: 3px solid var(--card-border);
+    border-radius: 6px;
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .card.recommend-approve { border-left-color: var(--success); }
+  .card.recommend-review { border-left-color: var(--warn); }
+  .card.recommend-reject { border-left-color: var(--danger); }
+  .card-top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .slug {
+    font-size: 15px;
+    font-weight: 700;
+    font-family: "SF Mono", ui-monospace, monospace;
+    color: var(--fg);
+  }
+  .type-badge {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    padding: 1px 7px;
+    border-radius: 3px;
+    background: #1c2530;
+    color: var(--accent);
+  }
+  .type-person { color: #b0e0a8; background: rgba(107,178,107,0.12); }
+  .type-place { color: #c9c9f0; background: rgba(150,150,220,0.12); }
+  .type-org { color: #f0c9a8; background: rgba(212,160,74,0.12); }
+  .type-thing { color: var(--accent); background: rgba(108,156,230,0.12); }
+  .meta {
+    display: flex;
+    gap: 14px;
+    font-size: 11.5px;
+    color: var(--muted);
+    flex-wrap: wrap;
+  }
+  .meta .m-strong { color: var(--fg); font-weight: 600; }
+  .sources {
+    font-size: 11px;
+    color: var(--muted);
+    font-style: italic;
+    line-height: 1.4;
+  }
+  .verdict-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 4px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--card-border);
+  }
+  .rec-label {
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--muted);
+  }
+  .rec-value {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .rec-approve { color: var(--success); }
+  .rec-review { color: var(--warn); }
+  .rec-reject { color: var(--danger); }
+  .reason {
+    font-size: 12px;
+    color: var(--muted);
+    margin-left: auto;
+    text-align: right;
+    max-width: 220px;
+  }
+  .whole-section-reason {
+    font-size: 12.5px;
+    color: var(--muted);
+    padding: 12px 16px;
+    background: rgba(212,160,74,0.05);
+    border-left: 2px solid var(--warn);
+    margin: 0 0 16px;
+    border-radius: 4px;
+  }
+  .actions {
+    max-width: 1200px;
+    margin: 40px auto 0;
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    padding: 20px 24px;
+  }
+  .actions h3 {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--muted);
+    margin: 0 0 12px;
+  }
+  .actions p { margin: 0 0 8px; font-size: 14px; }
+  .actions code {
+    display: inline-block;
+    background: #1c2530;
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 13px;
+    color: var(--accent);
+    font-family: "SF Mono", ui-monospace, monospace;
+    margin: 4px 0;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Entity Inbox Review</h1>
+  <p class="subtitle">30 proposals sitting in <code>~/.mikai/brain/inbox/proposed-entity-*.md</code>. Grouped by type + my recommendation. Verdict per card in bottom row.</p>
+  <div class="instructions">
+    <h3>How to respond</h3>
+    <ul>
+      <li>Just reply with your decisions in chat — no need to edit files. E.g. "approve all recommended ✓, reject figs and sumimasen, verify hiccup and opal-for-kids"</li>
+      <li>Approvals move <code>~/.mikai/brain/inbox/proposed-entity-X.md</code> → <code>~/.mikai/brain/entities/X.md</code></li>
+      <li>Rejections stay in inbox for now (won't be re-proposed since they still exist as files)</li>
+      <li>Note: entity FILES are auto-hydrated stubs — no rich body facts. The card metadata is all there is until you fill them in later.</li>
+    </ul>
+  </div>
+</header>
+
+<main>
+
+  <!-- PEOPLE -->
+  <section class="group">
+    <div class="group-header">
+      <h2 class="group-title">People</h2>
+      <span class="group-count">3 proposals</span>
+      <span class="group-verdict verdict-approve">All ✓</span>
+    </div>
+    <div class="cards">
+
+      <div class="card recommend-approve">
+        <div class="card-top">
+          <span class="slug">brian</span>
+          <span class="type-badge type-person">person</span>
+        </div>
+        <div class="meta"><span class="m-strong">336</span> mentions <span>2013 → 2026-08-06</span></div>
+        <div class="sources">apple-notes, claude-code, claude-thread, perplexity</div>
+        <div class="verdict-row">
+          <span class="rec-label">recommend</span>
+          <span class="rec-value rec-approve">✓ approve</span>
+          <span class="reason">you</span>
+        </div>
+      </div>
+
+      <div class="card recommend-approve">
+        <div class="card-top">
+          <span class="slug">david</span>
+          <span class="type-badge type-person">person</span>
+        </div>
+        <div class="meta"><span class="m-strong">52</span> mentions <span>2024-09 → 2026-08-06</span></div>
+        <div class="sources">apple-notes, claude-thread</div>
+        <div class="verdict-row">
+          <span class="rec-label">recommend</span>
+          <span class="rec-value rec-approve">✓ approve</span>
+          <span class="reason">real person, cross-source</span>
+        </div>
+      </div>
+
+      <div class="card recommend-approve">
+        <div class="card-top">
+          <span class="slug">luka</span>
+          <span class="type-badge type-person">person</span>
+        </div>
+        <div class="meta"><span class="m-strong">40</span> mentions <span>2026-06 → 2026-07</span></div>
+        <div class="sources">claude-thread</div>
+        <div class="verdict-row">
+          <span class="rec-label">recommend</span>
+          <span class="rec-value rec-approve">✓ approve</span>
+          <span class="reason">recent, thread-tied</span>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- PLACES -->
+  <section class="group">
+    <div class="group-header">
+      <h2 class="group-title">Places</h2>
+      <span class="group-count">5 proposals</span>
+      <span class="group-verdict verdict-approve">All ✓</span>
+    </div>
+    <div class="cards">
+
+      <div class="card recommend-approve">
+        <div class="card-top"><span class="slug">vancouver</span><span class="type-badge type-place">place</span></div>
+        <div class="meta"><span class="m-strong">189</span> mentions <span>2013 → 2026-08-06</span></div>
+        <div class="sources">apple-notes, claude-code, claude-thread, perplexity</div>
+        <div class="verdict-row"><span class="rec-label">recommend</span><span class="rec-value rec-approve">✓ approve</span><span class="reason">where you are</span></div>
+      </div>
+
+      <div class="card recommend-approve">
+        <div class="card-top"><span class="slug">nairobi</span><span class="type-badge type-place">place</span></div>
+        <div class="meta"><span class="m-strong">102</span> mentions <span>2024-09 → 2026-08-06</span></div>
+        <div class="sources">apple-notes, claude-code, claude-thread, perplexity</div>
+        <div class="verdict-row"><span class="rec-label">recommend</span><span class="rec-value rec-approve">✓ approve</span><span class="reason">high-signal city</span></div>
+      </div>
+
+      <div class="card recommend-approve">
+        <div class="card-top"><span class="slug">kenya</span><span class="type-badge type-place">place</span></div>
+        <div class="meta"><span class="m-strong">101</span> mentions <span>2024-09 → 2026-08-06</span></div>
+        <div class="sources">apple-notes, claude-code, claude-thread, gmail, perplexity, whatsapp-day, …</div>
+        <div class="verdict-row"><span class="rec-label">recommend</span><span class="rec-value rec-approve">✓ approve</span><span class="reason">7 source streams</span></div>
+      </div>
+
+      <div class="card recommend-approve">
+        <div class="card-top"><span class="slug">korea</span><span class="type-badge type-place">place</span></div>
+        <div class="meta"><span class="m-strong">88</span> mentions <span>2013 → 2026-03</span></div>
+        <div class="sources">apple-notes, perplexity</div>
+        <div class="verdict-row"><span class="rec-label">recommend</span><span class="rec-value rec-approve">✓ approve</span><span class="reason">origin, deep history</span></div>
+      </div>
+
+      <div class="card recommend-approve">
+        <div class="card-top"><span class="slug">canada</span><span class="type-badge type-place">place</span></div>
+        <div class="meta"><span class="m-strong">63</span> mentions <span>2013 → 2026-03</span></div>
+        <div class="sources">apple-notes, perplexity</div>
+        <div class="verdict-row"><span class="rec-label">recommend</span><span class="rec-value rec-approve">✓ approve</span><span class="reason">country, contains vancouver</span></div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ORGS -->
+  <section class="group">
+    <div class="group-header">
+      <h2 class="group-title">Orgs</h2>
+      <span class="group-count">3 proposals</span>
+      <span class="group-verdict verdict-approve">All ✓</span>
+    </div>
+    <div class="cards">
+
+      <div class="card recommend-approve">
+        <div class="card-top"><span class="slug">anthropic</span><span class="type-badge type-org">org</span></div>
+        <div class="meta"><span class="m-strong">99</span> mentions <span>2025-03 → 2026-08-06</span></div>
+        <div class="sources">claude-code, claude-thread, perplexity, strategic-insights</div>
+        <div class="verdict-row"><span class="rec-label">recommend</span><span class="rec-value rec-approve">✓ approve</span><span class="reason">makes claude — load-bearing</span></div>
+      </div>
+
+      <div class="card recommend-approve">
+        <div class="card-top"><span class="slug">perplexity</span><span class="type-badge type-org">org</span></div>
+        <div class="meta"><span class="m-strong">100</span> mentions <span>2026-03 → 2026-08-06</span></div>
+        <div class="sources">claude-code, claude-thread, perplexity</div>
+        <div class="verdict-row"><span class="rec-label">recommend</span><span class="rec-value rec-approve">✓ approve</span><span class="reason">also a source</span></div>
+      </div>
+
+      <div class="card recommend-approve">
+        <div class="card-top"><span class="slug">deepseek</span><span class="type-badge type-org">org</span></div>
+        <div class="meta"><span class="m-strong">95</span> mentions <span>2025-03 → 2026-08-06</span></div>
+        <div class="sources">claude-code, claude-thread</div>
+        <div class="verdict-row"><span class="rec-label">recommend</span><span class="rec-value rec-approve">✓ approve</span><span class="reason">background-tier LLM</span></div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- NAMED EXTERNAL PRODUCTS / TECH -->
+  <section class="group">
+    <div class="group-header">
+      <h2 class="group-title">Named external tech / products</h2>
+      <span class="group-count">12 proposals</span>
+      <span class="group-verdict verdict-approve">All ✓</span>
+    </div>
+    <div class="cards">
+
+      <div class="card recommend-approve">
+        <div class="card-top"><span class="slug">mikai</span><span class="type-badge type-thing">thing</span></div>
+        <div class="meta"><span class="m-strong">815</span> mentions <span>2024-09 → 2026-08-06</span></div>
+        <div class="sources">apple-notes, claude, claude-code, claude-thread, mikai-build, perplexity, …</div>
+        <div class="verdict-row"><span class="rec-label">recommend</span><span class="rec-value rec-approve">✓ approve</span><span class="reason">your product itself</span></div>
+      </div>
+
+      <div class="card recommend-approve">
+        <div class="card-top"><span class="slug">claude-code</span><span class="type-badge type-thing">thing</span></div>
+        <div class="meta"><span class="m-strong">283</span> mentions <span>2024-09 → 2026-08-06</span></div>
+        <div class="sources">apple-notes, claude-code, claude-thread, perplexity</div>
+        <div class="verdict-row"><span class="rec-label">recommend</span><span class="rec-value rec-approve">✓ approve</span><span class="reason">the CLI you use daily</span></div>
+      </div>
+
+      <div class="card recommend-approve">
+        <div class="card-top"><span class="slug">graphiti</span><span class="type-badge type-thing">thing</span></div>
+        <div class="meta"><span class="m-strong">238</span> mentions <span>2025-03 → 2026-08-06</span></div>
+        <div class="sources">claude-code, claude-thread, mikai-build, strategic-insights, …</div>
+        <div class="verdict-row"><span class="rec-label">recommend</span><span class="rec-value rec-approve">✓ approve</span><span class="reason">frozen L3 backend</span></div>
+      </div>
+
+      <div class="card recommend-approve">
+        <div class="card-top"><span class="slug">neo4j</span><span class="type-badge type-thing">thing</span></div>
+        <div class="meta"><span class="m-strong">127</span> mentions <span>2026-03 → 2026-08-05</span></div>
+        <div class="sources">claude-code, claude-thread, strategic-insights</div>
+        <div class="verdict-row"><span class="rec-label">recommend</span><span class="rec-value rec-approve">✓ approve</span><span class="reason">graph DB under graphiti</span></div>
+      </div>
+
+      <div class="card recommend-approve">
+        <div class="card-top"><span class="slug">claude</span><span class="type-badge type-thing">thing</span></div>
+        <div class="meta"><span class="m-strong">112</span> mentions <span>2026-03 → 2026-08-06</span></div>
+        <div class="sources">claude-code, claude-thread, perplexity, strategic-insights, …</div>
+        <div class="verdict-row"><span class="rec-label">recommend</span><span class="rec-value rec-approve">✓ approve</span><span class="reason">the model itself</span></div>
+      </div>
+
+      <div class="card recommend-approve">
+        <div class="card-top"><span class="slug">mcp</span><span class="type-badge type-thing">thing</span></div>
+        <div class="meta"><span class="m-strong">94</span> mentions <span>2026-03 → 2026-08-05</span></div>
+        <div class="sources">claude-code, claude-thread, strategic-insights</div>
+        <div class="verdict-row"><span class="rec-label">recommend</span><span class="rec-value rec-approve">✓ approve</span><span class="reason">Model Context Protocol</span></div>
+      </div>
+
+      <div class="card recommend-approve">
+        <div class="card-top"><span class="slug">apple-notes</span><span class="type-badge type-thing">thing</span></div>
+        <div class="meta"><span class="m-strong">90</span> mentions <span>2026-03 → 2026-08-05</span></div>
+        <div class="sources">claude-code, claude-thread</div>
+        <div class="verdict-row"><span class="rec-label">recommend</span><span class="rec-value rec-approve">✓ approve</span><span class="reason">your primary capture</span></div>
+      </div>
+
+      <div class="card recommend-approve">
+        <div class="card-top"><span class="slug">docker</span><span class="type-badge type-thing">thing</span></div>
+        <div class="meta"><span class="m-strong">67</span> mentions <span>2026-03 → 2026-08-05</span></div>
+        <div class="sources">claude-code</div>
+        <div class="verdict-row"><span class="rec-label">recommend</span><span class="rec-value rec-approve">✓ approve</span><span class="reason">runtime for graphiti</span></div>
+      </div>
+
+      <div class="card recommend-approve">
+        <div class="card-top"><span class="slug">telegram</span><span class="type-badge type-thing">thing</span></div>
+        <div class="meta"><span class="m-strong">66</span> mentions <span>2025-03 → 2026-07</span></div>
+        <div class="sources">claude-code, claude-thread</div>
+        <div class="verdict-row"><span class="rec-label">recommend</span><span class="rec-value rec-approve">✓ approve</span><span class="reason">notification channel</span></div>
+      </div>
+
+      <div class="card recommend-approve">
+        <div class="card-top"><span class="slug">launchd</span><span class="type-badge type-thing">thing</span></div>
+        <div class="meta"><span class="m-strong">56</span> mentions <span>2026-03 → 2026-08-05</span></div>
+        <div class="sources">claude-code</div>
+        <div class="verdict-row"><span class="rec-label">recommend</span><span class="rec-value rec-approve">✓ approve</span><span class="reason">Pattern B daemons</span></div>
+      </div>
+
+      <div class="card recommend-approve">
+        <div class="card-top"><span class="slug">tailscale</span><span class="type-badge type-thing">thing</span></div>
+        <div class="meta"><span class="m-strong">46</span> mentions <span>2026-03 → 2026-08-05</span></div>
+        <div class="sources">claude-code</div>
+        <div class="verdict-row"><span class="rec-label">recommend</span><span class="rec-value rec-approve">✓ approve</span><span class="reason">the VPN</span></div>
+      </div>
+
+      <div class="card recommend-approve">
+        <div class="card-top"><span class="slug">superset</span><span class="type-badge type-thing">thing</span></div>
+        <div class="meta"><span class="m-strong">40</span> mentions <span>2025-03 → 2026-08-06</span></div>
+        <div class="sources">claude-code, claude-thread</div>
+        <div class="verdict-row"><span class="rec-label">recommend</span><span class="rec-value rec-approve">✓ approve</span><span class="reason">worktree CLI you use</span></div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- COMPETITORS + EXTERNAL PATTERNS -->
+  <section class="group">
+    <div class="group-header">
+      <h2 class="group-title">Competitors / external patterns</h2>
+      <span class="group-count">2 proposals</span>
+      <span class="group-verdict verdict-approve">All ✓</span>
+    </div>
+    <div class="cards">
+      <div class="card recommend-approve">
+        <div class="card-top"><span class="slug">hermes</span><span class="type-badge type-thing">thing</span></div>
+        <div class="meta"><span class="m-strong">52</span> mentions <span>2026-05 → 2026-08-05</span></div>
+        <div class="sources">claude-code, claude-thread</div>
+        <div class="verdict-row"><span class="rec-label">recommend</span><span class="rec-value rec-approve">✓ approve</span><span class="reason">external memory pattern</span></div>
+      </div>
+      <div class="card recommend-approve">
+        <div class="card-top"><span class="slug">openclaw</span><span class="type-badge type-thing">thing</span></div>
+        <div class="meta"><span class="m-strong">46</span> mentions <span>2025-03 → 2026-08-06</span></div>
+        <div class="sources">claude-code, claude-thread, perplexity</div>
+        <div class="verdict-row"><span class="rec-label">recommend</span><span class="rec-value rec-approve">✓ approve</span><span class="reason">competitor per COMPARISON.md</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- YOUR PERSONAL ARTIFACTS -->
+  <section class="group">
+    <div class="group-header">
+      <h2 class="group-title">Your personal artifacts</h2>
+      <span class="group-count">1 proposal</span>
+      <span class="group-verdict verdict-approve">✓</span>
+    </div>
+    <div class="cards">
+      <div class="card recommend-approve">
+        <div class="card-top"><span class="slug">moss-pole</span><span class="type-badge type-thing">thing</span></div>
+        <div class="meta"><span class="m-strong">46</span> mentions <span>2026-03 → 2026-08-06</span></div>
+        <div class="sources">claude-thread</div>
+        <div class="verdict-row"><span class="rec-label">recommend</span><span class="rec-value rec-approve">✓ approve</span><span class="reason">specific object you built for the monstera</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- NEEDS VERIFICATION -->
+  <section class="group">
+    <div class="group-header">
+      <h2 class="group-title">Needs verification</h2>
+      <span class="group-count">2 proposals</span>
+      <span class="group-verdict verdict-review">? verify</span>
+    </div>
+    <p class="whole-section-reason">These slugs don't tell me what they are. Tell me what each is and I'll classify accordingly. If either is actually a concept (not a proper-noun thing) they belong in reject with figs/sumimasen.</p>
+    <div class="cards">
+      <div class="card recommend-review">
+        <div class="card-top"><span class="slug">hiccup</span><span class="type-badge type-thing">thing</span></div>
+        <div class="meta"><span class="m-strong">62</span> mentions <span>2026-03 → 2026-06-10</span></div>
+        <div class="sources">claude-code, claude-thread</div>
+        <div class="verdict-row"><span class="rec-label">recommend</span><span class="rec-value rec-review">? verify</span><span class="reason">is this a person, code project, codename?</span></div>
+      </div>
+      <div class="card recommend-review">
+        <div class="card-top"><span class="slug">opal-for-kids</span><span class="type-badge type-thing">thing</span></div>
+        <div class="meta"><span class="m-strong">40</span> mentions <span>2026-07-04 → 2026-08-01</span></div>
+        <div class="sources">claude-code</div>
+        <div class="verdict-row"><span class="rec-label">recommend</span><span class="rec-value rec-review">? verify</span><span class="reason">a product? kids' education project?</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CONCEPTS MASQUERADING AS ENTITIES -->
+  <section class="group">
+    <div class="group-header">
+      <h2 class="group-title">Concepts, not entities</h2>
+      <span class="group-count">2 proposals</span>
+      <span class="group-verdict verdict-reject">Reject (for now)</span>
+    </div>
+    <p class="whole-section-reason">Per current ENTITY_MODEL.md ("proper nouns naming REAL things"), these are internal concepts with proper-noun codenames — not people/orgs/places/products. Reject to keep the discipline clean; if you go path (iv) later and open the Consolidation Layer to concepts, they resurface there.</p>
+    <div class="cards">
+      <div class="card recommend-reject">
+        <div class="card-top"><span class="slug">figs</span><span class="type-badge type-thing">thing</span></div>
+        <div class="meta"><span class="m-strong">97</span> mentions <span>2025-03 → 2026-08-06</span></div>
+        <div class="sources">claude-code</div>
+        <div class="verdict-row"><span class="rec-label">recommend</span><span class="rec-value rec-reject">✗ reject</span><span class="reason">MIKAI-internal concept (now: Attention Engine)</span></div>
+      </div>
+      <div class="card recommend-reject">
+        <div class="card-top"><span class="slug">sumimasen</span><span class="type-badge type-thing">thing</span></div>
+        <div class="meta"><span class="m-strong">52</span> mentions <span>2026-03 → 2026-08-06</span></div>
+        <div class="sources">claude-code, claude-thread, perplexity</div>
+        <div class="verdict-row"><span class="rec-label">recommend</span><span class="rec-value rec-reject">✗ reject</span><span class="reason">MIKAI-internal concept (now: Intervention Timing)</span></div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<div class="actions">
+  <h3>Summary of my recommendation</h3>
+  <p><strong style="color: var(--success)">✓ Approve 26</strong> — 3 people + 5 places + 3 orgs + 12 named tech + 2 competitors + 1 personal artifact</p>
+  <p><strong style="color: var(--warn)">? Verify 2</strong> — hiccup, opal-for-kids</p>
+  <p><strong style="color: var(--danger)">✗ Reject 2</strong> — figs, sumimasen (concepts, not entities)</p>
+  <p style="margin-top: 16px; color: var(--muted);">Just reply with whatever variant of "approve recommended, tell me about hiccup and opal-for-kids" fits your read. Or paste specific slugs to skip.</p>
+</div>
+
+</body>
+</html>
