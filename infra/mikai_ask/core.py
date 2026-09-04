@@ -97,7 +97,10 @@ def _load_wiki_modules():
 
 
 def _wiki_dir() -> Path:
-    return Path.home() / ".mikai" / "wiki"
+    """Raw capture dir. Points to ~/.mikai/wiki-raw/ where wiki.md +
+    wiki.index + wiki.fts.db live after the 2026-08-11 vault split
+    (Obsidian vault at ~/.mikai/wiki/ shouldn't have to stat 57MB)."""
+    return Path.home() / ".mikai" / "wiki-raw"
 
 
 # ── Retrieval pieces ─────────────────────────────────────────────────────
@@ -538,3 +541,276 @@ def ask_stream(
     )
 
     yield {"type": "done", "answer": answer}
+
+
+# ── Surface C — retrieval against the nashsu-processed wiki substrate ────
+#
+# The functions above target the raw capture at ~/.mikai/wiki-raw/. Surface C
+# is additive: same ask() shape but the retrieved context comes from a
+# nashsu vault directory (e.g. ~/.mikai/wiki-mikai-parallel-test/wiki/) —
+# concept/entity/journal/wisdom/source/query/goal/habit/reflection/synthesis/
+# comparison markdown files with frontmatter and wikilinks. This tests
+# MIKAI-the-product against the nashsu substrate (what a downstream L4 /
+# cockpit / MIKAI-MCP consumer would see). No profile/priorities/threads —
+# this is a test of the wiki files alone.
+
+_STOP_C = frozenset("""
+the this that these those my our your his her their its
+a an and or but for nor so yet as if in on at by to of from with
+he she they we you it me us them him
+is are was were be being been have has had do does did
+will would could should may might must shall can also just more most
+what who which how why when where about above below into like near
+they them their there here now today more some such very much many
+""".split())
+
+_C_WIKI_SUBDIRS = ("concepts", "entities", "sources", "queries", "journal",
+                    "wisdom", "goals", "habits", "reflections", "synthesis",
+                    "comparisons")
+_C_FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n(.*)$", re.DOTALL)
+_C_WIKILINK_RE = re.compile(r"\[\[([^\]|#]+?)(?:\|[^\]]+)?(?:#[^\]]+)?\]\]")
+
+
+def _c_tokenize(text: str, minlen: int = 3) -> set[str]:
+    tokens = re.findall(r"[a-z][a-z0-9]{" + str(minlen - 1) + r",}", text.lower())
+    return {t for t in tokens if t not in _STOP_C}
+
+
+def _c_split_frontmatter(text: str) -> tuple[dict, str]:
+    m = _C_FRONTMATTER_RE.match(text)
+    if not m:
+        return {}, text
+    fm_raw, body = m.group(1), m.group(2)
+    fm: dict = {}
+    for line in fm_raw.splitlines():
+        if ":" not in line or line.startswith(" "):
+            continue
+        k, _, v = line.partition(":")
+        k, v = k.strip(), v.strip()
+        if v.startswith("[") and v.endswith("]"):
+            inner = v[1:-1].strip()
+            fm[k] = [x.strip().strip('"').strip("'") for x in inner.split(",") if x.strip()]
+        else:
+            fm[k] = v.strip('"').strip("'")
+    return fm, body
+
+
+def _c_page_title(fm: dict, path: Path) -> str:
+    t = fm.get("title")
+    if isinstance(t, str) and t.strip():
+        return t.strip()
+    return path.stem.replace("-", " ")
+
+
+def _c_snippet(body: str, limit: int = 200) -> str:
+    stripped = body.lstrip("\n").strip()
+    return stripped[:limit] + ("…" if len(stripped) > limit else "")
+
+
+def _nashsu_wiki_search(vault_path: Path, query: str, k: int = 8) -> list[dict]:
+    """Enumerate all .md files under <vault>/wiki/. Score each by count of
+    query tokens in title + body; title matches weighted 3×. Return top-k."""
+    wiki_root = vault_path / "wiki"
+    if not wiki_root.is_dir():
+        return []
+    q_tokens = _c_tokenize(query, minlen=3)
+    if not q_tokens:
+        return []
+    scored: list[dict] = []
+    for sub in _C_WIKI_SUBDIRS:
+        d = wiki_root / sub
+        if not d.is_dir():
+            continue
+        for p in d.iterdir():
+            if p.suffix != ".md" or p.name in ("index.md", "log.md"):
+                continue
+            try:
+                text = p.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                continue
+            fm, body = _c_split_frontmatter(text)
+            title = _c_page_title(fm, p)
+            title_tokens = _c_tokenize(title, minlen=3)
+            body_tokens = _c_tokenize(body, minlen=3)
+            title_hits = sum(1 for t in q_tokens if t in title_tokens)
+            body_hits = sum(1 for t in q_tokens if t in body_tokens)
+            score = title_hits * 3 + body_hits
+            if score <= 0:
+                continue
+            scored.append({
+                "path": p,
+                "title": title,
+                "score": score,
+                "type": sub,
+                "snippet": _c_snippet(body),
+                "slug": p.stem,
+            })
+    scored.sort(key=lambda h: (-h["score"], h["path"].name))
+    return scored[:k]
+
+
+def _nashsu_wiki_expand(vault_path: Path, hits: list[dict],
+                         max_additional: int = 3) -> list[dict]:
+    """For each hit, follow frontmatter `related:` + body [[wikilinks]] to
+    add up to max_additional unique pages. Returns just the additions."""
+    wiki_root = vault_path / "wiki"
+    if not wiki_root.is_dir():
+        return []
+    have = {h["path"] for h in hits}
+    additions: list[dict] = []
+    # Index slug -> path across all subdirs for fast resolve
+    slug_to_path: dict[str, Path] = {}
+    for sub in _C_WIKI_SUBDIRS:
+        d = wiki_root / sub
+        if not d.is_dir():
+            continue
+        for p in d.iterdir():
+            if p.suffix == ".md":
+                slug_to_path.setdefault(p.stem.lower(), p)
+
+    def _resolve(target: str) -> Path | None:
+        t = target.strip().lower()
+        # target may be 'concepts/foo' or 'foo' or 'sources/foo.md'
+        if "/" in t:
+            t = t.rsplit("/", 1)[-1]
+        if t.endswith(".md"):
+            t = t[:-3]
+        return slug_to_path.get(t)
+
+    for h in hits:
+        if len(additions) >= max_additional:
+            break
+        try:
+            text = h["path"].read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        fm, body = _c_split_frontmatter(text)
+        candidates: list[str] = []
+        rel = fm.get("related")
+        if isinstance(rel, list):
+            candidates.extend(str(x) for x in rel)
+        for m in _C_WIKILINK_RE.finditer(body):
+            candidates.append(m.group(1))
+        for cand in candidates:
+            if len(additions) >= max_additional:
+                break
+            resolved = _resolve(cand)
+            if not resolved or resolved in have:
+                continue
+            try:
+                text2 = resolved.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                continue
+            fm2, body2 = _c_split_frontmatter(text2)
+            title2 = _c_page_title(fm2, resolved)
+            additions.append({
+                "path": resolved,
+                "title": title2,
+                "score": 0,
+                "type": resolved.parent.name,
+                "snippet": _c_snippet(body2),
+                "slug": resolved.stem,
+                "via": h["slug"],
+            })
+            have.add(resolved)
+    return additions
+
+
+_C_PREAMBLE = (
+    "You are MIKAI answering Brian's question from the surrounding nashsu-"
+    "processed wiki substrate ONLY. This is a Surface C test: PROFILE, "
+    "BRAIN priorities, USER_MODEL, and active-thread state are intentionally "
+    "excluded — the point is to see what MIKAI can answer from the wiki "
+    "files alone (concept/entity/journal/wisdom/source/query pages). Ground "
+    "every claim in the pages retrieved below. Cite page slugs when quoting. "
+    "Where the substrate is silent, say so plainly instead of inventing."
+)
+
+
+def _c_format_hit(h: dict) -> str:
+    via = f" (via {h['via']})" if h.get("via") else ""
+    return f"### {h['type']}/{h['slug']} — {h['title']}{via}\n\n{h['snippet']}"
+
+
+def _c_read_full_body(h: dict, cap: int = 4000) -> str:
+    """Full body of a hit up to `cap` chars — used when we have budget."""
+    try:
+        text = h["path"].read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return h.get("snippet", "")
+    _, body = _c_split_frontmatter(text)
+    body = body.strip()
+    return body[:cap] + ("…" if len(body) > cap else "")
+
+
+def compose_from_nashsu_wiki(query: str, vault_path: Path) -> tuple[str, dict]:
+    """Build a Surface C prompt from a nashsu vault. Returns (prompt, stats).
+
+    Strategy: retrieve top-k by token overlap, expand a few via wikilinks,
+    then include full bodies of the top hits (with fallback to snippets on
+    lower-ranked results) until we bump the PROMPT_CHAR_CAP."""
+    hits = _nashsu_wiki_search(vault_path, query, k=8)
+    additions = _nashsu_wiki_expand(vault_path, hits, max_additional=3)
+    all_hits = hits + additions
+
+    # Compose with full-body top hits + snippet-only expansions
+    blocks: list[str] = []
+    for h in hits:
+        body = _c_read_full_body(h, cap=4000)
+        blocks.append(f"### {h['type']}/{h['slug']} — {h['title']}\n\n{body}")
+    for h in additions:
+        blocks.append(_c_format_hit(h))
+
+    retrieved = ("## Retrieved wiki pages\n\n" +
+                 ("\n\n---\n\n".join(blocks) if blocks else "(none matched)"))
+
+    parts = [
+        _C_PREAMBLE,
+        f"## Vault under test\n\n`{vault_path}`",
+        retrieved,
+        "## Question\n\n" + query,
+    ]
+    prompt = SEP.join(parts)
+
+    # Trim from the tail (lowest-scoring hits and additions) until we fit
+    trimmed = 0
+    while len(prompt) > PROMPT_CHAR_CAP and blocks:
+        blocks.pop()
+        trimmed += 1
+        retrieved = ("## Retrieved wiki pages\n\n" +
+                     ("\n\n---\n\n".join(blocks) if blocks else "(none matched)"))
+        parts[2] = retrieved
+        prompt = SEP.join(parts)
+
+    stats = {
+        "prompt_chars": len(prompt),
+        "hits": len(hits),
+        "expansions": len(additions),
+        "blocks_kept": len(blocks),
+        "trimmed": trimmed,
+        "top_slugs": [h["slug"] for h in all_hits[:5]],
+    }
+    return prompt, stats
+
+
+def ask_from_nashsu_wiki(query: str, vault_path: Path,
+                          verbose: bool = False,
+                          dry_run: bool = False) -> str:
+    """Surface C ask: compose + call the interactive tier. No ledger write
+    (this is a test path). Returns the answer string; if the LLM call
+    raises, propagates the exception (callers should catch)."""
+    query = (query or "").strip()
+    if not query:
+        raise ValueError("empty query")
+    prompt, stats = compose_from_nashsu_wiki(query, vault_path)
+    if verbose or dry_run:
+        print(
+            f"[mikai_ask C] vault={vault_path.name} prompt={stats['prompt_chars']}ch "
+            f"hits={stats['hits']} +exp={stats['expansions']} "
+            f"kept={stats['blocks_kept']} trimmed={stats['trimmed']} "
+            f"top={stats['top_slugs']}",
+            file=sys.stderr,
+        )
+    if dry_run:
+        return prompt
+    return mikai_llm.chat(prompt, tier="interactive")

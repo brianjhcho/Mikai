@@ -1,0 +1,405 @@
+{
+  "vault": "/Users/briancho/.mikai/wiki-mikai-parallel-test/wiki/concepts",
+  "total_pages": 541,
+  "analyzed_pages": 541,
+  "stubs_skipped": 0,
+  "candidate_pairs": 1513,
+  "banded_counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 43
+  },
+  "pairs": {
+    "HIGH": [],
+    "MEDIUM": [],
+    "LOW": [
+      {
+        "a": "five-marble-pairing-strategies",
+        "b": "verde-marble-pairings",
+        "jaccard": 0.292,
+        "body_a": 3970,
+        "body_b": 4815,
+        "retire_to": "verde-marble-pairings",
+        "retire": "five-marble-pairing-strategies"
+      },
+      {
+        "a": "sharpe-ratio",
+        "b": "sortino-ratio",
+        "jaccard": 0.278,
+        "body_a": 694,
+        "body_b": 1095,
+        "retire_to": "sortino-ratio",
+        "retire": "sharpe-ratio"
+      },
+      {
+        "a": "intent-layer-for-ambient-computing",
+        "b": "zero-configuration-ambient-agent-infrastructure",
+        "jaccard": 0.27,
+        "body_a": 1536,
+        "body_b": 1830,
+        "retire_to": "zero-configuration-ambient-agent-infrastructure",
+        "retire": "intent-layer-for-ambient-computing"
+      },
+      {
+        "a": "value-bridging",
+        "b": "value-contrast-dark-anchor",
+        "jaccard": 0.266,
+        "body_a": 1791,
+        "body_b": 2295,
+        "retire_to": "value-contrast-dark-anchor",
+        "retire": "value-bridging"
+      },
+      {
+        "a": "configuration-friction",
+        "b": "zero-configuration-ambient-agent-infrastructure",
+        "jaccard": 0.257,
+        "body_a": 1298,
+        "body_b": 1830,
+        "retire_to": "zero-configuration-ambient-agent-infrastructure",
+        "retire": "configuration-friction"
+      },
+      {
+        "a": "isometric-tendon-loading",
+        "b": "tendon-muscle-capacity-gap",
+        "jaccard": 0.243,
+        "body_a": 2023,
+        "body_b": 1866,
+        "retire_to": "isometric-tendon-loading",
+        "retire": "tendon-muscle-capacity-gap"
+      },
+      {
+        "a": "era-compression-scrambling",
+        "b": "wealth-creation-era-sequence",
+        "jaccard": 0.231,
+        "body_a": 1954,
+        "body_b": 1685,
+        "retire_to": "era-compression-scrambling",
+        "retire": "wealth-creation-era-sequence"
+      },
+      {
+        "a": "self-supervised-graph-representation-learning",
+        "b": "temporal-graph-networks",
+        "jaccard": 0.227,
+        "body_a": 2981,
+        "body_b": 2759,
+        "retire_to": "self-supervised-graph-representation-learning",
+        "retire": "temporal-graph-networks"
+      },
+      {
+        "a": "classify-before-extract",
+        "b": "incremental-extraction",
+        "jaccard": 0.225,
+        "body_a": 1672,
+        "body_b": 1574,
+        "retire_to": "classify-before-extract",
+        "retire": "incremental-extraction"
+      },
+      {
+        "a": "high-voltage-contracting",
+        "b": "low-voltage-contracting",
+        "jaccard": 0.225,
+        "body_a": 1722,
+        "body_b": 1775,
+        "retire_to": "low-voltage-contracting",
+        "retire": "high-voltage-contracting"
+      },
+      {
+        "a": "capital-velocity",
+        "b": "chained-velocity-of-capital",
+        "jaccard": 0.218,
+        "body_a": 2744,
+        "body_b": 3141,
+        "retire_to": "chained-velocity-of-capital",
+        "retire": "capital-velocity"
+      },
+      {
+        "a": "five-marble-pairing-strategies",
+        "b": "marble-needs-warm-soft-and-textural",
+        "jaccard": 0.213,
+        "body_a": 3970,
+        "body_b": 1974,
+        "retire_to": "five-marble-pairing-strategies",
+        "retire": "marble-needs-warm-soft-and-textural"
+      },
+      {
+        "a": "platform-fragmentation",
+        "b": "too-many-platforms-problem",
+        "jaccard": 0.213,
+        "body_a": 2581,
+        "body_b": 2229,
+        "retire_to": "platform-fragmentation",
+        "retire": "too-many-platforms-problem"
+      },
+      {
+        "a": "capital-composition-productivity",
+        "b": "total-factor-productivity",
+        "jaccard": 0.211,
+        "body_a": 3440,
+        "body_b": 3086,
+        "retire_to": "capital-composition-productivity",
+        "retire": "total-factor-productivity"
+      },
+      {
+        "a": "proactive-personal-intelligence-feed",
+        "b": "timing-intelligence",
+        "jaccard": 0.21,
+        "body_a": 2918,
+        "body_b": 1817,
+        "retire_to": "proactive-personal-intelligence-feed",
+        "retire": "timing-intelligence"
+      },
+      {
+        "a": "dynamic-psychology-policy-weighting",
+        "b": "markets-psychology-vs-physics",
+        "jaccard": 0.203,
+        "body_a": 1928,
+        "body_b": 2171,
+        "retire_to": "markets-psychology-vs-physics",
+        "retire": "dynamic-psychology-policy-weighting"
+      },
+      {
+        "a": "capability-portfolio-control-layer",
+        "b": "capability-portfolio-management",
+        "jaccard": 0.202,
+        "body_a": 1957,
+        "body_b": 2497,
+        "retire_to": "capability-portfolio-management",
+        "retire": "capability-portfolio-control-layer"
+      },
+      {
+        "a": "consumer-groups",
+        "b": "political-consumerism",
+        "jaccard": 0.2,
+        "body_a": 3610,
+        "body_b": 2224,
+        "retire_to": "consumer-groups",
+        "retire": "political-consumerism"
+      },
+      {
+        "a": "entj-social-paradox",
+        "b": "intj-social-illegibility",
+        "jaccard": 0.199,
+        "body_a": 3610,
+        "body_b": 4120,
+        "retire_to": "intj-social-illegibility",
+        "retire": "entj-social-paradox"
+      },
+      {
+        "a": "fe-ni-enfj-childhood",
+        "b": "ni-fe-infj-childhood",
+        "jaccard": 0.197,
+        "body_a": 3655,
+        "body_b": 3488,
+        "retire_to": "fe-ni-enfj-childhood",
+        "retire": "ni-fe-infj-childhood"
+      },
+      {
+        "a": "canonical-knowledge-work-loop",
+        "b": "consumption-to-resurfacing-loop",
+        "jaccard": 0.196,
+        "body_a": 1167,
+        "body_b": 1390,
+        "retire_to": "consumption-to-resurfacing-loop",
+        "retire": "canonical-knowledge-work-loop"
+      },
+      {
+        "a": "bull-call-spread",
+        "b": "calendar-spread",
+        "jaccard": 0.195,
+        "body_a": 1063,
+        "body_b": 965,
+        "retire_to": "bull-call-spread",
+        "retire": "calendar-spread"
+      },
+      {
+        "a": "capital-deepening",
+        "b": "user-cost-of-capital",
+        "jaccard": 0.194,
+        "body_a": 2230,
+        "body_b": 2112,
+        "retire_to": "capital-deepening",
+        "retire": "user-cost-of-capital"
+      },
+      {
+        "a": "intent-graph",
+        "b": "personal-intent-graph",
+        "jaccard": 0.188,
+        "body_a": 5709,
+        "body_b": 4664,
+        "retire_to": "intent-graph",
+        "retire": "personal-intent-graph"
+      },
+      {
+        "a": "personal-intent-graph",
+        "b": "project-state-graph-vs-cognitive-state-graph",
+        "jaccard": 0.188,
+        "body_a": 4664,
+        "body_b": 1674,
+        "retire_to": "personal-intent-graph",
+        "retire": "project-state-graph-vs-cognitive-state-graph"
+      },
+      {
+        "a": "passive-capture-layer",
+        "b": "proactive-intelligence-layer",
+        "jaccard": 0.184,
+        "body_a": 2223,
+        "body_b": 1954,
+        "retire_to": "passive-capture-layer",
+        "retire": "proactive-intelligence-layer"
+      },
+      {
+        "a": "memory-consolidation-architecture",
+        "b": "two-layer-architecture",
+        "jaccard": 0.181,
+        "body_a": 1727,
+        "body_b": 2240,
+        "retire_to": "two-layer-architecture",
+        "retire": "memory-consolidation-architecture"
+      },
+      {
+        "a": "asymmetric-information",
+        "b": "information-asymmetry",
+        "jaccard": 0.178,
+        "body_a": 3586,
+        "body_b": 3009,
+        "retire_to": "asymmetric-information",
+        "retire": "information-asymmetry"
+      },
+      {
+        "a": "seat-based-saas-economics",
+        "b": "sold-but-not-used-saas",
+        "jaccard": 0.178,
+        "body_a": 3184,
+        "body_b": 2928,
+        "retire_to": "seat-based-saas-economics",
+        "retire": "sold-but-not-used-saas"
+      },
+      {
+        "a": "carrageenan",
+        "b": "philippines-indonesia-carrageenan-duopoly",
+        "jaccard": 0.176,
+        "body_a": 2837,
+        "body_b": 2280,
+        "retire_to": "carrageenan",
+        "retire": "philippines-indonesia-carrageenan-duopoly"
+      },
+      {
+        "a": "constitutional-polycentrism",
+        "b": "polycentric-governance",
+        "jaccard": 0.176,
+        "body_a": 1916,
+        "body_b": 1406,
+        "retire_to": "constitutional-polycentrism",
+        "retire": "polycentric-governance"
+      },
+      {
+        "a": "brand-as-surrogate-community",
+        "b": "brand-purpose-signaling",
+        "jaccard": 0.175,
+        "body_a": 1938,
+        "body_b": 1831,
+        "retire_to": "brand-as-surrogate-community",
+        "retire": "brand-purpose-signaling"
+      },
+      {
+        "a": "action-friction",
+        "b": "action-rubric",
+        "jaccard": 0.174,
+        "body_a": 2351,
+        "body_b": 2852,
+        "retire_to": "action-rubric",
+        "retire": "action-friction"
+      },
+      {
+        "a": "comparative-advantage",
+        "b": "dynamic-comparative-advantage",
+        "jaccard": 0.173,
+        "body_a": 2335,
+        "body_b": 2641,
+        "retire_to": "dynamic-comparative-advantage",
+        "retire": "comparative-advantage"
+      },
+      {
+        "a": "extended-mind",
+        "b": "extended-mind-thesis",
+        "jaccard": 0.17,
+        "body_a": 2562,
+        "body_b": 2682,
+        "retire_to": "extended-mind-thesis",
+        "retire": "extended-mind"
+      },
+      {
+        "a": "financialisation-of-surplus",
+        "b": "surplus-allocation",
+        "jaccard": 0.168,
+        "body_a": 2374,
+        "body_b": 2126,
+        "retire_to": "financialisation-of-surplus",
+        "retire": "surplus-allocation"
+      },
+      {
+        "a": "action-tier-hierarchy",
+        "b": "consequence-weighted-action-gate",
+        "jaccard": 0.167,
+        "body_a": 1608,
+        "body_b": 1595,
+        "retire_to": "action-tier-hierarchy",
+        "retire": "consequence-weighted-action-gate"
+      },
+      {
+        "a": "autonomic-computing",
+        "b": "intent-layer-for-ambient-computing",
+        "jaccard": 0.167,
+        "body_a": 1444,
+        "body_b": 1536,
+        "retire_to": "intent-layer-for-ambient-computing",
+        "retire": "autonomic-computing"
+      },
+      {
+        "a": "consumption-to-resurfacing-loop",
+        "b": "time-triggered-vs-context-triggered-resurfacing",
+        "jaccard": 0.167,
+        "body_a": 1390,
+        "body_b": 1702,
+        "retire_to": "time-triggered-vs-context-triggered-resurfacing",
+        "retire": "consumption-to-resurfacing-loop"
+      },
+      {
+        "a": "warm-modernism",
+        "b": "warm-tonal-minimalism",
+        "jaccard": 0.165,
+        "body_a": 3034,
+        "body_b": 1665,
+        "retire_to": "warm-modernism",
+        "retire": "warm-tonal-minimalism"
+      },
+      {
+        "a": "epistemic-content-types",
+        "b": "level-0-4-epistemic-architecture",
+        "jaccard": 0.161,
+        "body_a": 1713,
+        "body_b": 1767,
+        "retire_to": "level-0-4-epistemic-architecture",
+        "retire": "epistemic-content-types"
+      },
+      {
+        "a": "intp-ti-ne-childhood",
+        "b": "ni-fe-infj-childhood",
+        "jaccard": 0.153,
+        "body_a": 3392,
+        "body_b": 3488,
+        "retire_to": "ni-fe-infj-childhood",
+        "retire": "intp-ti-ne-childhood"
+      },
+      {
+        "a": "long-term-debt-cycle",
+        "b": "reserve-currency-cycle",
+        "jaccard": 0.153,
+        "body_a": 2298,
+        "body_b": 2103,
+        "retire_to": "long-term-debt-cycle",
+        "retire": "reserve-currency-cycle"
+      }
+    ]
+  }
+}

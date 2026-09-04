@@ -1,0 +1,14 @@
+--- a/src/lib/ingest-queue.ts
++++ b/src/lib/ingest-queue.ts
+@@ -88,7 +88,10 @@ function resetQueueAccounting(): void {
+ }
+
+ export function setIngestWorkerLimit(limit: number): void {
+-  workerLimit = Math.max(1, Math.min(5, Math.floor(limit) || 1))
++  // DEVIATION from upstream nashsu (MIKAI-specific): bump max workers
++  // from 5 to 16 for higher throughput. Upstream chose 5 to fit within
++  // typical API rate limits; MIKAI accepts higher API concurrency risk.
++  workerLimit = Math.max(1, Math.min(16, Math.floor(limit) || 1))
+   if (currentProjectId && !paused) processNext(currentProjectId)
+ }
+

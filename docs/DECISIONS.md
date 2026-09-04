@@ -1239,3 +1239,259 @@ The brain is MIKAI's L4 reasoning (the LLM). There is no rules engine, no priori
 - D-041 (L4 above port) — calendar planner is L4 product code; it does not import graphiti-core or hit the L3Backend port directly. (Future: could pull Surface Engine candidates from the port instead of loading the needs registry markdown by hand.)
 - D-053 (Surface Engine as LLM-only decider) — same LLM shape: candidate pool → structured JSON → dispatch. The planner is essentially Surface Engine with a CalDAV write instead of an ntfy send.
 - Sumimasen Phase B (`sumimasen_watcher.py`) — Sumimasen READS the calendar to warn about MIKAI-created blocks approaching; the planner WRITES to the calendar to fill them. Both are calendar-shaped surfaces of the same L4 reasoning; Sumimasen closes the "you're about to hit this block" loop, the planner closes the "the block is generic, populate it" loop. Future integration: Sumimasen's context bundle for a rewritten block should show the picks the planner made when it fills it.
+
+---
+
+## ARCH-026: Wiki Substrate as Primary L3 — Graph Deprecated but Retained
+**Date:** 2026-08-11
+**Source:** Cumulative move from Graphiti/Neo4j substrate to file-based Karpathy-style wiki. Formalized after `com.mikai.ingestion` daemon unloaded and `~/.mikai/wiki/{sources, concepts}/` became the active write target.
+**Decision:** MIKAI's L3 substrate is now a file-based wiki at `~/.mikai/wiki/` following Andrej Karpathy's LLM-Wiki pattern. `sources/` holds immutable per-source markdown files; `concepts/` holds LLM-synthesized concept pages. The prior Graphiti/Neo4j substrate (ARCH-019) is DEPRECATED — no new writes flow to it — but RETAINED for archival query. `com.mikai.ingestion` + `com.mikai.tap-endpoint` daemons unloaded 2026-08-11.
+
+**Why:**
+- The graph substrate accumulated real coordination costs: patched graphiti-core (D-042), typed-extraction persistence bug (D-052), custom DeepSeekClient adapter — every quarter another patch to keep it running against an evolving library.
+- Karpathy's file-based wiki proves that L3 can be a folder of markdown that the LLM maintains directly. No database dependency. Portable to any editor (Obsidian is our current reader). Recoverable via git.
+- MIKAI's L4 product (noonchi, sumimasen) doesn't need graph primitives — it needs synthesized concepts + backlinks. Both are cleaner in a file layout than in Neo4j.
+
+**What supersedes:**
+- ARCH-019 (Graphiti + Neo4j as default L3): superseded for writes; graph is now read-only archive
+- ARCH-020 (ingestion targets L3 via `add_episode()`): superseded — ingestion now writes to `sources/` markdown files, not the graph
+- ARCH-024 (`L3Backend` port): retained conceptually but no longer the primary integration point — product code reads wiki files directly
+
+**Retained:**
+- ARCH-025 (LocalAdapter option): still valid design work if we ever want back on the graph pattern
+- Neo4j substrate itself — preserved for archival query via legacy code paths
+
+**Related:**
+- `~/.mikai/wiki/SCHEMA.md` (v3) — canonical substrate spec
+- CLAUDE.md — banner added noting graph deprecation
+- STATUS.md — updated to reflect wiki-substrate primacy
+
+---
+
+## ARCH-027: Two-Step Ingest — Analysis LLM Call + Generation LLM Call
+**Date:** 2026-08-13
+**Source:** Adopted from nashsu/llm_wiki (16.2k stars) after empirical comparison on one source showed materially richer output vs. single-call approach.
+**Decision:** Source ingestion uses two sequential LLM calls per source. Pass 1 (Analysis) reads source → structured JSON of entities/concepts/connections/contradictions/recommendations. Pass 2 (Generation) takes analysis JSON → synthesizes final source-file markdown per SCHEMA v3 canonical shape.
+
+**Why:**
+- Empirical comparison on one source (2026-03-19 "Turn 17 (assistant)"): Approach B (true two-step) produced richer `## Overview` prose (130 words vs 53), better title (from slug vs raw source title), and surfaced contradictions inline in `## Notes` — all missing from single-call + deterministic derivation.
+- Nashsu's rationale (verified in their `src/lib/ingest.ts`): "significantly better quality" from separating analysis from generation.
+- MIKAI's own value depends on the synthesis quality — a shallower Overview means downstream retrieval (mikai_ask, cockpit) has weaker signal to reason over.
+
+**Cost trade-off:**
+- ~2× LLM calls per source (from 1 to 2)
+- For remaining ~8,600 sources: ~17,200 calls at Sonnet 5 tier
+- Estimated 40-50% of remaining subscription quota
+- Justified: this is a one-shot ingest, the substrate is durable, quality investment amortizes forever
+
+**Fallback:**
+- If Generation LLM call fails or returns malformed frontmatter, the pipeline falls back to deterministic derivation from Analysis JSON. No source ever silently drops.
+
+**Related:**
+- `infra/graphiti/dream_bootstrap.py` (old single-call ingest, deprecated)
+- `smoke_ingest_v2.py` (scratchpad) — current implementation, will graduate to `infra/graphiti/ingest_v2.py` when hardened
+- SCHEMA.md v3 § "Ingest pipeline — two-step per nashsu"
+
+---
+
+## ARCH-028: Astro-Han Canonical Page Shape (SCHEMA v3)
+**Date:** 2026-08-13
+**Source:** Empirical review across reference impls (Karpathy gist, kytmanov, danvega, charlie947, Astro-Han). Astro-Han/karpathy-llm-wiki was the only reference impl publishing actual populated example pages (1.9k stars).
+**Decision:** All wiki pages (sources/ + concepts/) follow Astro-Han's populated-page shape: `# Title` → `> **Sources:** …` header provenance block → `## Overview` (2-4 sentences) → domain H2s → `## Sources` → optional `## Notes` for contradictions. Removed from prior schema: `## Referenced by` (Obsidian's Backlinks pane replaces manual maintenance), placeholder text like `_(will be linked once…)_`, `## TL;DR` header (renamed to `## Overview`).
+
+**Why:**
+- Astro-Han's shape is the only public reference we could verify with populated examples — everyone else ships templates or empty scaffolds.
+- Nashsu's frontmatter fields (`type`, `title`, `sources[]`) integrated for machine-queryable source traceability.
+- Kytmanov's conservative posture on `## Referenced by`: Obsidian handles backlinks natively; manually maintaining them is write-amplification hell.
+- Placeholder text noise: v2 schema had many `_(none yet — hub page)_` sections that added visual clutter without information. v3 omits empty sections entirely.
+
+**Migration:**
+- `normalize_pages.py` (2026-08-13): deterministic rewrite of 1,091 pre-v3 pages. Rename TL;DR → Overview, add header block, strip `## Referenced by`, strip placeholder text. 10 hand-authored pages preserved untouched.
+- Updated write paths: `smoke_ingest_v2._write_source_file_from_llm`, `smoke_ingest_B._mint_concept_page`, `synthesize_stubs` — all emit v3 shape.
+
+**Related:**
+- `~/.mikai/wiki/SCHEMA.md` v3 — canonical spec
+- `docs/LINT_PASS.md` — lint checks target v3 shape
+
+---
+
+## ARCH-029: L2 Data Management RESOLVES; L4 Surface Engine SURFACES
+**Date:** 2026-08-12
+**Source:** Explicit correction to prior "surface tensions, don't resolve" invariant conflating two different concerns. Grounded in Vectorize/Hindsight (May 2026) + MemFail benchmark (arXiv 2605.26667).
+**Decision:** MIKAI's L2 (concept pages, data management layer) RESOLVES contradictions via recency-wins with `superseded_by` breadcrumb. L4 surface engine (attention allocation) is a separate concern — it surfaces what needs Brian's attention now, not disagreements between claims. The prior "surface tensions don't resolve" rule from `docs/DREAM_WIKI_RUNTIME.md` conflated these; superseded here.
+
+**Why:**
+- Vectorize/Hindsight: "recency-wins with explicit invalidation is the most defensible default" — otherwise retrieval returns confidently wrong stale facts.
+- MemFail benchmark: contradictions scale with agent lifetime; lint-only maintenance fails at scale. Stronger models make it WORSE not better.
+- Every published memory system in 2025-2026 (Mem0, OpenClaw, Zep, Cognee) runs consolidation as a separate background pass — not just structural lint.
+- MIKAI's L1 immutability (sources/ never edited) provides the audit trail that makes L2 resolution safe: no data is ever destroyed, just superseded with a pointer back to the older version.
+
+**Applies to:**
+- `dream_pass.py` — future autonomous consolidation uses recency-wins for factual contradictions
+- Concept pages: `superseded_by:` frontmatter field; losing page moves to `_retired/` with pointer
+- SCHEMA v3 §"Data management vs surface engine" formalizes this boundary
+
+**Deferred:**
+- `SURFACE_ENGINE_LOSS_FUNCTION.md` update: rename `tension_pressure` → `attention_pressure`, source from state+staleness+goal_alignment (not epistemic edges). Parked for L4 work.
+
+**Supersedes:**
+- Prior dream_wiki_runtime rule #1 ("surface tensions, don't resolve them") — reframed as L4 surface engine concern, not L2 data management concern
+
+---
+
+## D-056: Dream Lint `--fix` Mode — Deterministic Auto-Repair
+**Date:** 2026-08-12
+**Decision:** `infra/graphiti/dream_lint.py` gains an opt-in `--fix` flag that runs deterministic auto-repair on broken wikilinks: (1) alias-rewrite for unambiguous alias matches (`[[old]] → [[canonical]]`), (2) bounded stub creation for broken targets referenced ≥ MIN_REFS_FOR_STUB (default 3) times, capped at MAX_STUBS_PER_RUN (default 5). NO LLM. Never merges concepts. Never deletes. `--dry-run` gate for preview.
+
+**Why:**
+- Verified pattern from `kytmanov/obsidian-llm-wiki-local`'s `olw maintain --fix`. Only shipped reference impl doing auto-repair; conservative by design.
+- Empirical result on first run (2026-08-12): 29 broken wikilinks → 10 broken (19 resolved). 1 alias rewrite + 3 stubs. Zero LLM calls.
+- Prior "lint proposes, human executes" framing was too rigid — structural fixes with unambiguous matches don't need human review.
+
+**Related:**
+- `docs/LINT_PASS.md` § "--fix mode — opt-in deterministic auto-repair"
+
+---
+
+## D-057: Dedup-on-Write at Ingest — Near-Duplicate Concept Prevention
+**Date:** 2026-08-13
+**Decision:** Before ingest suggests a new concept slug, `smoke_ingest_B.find_near_duplicate_concept` runs a Jaccard similarity check (threshold 0.30) against existing concept slugs + aliases + TL;DR/Overview tokens. If similarity ≥ threshold, the suggestion is redirected as a touch on the existing concept instead of proposing a new one.
+
+**Why:**
+- Adopted from `boostedcore` gist ("LLM Wiki + Embedding"): "a periodic automated scan of the closest pairs" + "dedup-on-write during the two-phase distillation write pipeline."
+- Prevents the 7-8-pages-for-one-concept problem at write time rather than requiring a downstream dream_pass to clean up.
+- Deterministic. Cheap (Jaccard on tokens, no LLM). Runs inline with ingest.
+
+**Related:**
+- `smoke_ingest_B.py::find_near_duplicate_concept()`
+- SCHEMA v3 § "LLM-owned operations"
+
+---
+
+## D-058: `wiki-raw/` Split — Wiki Capture Files Outside Obsidian Vault
+**Date:** 2026-08-11
+**Decision:** Move `wiki.md`, `wiki.index`, `wiki.fts.db`, `wiki-episodes.log` from `~/.mikai/wiki/` to `~/.mikai/wiki-raw/`. Vault-side (`WIKI_DIR`) holds `concepts/`, `sources/`, `SCHEMA.md`, ontology docs. Raw-side (`WIKI_RAW_DIR`) holds the 57MB append-only capture. Env override `MIKAI_WIKI_RAW` supported for tests.
+
+**Why:**
+- Obsidian's indexer chokes on the 57MB `wiki.md` at vault startup — "Some functionality may not be available until indexing is done" then freezes.
+- Moving raw capture outside the vault dir removes it from Obsidian's file-scan scope entirely (safer than `.obsidianignore`, which some Obsidian versions still stat during startup).
+- Preserves separation: raw capture is machine-appended; vault content is what the LLM curates + human browses.
+
+**Code updated:**
+- `infra/graphiti/dream_bootstrap.py`: added `WIKI_RAW_DIR = Path.home() / ".mikai" / "wiki-raw"`
+- `infra/graphiti/sidecar/l3/wiki_adapter.py`: added `WIKI_RAW`, updated path helpers
+- `infra/mikai_ask/core.py`: `_wiki_dir()` now returns `~/.mikai/wiki-raw/`
+
+**Caveat:**
+- The `com.mikai.ingestion` daemon (running from `~/Desktop/MIKAI/` — a DIFFERENT project checkout) still writes to the OLD path. Daemon was unloaded 2026-08-11 to stop the leak. To resume, update the Desktop project's `wiki_adapter.py` first.
+
+---
+
+## D-059: SHA256 Content Cache for Ingest — Skip Unchanged Sections
+**Date:** 2026-08-13
+**Decision:** `smoke_ingest_v2` maintains `~/.mikai/wiki/.ingest-sha256-cache.json` mapping section-id → content-hash. Before running Analysis + Generation on a source, check hash; if unchanged from last successful ingest, skip both LLM calls entirely.
+
+**Why:**
+- Adopted from nashsu/llm_wiki's ingest.ts: "checks cache to skip re-ingestion of unchanged sources."
+- Prevents wasted LLM calls when re-running ingest over overlapping windows.
+- Full-corpus reprocessing becomes cheap when the underlying source content didn't change.
+
+**Related:**
+- `smoke_ingest_v2.py::load_cache()` / `save_cache()` / `content_hash()`
+- Cache seeded with 100 entries on first v2 run (2026-08-13).
+
+---
+
+## ARCH-030: Flat `sources/` Layout — Bucket Subdirectory Layer Removed (Option A)
+**Date:** 2026-08-14
+**Decision:** Sources are stored at `~/.mikai/wiki/sources/YYYY-MM-DD-slug-HASH6.md` — flat, no subject-bucket subdirectories. Category is still extracted by the LLM and preserved in frontmatter as metadata, but does NOT drive filesystem placement.
+
+**Why:**
+- Bucket vocabulary was open (LLM-generated per source). 1,108 sources produced 166 subject buckets = avg 6.6 sources/bucket. Empirical A/B test (2026-08-13): 50 sources minted 36 NEW buckets in a single batch. Extrapolated to 8,600 remaining raw sections: ~6,200 additional buckets, ~1.5 sources per bucket, buckets become noise.
+- Task #13 ("constrain bucket vocabulary") was declared unresolvable via constraint — every option (fixed enum, canonicalizer, LLM-choose-from-list) added coupling without solving the underlying problem that LLM-generated categorization is inherently unstable at scale.
+- Chose to **delete the layer that doesn't work** rather than continue engineering it. Karpathy-native flat wiki (nashsu/llm_wiki does the same — `entities/, concepts/, sources/, queries/` are the only structural buckets, no sub-bucketing within sources).
+- Zero filename collisions verified before migration (SHA1 hash suffix already guarantees uniqueness). Migration was a single `find + mv` command; production wiki flattened cleanly in one shot.
+
+**Code updated:**
+- `scratchpad/smoke_ingest_v2.py:269-271, 299-301` — write to `SOURCES_DIR / filename` directly, no `cat_dir`
+- `scratchpad/smoke_ingest_B.py:277-279` — same
+- `infra/graphiti/dream_bootstrap.py:54, 84` — `os` import + `MIKAI_WIKI_DIR` env var override (also enables isolated test vaults, see D-060)
+
+**Supersedes:**
+- Task #13 (marked completed 2026-08-14, resolved by construction).
+
+**Follow-ups (deferred, ADR queue):**
+- Near-duplicate concept slugs remain a separate problem — same source rerun produces different slugs due to LLM temperature. D-057 dedup-on-write helps but does not close the gap. See D-062 (post-Fable-analysis) for slug canonicalization decision.
+
+---
+
+## D-060: 8-Worker Parallel Two-Step Ingest — Verified Safe, Adopted as Default
+**Date:** 2026-08-14
+**Decision:** `smoke_ingest_v2` runs Phase 1 (Analysis + source-file write) across 8 concurrent workers; Phase 2 (concept-page appends + auto-mint + inbox suggestions) runs single-threaded in the main thread. Adopted as production default after controlled A/B parallelism-safety test (see below).
+
+**Test methodology:**
+- Same 50 raw sections (SKIP_N=1720, TAKE_N=50), same starting state, same code. Only variable: `N_WORKERS`.
+- Two isolated vaults created via `cp -r ~/.mikai/wiki ~/.mikai/wiki-test-{serial,parallel}` + `MIKAI_WIKI_DIR` env var patch to `dream_bootstrap.py`. Production wiki untouched throughout.
+- Wall-clock: serial 2323s vs parallel 289s = **8.04× speedup** (near-linear at 8 workers).
+- Structural safety verdict: **PASSED**. No crashes, no dropped writes, no duplicate concept files, D-057 dedup-on-write held under 8-way concurrency. Auto-mint counts comparable (45 serial vs 44 parallel).
+- Semantic drift verdict: Only 3 of ~45 concept slugs shared between arms (7%). But this is LLM-temperature nondeterminism, not parallelism — a serial-vs-serial rerun would show similar drift. Confirmed against nashsu/llm_wiki README (2026-08-13 fetch): nashsu is deliberately serial to preserve within-run concept propagation. We knowingly trade some of that context propagation for 8× throughput.
+
+**Why parallel is required (not just nice-to-have):**
+- Serial rate: ~108s/source. Full 19,054-section corpus at serial rate = ~24 days continuous LLM calls. Non-viable for consumer-product onboarding (per `docs/COMPARISON.md` moat framing).
+- 8-worker rate: ~13s/source effective. Full corpus in ~2.5 days. Overnight-runnable in chunks.
+
+**Anomaly observed:**
+- The 200-source production run hit a ~25-min silent startup where the first 8 workers all encountered `JSONDecodeError` on the Analysis pass (LLM returned malformed JSON), retried 2-3× each, then failed and moved on. Small samples (50 sources) statistically miss this. Not rate limiting. Mitigation: stricter JSON instruction in Analysis prompt + better `strip_json_fences()` fallback. Deferred, see D-062.
+
+**Code updated:**
+- Env var patch: `infra/graphiti/dream_bootstrap.py:84` reads `MIKAI_WIKI_DIR`
+- Test wrapper: `scratchpad/run_parallelism_test.py` (env-var-configurable N_WORKERS / SKIP_N / TAKE_N)
+- Chain runner: `scratchpad/chain_ingest.sh` (sequential batches of 200, dedup between)
+- Dedup: `scratchpad/dedup_source_files.py` (hash-suffix group, keep newest by mtime — used between backfill batches to prune slug-drift duplicates)
+
+**Related:**
+- Baseline data + failure diagnostic in `/tmp/mikai_test_logs/{serial,parallel,fresh200}.log`
+- SCHEMA v3 §Analysis-Generation two-step
+- ARCH-027 (two-step ingest architecture)
+- ARCH-030 (flat sources/ layout — required for backfill collision safety)
+
+---
+
+## ARCH-031: Context-Overflow Chunking for Long Sources (Nashsu Pattern)
+**Date:** 2026-08-14
+**Decision:** Replace the current uniform `MAX_EXCERPT=4000` truncation in `smoke_ingest_v2.py:57` with the nashsu-verified two-tier pattern: (1) raise the single-pass excerpt floor to 12,000 chars (matches nashsu `LONG_SOURCE_CHUNK_MIN`); (2) for sources exceeding ~40,000 chars, port nashsu's `analyzeLongSourceInChunks` — split into 12k-60k chunks with overlap, run Pass 1 Analysis per chunk, consolidate into a merged `sourceContext`, feed one Pass 2 Generation. Sources are NOT dispatched by type (thread vs note vs query) — treat uniformly per both Karpathy and nashsu.
+
+**Why:**
+- Empirical: `smoke_ingest_v2.py:57` had `MAX_EXCERPT=4000` inherited from MVP single-call smoke tests. Sonnet handles ~200K tokens / ~800K chars — we were using 0.5% of capacity. Sources up to 103KB in production (e.g., Frostpunk Perplexity thread at `~/.mikai/wiki/sources/2026-03-19-frostpunk-2-macro-strategy-22f4ab.md`) had ~96% of content invisible to Pass 1.
+- Constant was never re-evaluated against context capacity when adopting two-step v2 (ARCH-027). The `# slightly wider than smoke-B` comment on line 57 carried it over without principled justification.
+- Verified against actual nashsu source (`src/lib/ingest.ts` via GitHub raw fetch 2026-08-14): they trigger chunking on `enrichedSourceContent.length > sourceBudget`, then `analyzeLongSourceInChunks` splits with `LONG_SOURCE_CHUNK_MIN=12_000` / `LONG_SOURCE_CHUNK_MAX=60_000` and consolidates before Generation.
+- Verified against Karpathy's `llm-wiki.md` gist (2026-04-04, https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f): he punts segmentation entirely to the implementer. His only relevant quote: "A single source might touch 10-15 wiki pages." No chunk size, no source-type dispatch prescribed.
+- Corrects the earlier framing of P3 as "topic segmentation" (Fable's first-pass extrapolation, 2026-08-14 morning). Neither reference project topic-splits — both treat "one source" as atomic and rely on the routing/placement step to fan out. What we actually lack is **context-overflow chunking**, not topic segmentation.
+
+**Impact estimate:**
+- ~40% of current 2,115 sources are >4KB (Perplexity threads, Claude threads, long notes) — every one had its Overview, Touches, and category derived from a truncated 4KB slice.
+- Raising to 12k catches the majority of sources in single-pass without chunk complexity.
+- Chunk-and-consolidate covers the long-tail (~5-10% of sources > 40k) with proper recall.
+
+**Related:**
+- `docs/INGESTION_PIPELINE_ANALYSIS_2026-08-14.md` § "The MAX_EXCERPT=4000 oversight"
+- Supersedes prior "stream-typed splitter registry" proposal (was Fable synthesis, not lifted from reference impls; ARCH-031 replaces it with the actual nashsu pattern)
+
+---
+
+## D-062: `claude -p --json-schema` Wiring for Pass 1 Analysis (Structured Output)
+**Date:** 2026-08-14
+**Decision:** Wire `claude -p --json-schema=<schema>` into `infra/mikai_llm/__init__.py` Pass 1 Analysis calls. Currently the wrapper silently ignores `json_mode=True` for the claude provider (`__init__.py:225-228`). Test streaming compatibility (`--output-format stream-json` + `--json-schema` composition is unverified) before shipping.
+
+**Why:**
+- Empirical: fresh200 batch (2026-08-14) had 9 JSON parse failures out of 200 (4.5% failure rate) plus a 25-minute cold-start cluster where all 8 workers hit malformed-JSON responses on first source and retried simultaneously. Pattern: LLM returns explanation-plus-JSON instead of pure JSON; parser fails.
+- Root cause: no structured-output enforcement at the LLM boundary. Claude API + CLI both support Structured Outputs (`structured-outputs-2025-11-13` beta + `claude -p --json-schema` flag) which eliminate this class entirely.
+- Priority elevated to #1 in fix plan (over splitter and slug-directory) because it deletes an entire failure class in ~30-60 min of wrapper work.
+
+**Verification required before ship:**
+- Does `--json-schema` compose with `--output-format stream-json --include-partial-messages`?
+- Does streaming a JSON-schema-constrained response return the schema-validated JSON at end-of-stream, or does the constraint only apply in print mode?
+
+**Related:**
+- `docs/INGESTION_PIPELINE_ANALYSIS_2026-08-14.md` § "Fable 5 — Session Retrospective" insight #3
+- Anthropic Structured Outputs docs (beta 2025-11-13)

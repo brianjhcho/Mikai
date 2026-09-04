@@ -50,6 +50,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
+import os
 import re
 import sys
 import time
@@ -79,9 +81,13 @@ def _load_wiki_index_cls():
 
 WikiIndex = _load_wiki_index_cls()
 
-WIKI_DIR = Path.home() / ".mikai" / "wiki"
-WIKI_MD = WIKI_DIR / "wiki.md"
-WIKI_INDEX = WIKI_DIR / "wiki.index"
+WIKI_DIR = Path(os.environ.get("MIKAI_WIKI_DIR", str(Path.home() / ".mikai" / "wiki")))
+# Raw capture (wiki.md + index + fts) lives OUTSIDE the vault so
+# Obsidian's indexer doesn't choke on the 57MB append-only file. Vault
+# side (WIKI_DIR) holds concepts/, sources/, ontology, etc.
+WIKI_RAW_DIR = Path.home() / ".mikai" / "wiki-raw"
+WIKI_MD = WIKI_RAW_DIR / "wiki.md"
+WIKI_INDEX = WIKI_RAW_DIR / "wiki.index"
 NARRATIVE_OUT = WIKI_DIR / "wiki-narrative.md"
 ONTOLOGY_OUT = WIKI_DIR / "wiki-ontology.md"
 CHECKPOINT = WIKI_DIR / ".dream-bootstrap-ontology.checkpoint.jsonl"
@@ -91,6 +97,12 @@ NARRATIVE_STATE = WIKI_DIR / ".narrative-state.json"
 CONCEPTS_DIR = WIKI_DIR / "concepts"
 SALIENCE_LEDGER = WIKI_DIR / "wiki-salience.md"
 USER_MODEL_MD = Path.home() / ".mikai" / "brain" / "USER_MODEL.md"
+
+# Build 3: hand-authored goals file. THE input the corpus circularity
+# cannot generate. G(c) axis re-ranks candidates against these goals.
+GOALS_MD = Path.home() / ".mikai" / "brain" / "GOALS.md"
+G_MENTION_CONTEXT_WINDOW = 200  # chars ±match to sample for context tokens
+G_TOP_K = 10                    # promote top-K by G alongside top-K by S
 
 DECAY_RATE = 0.5              # ACT-R d = 0.5 (Anderson & Schooler 1991)
 PROMOTE_DEFAULT_THRESHOLD = 4.0
@@ -1214,6 +1226,56 @@ def _alias_key(name: str) -> str:
     return " ".join(words)
 
 
+def _load_goals(path: Path = GOALS_MD) -> list[dict]:
+    """Build 3: parse GOALS.md into list of goal dicts. Each H2 section
+    is one goal — title + body → tokens for G-axis TF cosine.
+
+    Returns [{'name': str, 'tokens': set[str]}]. Empty list if file
+    missing (G term degrades to 0, ledger still fine)."""
+    if not path.exists():
+        return []
+    text = path.read_text()
+    goals = []
+    for m in re.finditer(
+        r"^##\s+(.+?)\s*$(.*?)(?=^##\s|\Z)", text, re.MULTILINE | re.DOTALL
+    ):
+        title = m.group(1).strip()
+        body = m.group(2).strip()
+        tokens = {
+            t for t in re.findall(r"[a-z][a-z0-9]{3,}",
+                                  (title + " " + body).lower())
+            if t not in _NGRAM_STOP
+        }
+        if tokens:
+            goals.append({"name": title, "tokens": tokens})
+    return goals
+
+
+def _compute_g_cosine(context_tokens: set, goals: list[dict]) -> tuple:
+    """Build 3: G(c) = max token-set cosine between the candidate's
+    pooled mention-context and each goal. Also returns the best-matching
+    goal name so the ledger can show which goal a candidate aligns to.
+
+    TF cosine (binary bag-of-words), stdlib-only: |A∩B| / sqrt(|A|·|B|).
+    Voyage embedding upgrade is v1 — this variant proves the axis earns
+    its place before we pay for embeddings."""
+    if not goals or not context_tokens:
+        return 0.0, None
+    ctx_size = len(context_tokens)
+    best_g, best_goal = 0.0, None
+    for goal in goals:
+        gt = goal["tokens"]
+        if not gt:
+            continue
+        overlap = len(context_tokens & gt)
+        if overlap == 0:
+            continue
+        cos = overlap / math.sqrt(ctx_size * len(gt))
+        if cos > best_g:
+            best_g, best_goal = cos, goal["name"]
+    return best_g, best_goal
+
+
 def _fold_aliases(candidates: list[dict]) -> list[dict]:
     """Group candidates by alias key. Each group produces ONE head
     candidate with an 'aliases' list of the other member names.
@@ -1247,40 +1309,46 @@ def _fold_aliases(candidates: list[dict]) -> list[dict]:
     return out
 
 
-def find_mention_records(candidate, records, wiki_md: Path) -> list[dict]:
+def find_mention_records(candidate, records, wiki_md: Path,
+                         capture_context: bool = False):
     """Sections whose body contains the candidate as a WHOLE-WORD match
-    (case-insensitive). Word boundaries are essential — plain substring
-    matching would count 'mem' inside 'memory'/'member'/'remember', 'pri'
-    inside 'priority', 'mark' inside 'market' — inflating short-name
-    counts by 100x+ and flooding the ledger with fragment candidates.
+    (case-insensitive). Word boundaries essential — plain substring
+    matching inflates short-name counts by 100x+ and floods with
+    fragment candidates (verified 2026-08-08: t1/pri/dia/mem/esen/ossi).
 
-    `records` is a list of WikiIndex record dicts (was WikiIndex before
-    the 2026-08-09 multiprocessing refactor — records are pickleable,
-    a full WikiIndex is not so cheaply). `candidate` may be either a
-    str OR a dict with 'name' + 'aliases' — in the dict shape the
-    returned mention set is the UNION over head + all aliases,
-    deduplicated by byte_start.
+    `records` is a list of WikiIndex record dicts (pickleable for the
+    multiprocessing.Pool refactor). `candidate` may be str or dict with
+    'name' + 'aliases'; the dict shape returns the UNION over head +
+    all aliases, deduplicated by byte_start.
 
-    Returns [{header_ts, source_stream, byte_start, section_name}]."""
+    Build 3 adds `capture_context`: when True, also collects the set
+    of ≥4-char lowercase non-stopword tokens found within
+    ±G_MENTION_CONTEXT_WINDOW chars of each match, pooled across all
+    mentions. This context set feeds the G-axis (goal alignment).
+
+    Returns:
+      capture_context=False → list[dict] of mention records (legacy)
+      capture_context=True  → (list[dict], set[str]) tuple"""
     if isinstance(candidate, dict):
         names = [candidate["name"]] + list(candidate.get("aliases") or [])
     else:
         names = [candidate]
     alts = "|".join(re.escape(n.lower()) for n in names if n)
     if not alts:
-        return []
+        return ([], set()) if capture_context else []
     pattern = re.compile(r"\b(?:" + alts + r")\b", re.IGNORECASE)
     seen: set[int] = set()
     out = []
+    context_tokens: set = set()
     for rec in records:
         try:
             text = WikiIndex.read_section(wiki_md, rec)
         except Exception:  # noqa: BLE001
             continue
-        if pattern.search(text):
-            key = rec.get("byte_start", 0)
-            if key in seen:
-                continue
+        if not pattern.search(text):
+            continue
+        key = rec.get("byte_start", 0)
+        if key not in seen:
             seen.add(key)
             out.append({
                 "header_ts": rec.get("header_ts", ""),
@@ -1288,6 +1356,16 @@ def find_mention_records(candidate, records, wiki_md: Path) -> list[dict]:
                 "byte_start": key,
                 "section_name": rec.get("name", ""),
             })
+        if capture_context:
+            for m in pattern.finditer(text):
+                s = max(0, m.start() - G_MENTION_CONTEXT_WINDOW)
+                e = min(len(text), m.end() + G_MENTION_CONTEXT_WINDOW)
+                snippet = text[s:e].lower()
+                for tok in re.findall(r"[a-z][a-z0-9]{3,}", snippet):
+                    if tok not in _NGRAM_STOP:
+                        context_tokens.add(tok)
+    if capture_context:
+        return out, context_tokens
     return out
 
 
@@ -1304,22 +1382,33 @@ _PROMOTE_WORKER_CTX: dict = {}
 
 
 def _promote_worker_init(records: list, wiki_md_str: str,
-                         goals_text: str, now_iso: str) -> None:
-    """One-time per-worker setup. Runs in each Pool worker on startup."""
+                         goals_text: str, now_iso: str,
+                         goals_list: list) -> None:
+    """One-time per-worker setup. Runs in each Pool worker on startup.
+    goals_list is the Build 3 G-axis input (list of {name, tokens})."""
     _PROMOTE_WORKER_CTX["records"] = records
     _PROMOTE_WORKER_CTX["wiki_md"] = Path(wiki_md_str)
     _PROMOTE_WORKER_CTX["goals_text"] = goals_text
     _PROMOTE_WORKER_CTX["now"] = datetime.fromisoformat(now_iso)
+    _PROMOTE_WORKER_CTX["goals_list"] = goals_list
 
 
 def _promote_worker_score(cand: dict):
     """Per-candidate work unit. Returns (cand, score, mentions) or None.
-    None when the candidate has zero mentions (dropped from the ledger)."""
+
+    Build 3: also captures mention-context tokens and computes G(c) —
+    max TF cosine between context and each goal. Score dict now
+    includes G + best_goal fields for the ledger's G column."""
     ctx = _PROMOTE_WORKER_CTX
-    mentions = find_mention_records(cand, ctx["records"], ctx["wiki_md"])
+    mentions, context_tokens = find_mention_records(
+        cand, ctx["records"], ctx["wiki_md"], capture_context=True,
+    )
     if not mentions:
         return None
     score = compute_score(cand, mentions, ctx["goals_text"], ctx["now"])
+    g_value, best_goal = _compute_g_cosine(context_tokens, ctx["goals_list"])
+    score["G"] = g_value
+    score["best_goal"] = best_goal
     return (cand, score, mentions)
 
 
@@ -1417,11 +1506,14 @@ def _write_concept_page(candidate: dict, score: dict, mentions: list[dict],
         "",
         "## Salience breakdown",
         "",
-        f"- **S = {score['S']:.3f}**",
+        f"- **S = {score['S']:.3f}**  (recurrence axis)",
         f"- base_activation (ACT-R ln Σ(Δt)⁻⁰·⁵): {score['base_activation']:.3f}",
         f"- spread (distinct source streams): {int(score['spread'])}"
         f" — {', '.join(score['streams']) if score['streams'] else '—'}",
         f"- goal_overlap (∩ USER_MODEL.md Current): {int(score['goal_overlap'])}",
+        f"- **G = {score.get('G', 0.0):.3f}**  (goal-alignment axis)"
+        + (f" — best match: `{score.get('best_goal')}`"
+           if score.get('best_goal') else ""),
         "",
         f"## Mentions ({score['n_mentions']} sections)",
         "",
@@ -1444,9 +1536,15 @@ def _write_salience_ledger(
     cap: int,
     promoted_slugs: set[str],
     path: Path,
+    goal_gaps: list[dict] | None = None,
 ) -> None:
     """Write wiki-salience.md — every scored candidate + term breakdown.
-    Audit surface AND the labeling instrument the afternoon test needs."""
+    Audit surface AND the labeling instrument the afternoon test needs.
+
+    Build 3: adds G column (max TF cosine to any goal), best_goal
+    column (which goal that G came from), and a Goal-evidence gap
+    section listing goals whose best candidate has low S (Sumimasen
+    stall signal)."""
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     lines = [
         f"# Salience Ledger — {today}",
@@ -1457,29 +1555,53 @@ def _write_salience_ledger(
         f"- promoted this pass: {len(promoted_slugs)}",
         "",
         "Formula: `S = ln(Σ(Δt)^-0.5) + spread + goal_overlap`,"
-        " all weights = 1, d = 0.5",
+        " all weights = 1, d = 0.5. "
+        "`G` = TF cosine of pooled mention-context vs each goal (max).",
         "",
         "## Ranked candidates",
         "",
-        "| Rank | Concept | S | base | spread | goal | mentions | Promoted? |",
-        "|---|---|---|---|---|---|---|---|",
+        "| Rank | Concept | S | base | spread | goal_kw | G | goal-match "
+        "| mentions | Promoted? |",
+        "|---|---|---|---|---|---|---|---|---|---|",
     ]
-    lines[-2] = ("| Rank | Concept | S | base | spread | goal | mentions"
-                 " | aliases | Promoted? |")
-    lines[-1] = "|---|---|---|---|---|---|---|---|---|"
     for i, (cand, score, _) in enumerate(ranked, 1):
         slug = _slugify(cand["name"])
         promoted = "✓" if slug in promoted_slugs else ""
-        aliases = cand.get("aliases") or []
-        alias_cell = ", ".join(aliases[:3]) + (
-            f" (+{len(aliases) - 3})" if len(aliases) > 3 else ""
-        ) if aliases else ""
+        gv = score.get("G", 0.0)
+        best_goal = score.get("best_goal") or ""
+        # truncate long goal names for table readability
+        goal_cell = best_goal[:40] + ("…" if len(best_goal) > 40 else "")
         lines.append(
             f"| {i} | {cand['name']} | {score['S']:.2f} | "
             f"{score['base_activation']:.2f} | {int(score['spread'])} | "
-            f"{int(score['goal_overlap'])} | {score['n_mentions']} | "
-            f"{alias_cell} | {promoted} |"
+            f"{int(score['goal_overlap'])} | {gv:.2f} | {goal_cell} | "
+            f"{score['n_mentions']} | {promoted} |"
         )
+    # Build 3: Goal-evidence gap section
+    if goal_gaps:
+        cold = [g for g in goal_gaps if g["reason"] != "healthy"]
+        lines.extend([
+            "",
+            "## Goal-evidence gap (Sumimasen stall signal)",
+            "",
+            f"_{len(cold)} of {len(goal_gaps)} goals have their best "
+            f"candidate below the S threshold ({threshold}). These are "
+            f"declared priorities the corpus has cold evidence for — "
+            f"L4 should surface these as 'you said this matters but "
+            f"you haven't touched it recently.'_",
+            "",
+            "| Goal | Best candidate | Best S | Best G | Status |",
+            "|---|---|---|---|---|",
+        ])
+        for g in goal_gaps:
+            best = g["best_candidate"] or "_none_"
+            marker = "❄️" if g["reason"] == "cold" else (
+                "—" if g["reason"] == "no candidate matched" else "✓"
+            )
+            lines.append(
+                f"| {g['goal']} | {best} | {g['best_S']:.2f} | "
+                f"{g['best_G']:.2f} | {marker} {g['reason']} |"
+            )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -1537,10 +1659,20 @@ def run_promote(idx: WikiIndex, budget: Budget, threshold: float, cap: int,
         goal_tokens = len(set(re.findall(r"[a-z]{4,}", goals_text)))
         print(
             f"[pass E] loaded USER_MODEL.md Current section: "
-            f"{goal_tokens} distinct tokens for goal_overlap"
+            f"{goal_tokens} distinct tokens for goal_overlap (name-token)"
         )
     else:
         print("[pass E] no USER_MODEL.md — goal_overlap term will be 0")
+
+    # Build 3: load hand-authored GOALS.md for G-axis. Separate from
+    # USER_MODEL.md — that file is corpus-derived and inherits the
+    # circularity, GOALS.md is the ONE input that doesn't.
+    goals_list = _load_goals(GOALS_MD)
+    if goals_list:
+        print(f"[pass E] loaded GOALS.md: {len(goals_list)} goals "
+              f"for G-axis (TF cosine over mention-contexts)")
+    else:
+        print("[pass E] no GOALS.md — G-axis will be 0 for all candidates")
 
     now = datetime.now(timezone.utc)
     # Build 2.5: multiprocessing scoring. CPU-bound regex over ~8k
@@ -1555,7 +1687,8 @@ def run_promote(idx: WikiIndex, budget: Budget, threshold: float, cap: int,
     with mp.Pool(
         processes=workers,
         initializer=_promote_worker_init,
-        initargs=(idx.records, str(WIKI_MD), goals_text, now.isoformat()),
+        initargs=(idx.records, str(WIKI_MD), goals_text, now.isoformat(),
+                  goals_list),
     ) as pool:
         # imap_unordered lets us print progress as results stream in
         scored: list[tuple[dict, dict, list[dict]]] = []
@@ -1575,13 +1708,61 @@ def run_promote(idx: WikiIndex, budget: Budget, threshold: float, cap: int,
         for cand, score, _ in scored[:20]:
             print(f"  S={score['S']:.2f}  base={score['base_activation']:.2f}  "
                   f"spread={int(score['spread'])}  "
-                  f"goal={int(score['goal_overlap'])}  {cand['name']}")
+                  f"G={score.get('G', 0.0):.2f}  {cand['name']}")
 
-    to_promote = [x for x in scored if x[1]["S"] >= threshold][:cap]
+    # Build 3: promotion is UNION of top-K by S AND top-K by G.
+    # High-S surfaces recurrence-worthy topics. High-G surfaces
+    # goal-aligned topics even when S buries them under conversation
+    # vocabulary. Keeping both axes is the noonchi feature — see
+    # docs/SALIENCE_MVP_DIAGNOSIS.md §2 for why summing them destroys
+    # the S/G gap that L4 consumes.
+    scored_by_s = [x for x in scored if x[1]["S"] >= threshold][:cap]
+    scored_by_g = sorted(
+        [x for x in scored if x[1].get("G", 0.0) > 0.0],
+        key=lambda x: x[1]["G"], reverse=True,
+    )[:G_TOP_K]
+    # dedupe by slug — a candidate on both lists appears once
+    promo_slugs_seen: set[str] = set()
+    to_promote: list = []
+    for x in scored_by_s + scored_by_g:
+        s = _slugify(x[0]["name"])
+        if s in promo_slugs_seen:
+            continue
+        promo_slugs_seen.add(s)
+        to_promote.append(x)
     print(
-        f"[pass E] {len(to_promote)} of {len(scored)} pass threshold "
-        f"({threshold}, cap {cap})"
+        f"[pass E] promotion: {len(scored_by_s)} by S (threshold {threshold}) "
+        f"∪ {len(scored_by_g)} by G (top {G_TOP_K}) = "
+        f"{len(to_promote)} unique candidates"
     )
+
+    # Build 3: goal-evidence gap — goals whose best-scoring candidate has
+    # low S. This is the Sumimasen stall signal: "you declared this
+    # matters, but the corpus has nothing about it recently."
+    goal_gaps: list[dict] = []
+    for goal in goals_list:
+        best_for_goal = None
+        best_g_for_goal = 0.0
+        for cand, score, _mentions in scored:
+            if score.get("best_goal") == goal["name"]:
+                gv = score.get("G", 0.0)
+                if gv > best_g_for_goal:
+                    best_g_for_goal = gv
+                    best_for_goal = (cand, score)
+        if best_for_goal is None:
+            goal_gaps.append({
+                "goal": goal["name"], "best_candidate": None,
+                "best_S": 0.0, "best_G": 0.0, "reason": "no candidate matched",
+            })
+        else:
+            cand, score = best_for_goal
+            goal_gaps.append({
+                "goal": goal["name"],
+                "best_candidate": cand["name"],
+                "best_S": score["S"], "best_G": score.get("G", 0.0),
+                "reason": ("cold" if score["S"] < threshold
+                           else "healthy"),
+            })
 
     promoted_slugs: set[str] = set()
     if not dry_run:
@@ -1610,14 +1791,19 @@ def run_promote(idx: WikiIndex, budget: Budget, threshold: float, cap: int,
 
     if not dry_run:
         _write_salience_ledger(scored, threshold, cap, promoted_slugs,
-                               SALIENCE_LEDGER)
+                               SALIENCE_LEDGER, goal_gaps=goal_gaps)
         print(f"[pass E] ledger -> {SALIENCE_LEDGER}")
     else:
         print(f"[pass E] would write ledger with {len(scored)} rows "
               f"-> {SALIENCE_LEDGER}")
+        if goal_gaps:
+            cold = [g for g in goal_gaps if g["reason"] != "healthy"]
+            print(f"[pass E] goal-evidence gaps: {len(cold)} cold goals "
+                  f"(would appear in ledger's Gap section)")
 
     return (f"promote: scored {len(scored)}, promoted {len(promoted_slugs)} "
-            f"(threshold {threshold}, cap {cap})")
+            f"(S-axis {len(scored_by_s)}, G-axis {len(scored_by_g)}, "
+            f"threshold {threshold}, cap {cap})")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────

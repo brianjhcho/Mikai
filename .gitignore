@@ -80,3 +80,11 @@ package-lock.json
 
 # Worktree parent artifact
 .superset/
+
+# Vendored nashsu — runtime + generated dirs (source tracked, deps not)
+infra/nashsu/vendor/node_modules/
+infra/nashsu/vendor/.llm-wiki/
+infra/nashsu/vendor/**/*.upstream-backup
+infra/nashsu/vendor/src-tauri/target/
+# Explicitly track nashsu's package-lock.json (line 79 above ignores it globally)
+!infra/nashsu/vendor/package-lock.json

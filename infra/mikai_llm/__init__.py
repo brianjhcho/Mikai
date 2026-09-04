@@ -7,13 +7,20 @@ subscription-auth-policy memory) we flip provider policy in one file
 instead of hunting down subprocess calls scattered across scenarios.
 
 Tiers:
-- interactive: routes to `claude -p` today. Bills to Max sub. Best model.
-- background: routes to DeepSeek today. Cheap, unattended-safe. Use for
-    bulk extraction, hourly loops, anything that would starve interactive
-    quota if it went to Claude.
+- interactive: routes to `claude -p`. Bills to the Max subscription.
+    Best model. This is what every call site in the tree uses.
+- background: also routes to `claude -p` today. The tier still exists as
+    a seam for work that must not starve interactive quota — bulk
+    extraction, hourly loops — but MIKAI runs on the Max subscription, so
+    both tiers land on the same provider until there's a reason otherwise.
 
 Callers ask for a tier by intent, never by provider. Provider mapping is
 a policy decision that lives here.
+
+A DeepSeek provider is kept below and is still reachable by setting
+MIKAI_LLM_BACKGROUND=deepseek. It is not the default. Note that the
+Graphiti sidecar's entity extraction and the dream synthesis scripts talk
+to DeepSeek directly, not through this shim — see the module docs there.
 """
 
 from __future__ import annotations
@@ -23,6 +30,7 @@ import os
 import shutil
 import subprocess
 import time
+from pathlib import Path
 from typing import Iterator, Literal
 from urllib import request as urlreq
 
@@ -33,11 +41,36 @@ Tier = Literal["interactive", "background"]
 
 _POLICY: dict[Tier, str] = {
     "interactive": os.environ.get("MIKAI_LLM_INTERACTIVE", "claude"),
-    "background": os.environ.get("MIKAI_LLM_BACKGROUND", "deepseek"),
+    "background": os.environ.get("MIKAI_LLM_BACKGROUND", "claude"),
 }
 
 
 # ── Provider: claude (via `claude -p`) ────────────────────────────────────
+
+
+def ensure_user_path() -> None:
+    """launchd jobs get a bare PATH (/usr/bin:/bin:...), but `claude` is
+    resolved here via shutil.which. Append the user's usual bin dirs so an
+    unattended LaunchAgent finds the same CLI an interactive shell would.
+    Append — an already-correct PATH wins.
+
+    Lives in the shim rather than in any one caller: every launchd job that
+    reaches the interactive tier (calendar planner, week planner, decide
+    tick, consolidate, dream) hits the same bare-PATH condition, and fixing
+    it per-caller is how the calendar planner stayed broken for a week after
+    /ask was patched (09c0d8f).
+    """
+    extra = (
+        Path.home() / ".local" / "bin",
+        Path.home() / ".superset" / "bin",
+        Path("/opt/homebrew/bin"),
+        Path("/usr/local/bin"),
+    )
+    parts = os.environ.get("PATH", "").split(os.pathsep)
+    for p in extra:
+        if p.is_dir() and str(p) not in parts:
+            parts.append(str(p))
+    os.environ["PATH"] = os.pathsep.join(parts)
 
 
 def _claude_env() -> dict[str, str]:
@@ -83,6 +116,7 @@ def _stream_claude(prompt: str, timeout: float = 300.0) -> Iterator[str]:
     expiry the child is terminated and a RuntimeError is raised. On
     non-zero exit, stderr context is included in the error.
     """
+    ensure_user_path()
     if shutil.which("claude") is None:
         raise RuntimeError("`claude` CLI not on PATH — install Claude Code first")
 

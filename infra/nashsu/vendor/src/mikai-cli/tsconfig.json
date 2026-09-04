@@ -1,0 +1,14 @@
+{
+  "//": "MIKAI-authored tsconfig for tsx runtime execution of the CLI wrappers. Installed to vendor/src/mikai-cli/tsconfig.json by setup.sh. Overrides two path aliases to point at our shims: @/commands/fs → fs-shim (Node fs), @tauri-apps/api/core → tauri-core (stub throwing invoke). Extends vendor's tsconfig.app.json for everything else.",
+  "extends": "../../tsconfig.app.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@/commands/fs": ["./shims/fs-shim.ts"],
+      "@tauri-apps/api/core": ["./shims/tauri-core.ts"],
+      "@/*": ["../*"]
+    },
+    "types": ["node"]
+  },
+  "include": ["./**/*.ts", "../lib/**/*.ts", "../stores/**/*.ts", "../test-helpers/**/*.ts"]
+}

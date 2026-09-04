@@ -2,8 +2,48 @@
 
 > **What this file is:** The volatile state-of-the-world doc. It describes what is actually live on `main` right now — not the long-term vision (`CLAUDE.md`), not the architectural decisions (`docs/DECISIONS.md`), not the intellectual foundations (`docs/EPISTEMIC_*.md`). Update this file as main changes. If it contradicts CLAUDE.md, update CLAUDE.md only if the change is a principle, not a state.
 
-**Last meaningful update:** 2026-08-05 (pure-file Second Brain substrate — `infra/mikai_brain/` + `infra/mikai_llm/` shim — merged with the FIGS/mikai_shell line: D-055 calendar planner, D-054 feedback loop, Claude.ai thread capture + Dream/Wiki nightly daemons)
-**Latest commit on main at writing:** merge of `ac4c731` (file-based L4 substrate) and `339b569` (mikai_shell v1)
+**Last meaningful update:** 2026-08-14 (Option A flat `sources/` — bucket subdirs deleted; 8-worker parallel two-step ingest verified safe via controlled A/B test [serial vs parallel on same 50 sources, 8.04× speedup, no structural races, semantic drift = LLM temperature not parallelism]; chained backfill of 800 pre-v2 sources + fresh 200 batches running as of writing. Raw corpus recount: 19,054 sections in `wiki-raw/wiki.md`, not 9,691 as prior claim — remaining backlog is ~2× larger than previously reported. New ADRs: ARCH-030, D-060.)
+**Prior updates:** 2026-08-13 (Two-step ingest + SCHEMA v3 + 1,091-page normalization) · 2026-08-11 (Karpathy-native wiki substrate, graph deprecated, wiki-raw split) · 2026-08-05 (pure-file Second Brain substrate + FIGS/mikai_shell)
+**Latest commit on main at writing:** merge of `ac4c731` (file-based L4 substrate) and `339b569` (mikai_shell v1) plus 2026-08-11 through 2026-08-14 architecture-decision-record additions
+
+## Current substrate state (2026-08-14)
+- **~1,300 source files** in `~/.mikai/wiki/sources/` — **FLAT layout** (ARCH-030), no bucket subdirs. Growing live via chained backfill + fresh ingest.
+- **~143 concept pages** in `~/.mikai/wiki/concepts/` (10 hand-authored + LLM-authored via auto-mint + synthesize-stubs)
+- **Raw corpus: 19,054 sections** in `~/.mikai/wiki-raw/wiki.md` — of which ~1,300 processed into flat sources so far (~7%)
+- **SCHEMA.md v3** — Astro-Han canonical shape live
+- **10 broken wikilinks** (per 2026-08-14 lint run); 120 orphan concepts flagged for cross-link or demote
+- **Two-step ingest** (`smoke_ingest_v2.py`) — production path, 8 workers default (D-060). Env var `MIKAI_WIKI_DIR` overrides target vault (added 2026-08-14 for isolated-test methodology; kept as permanent feature).
+- **SHA256 content cache** (`~/.mikai/wiki/.ingest-sha256-cache.json`, D-059) — skips unchanged sections. 199 entries at start of 2026-08-14 chain run; growing as batches complete.
+- **Chained batch runner** at `scratchpad/chain_ingest.sh` — sequential 200-source batches with dedup pass between (removes slug-drift duplicates by hash-suffix, keep-newest). Currently running 4 backfill + 1 fresh batch.
+- **Wiki backup**: `~/.mikai/wiki-backup-2026-08-14-0828/` (pre-chain snapshot for rollback).
+- **kepano/obsidian-skills** installed for Claude Code sessions inside the vault (2026-08-11)
+- **Prior Graphiti substrate**: preserved read-only, no new writes since 2026-08-11
+
+## Ranked fix queue (post-Fable-5 retrospective, 2026-08-14 evening)
+
+Full narrative: `docs/INGESTION_PIPELINE_ANALYSIS_2026-08-14.md`. ADRs: ARCH-031, D-062.
+
+1. **D-062 — Wire `claude -p --json-schema` into Pass 1** (`infra/mikai_llm/__init__.py:225-228`). ~30-60 min. Deletes the 25-min cold-start cluster + 4.5% JSON parse-fail class. Test streaming compatibility first.
+2. **Pass-2-sees-body + code-owned frontmatter** (`smoke_ingest_v2.py:165-213`, `271-282`). ~half day. Currently Generation writes prose about a source it never read — Overviews are synthesis-of-a-synthesis by construction (P1 structural cap). Also closes broken-link bug in `_write_source_file_from_llm` (writes LLM Touches without `valid_touch_slugs` filter).
+3. **ARCH-031 — Context-overflow chunking for long sources.** Raise `MAX_EXCERPT=4000` → `12000` (nashsu `LONG_SOURCE_CHUNK_MIN`). For sources > 40k, port nashsu `analyzeLongSourceInChunks`. ~half day total. **Discovered as major oversight 2026-08-14 evening**: for a 103KB Frostpunk source, LLM only saw first 4KB (~96% content invisible). Applies to ~40% of current 2,115 sources (all Claude threads, Perplexity threads, long notes).
+4. **Full 482-slug directory in Pass 1** (`smoke_ingest_B.py:72-108`, currently top-40-only). ~30 min + prompt-cache. Removes rich-get-richer placement bias — at 143 concepts, top-40 was 28% of vocab; at 482 it's 8%. Placement drifts alphabetically because Analysis can't see niche concepts.
+5. **A/B measurement pass** on 50-source isolated vaults (`MIKAI_WIKI_DIR` harness), Fable-fixed vs current. ~1 hour. Prove lift before committing quota to more ingest.
+6. **Persistent ingest queue** (nashsu-style, replaces `scratchpad/chain_ingest.sh` + `chain_restart.sh`). ~1 day. Crash recovery, per-source retry state, quota backoff. Fixes the "75-min-of-doomed-calls" class we hit 2026-08-14 morning.
+7. **Inbox triage LLM-judge pass** — consolidate 8,391-line `concept-inbox.md` into mint/merge/drop decisions. ~half day. Cognee issue #3629's design applied to suggestions.
+8. **Poison-pill lane** — quarantine deterministically-failing sources after N retries (currently 1 source out of ~1,200 has been failing json-parse on every attempt). Trivial.
+
+**Total: ~3 days focused work + measurement**, then resume backfill on improved pipeline for remaining 92.7% of the 19,054-section raw corpus.
+
+## Session totals (2026-08-14)
+
+- Sources: 1,108 → **2,115** (+1,007 net through v2 pipeline)
+- Concepts: 143 → **482** (+339 auto-minted)
+- Cache: 199 → **1,396** entries
+- Bucket subdirs: 166 → **0** (ARCH-030 flat migration)
+- Concept-inbox: ~5,000 → **8,391** lines (deferred bill for auto-mint)
+- Corpus coverage: 1.0% → **7.3%** of 19,054 raw sections
+- Wall-clock LLM time: ~2 hours productive across two chain runs
+- Backup: `~/.mikai/wiki-backup-2026-08-14-0828/` (pre-chain snapshot)
 
 ---
 

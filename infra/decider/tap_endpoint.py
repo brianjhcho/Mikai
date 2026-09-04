@@ -297,21 +297,22 @@ MAX_ASK_BYTES = 4096
 
 
 def _ensure_user_path() -> None:
-    """launchd jobs get a bare PATH (/usr/bin:/bin:...), but mikai_llm
-    resolves the `claude` CLI via shutil.which. Append the user's usual
-    bin dirs so an in-process ask finds the same CLI an interactive
-    shell would. Append — an already-correct PATH wins."""
-    extra = (
-        Path.home() / ".local" / "bin",
-        Path.home() / ".superset" / "bin",
-        Path("/opt/homebrew/bin"),
-        Path("/usr/local/bin"),
-    )
-    parts = os.environ.get("PATH", "").split(os.pathsep)
-    for p in extra:
-        if p.is_dir() and str(p) not in parts:
-            parts.append(str(p))
-    os.environ["PATH"] = os.pathsep.join(parts)
+    """Delegate to the mikai_llm shim, which owns PATH repair for every
+    launchd caller (it was defined here first, which is why the calendar
+    planner stayed broken after /ask was fixed in 09c0d8f).
+
+    Imported lazily and failure-tolerantly for the same reason _run_ask
+    imports lazily: the tap endpoint must keep serving redirects even if
+    the LLM stack is unimportable. The shim also calls this itself before
+    resolving `claude`, so these call sites are belt-and-braces."""
+    repo = Path(__file__).resolve().parents[2]
+    if str(repo) not in sys.path:
+        sys.path.insert(0, str(repo))
+    try:
+        from infra.mikai_llm import ensure_user_path
+    except Exception:  # noqa: BLE001
+        return
+    ensure_user_path()
 
 
 def _run_ask(query: str) -> dict:

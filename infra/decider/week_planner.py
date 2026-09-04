@@ -9,9 +9,17 @@ instance's DTSTART. The master's RRULE is preserved untouched; only the
 render the generic "Recommendations" title.
 
 Usage:
+    make week                               # print plan (default: safe)
+    make week-apply                         # print plan, confirm, then PUT
+
     python3 week_planner.py                 # print plan (default: safe)
     python3 week_planner.py --dry-run       # print plan (explicit)
-    python3 week_planner.py --apply         # PUT overrides to iCloud
+    python3 week_planner.py --apply         # PUT overrides after a typed y
+    python3 week_planner.py --apply --yes   # skip the prompt (owns the risk)
+
+--apply asks for confirmation at the keyboard before writing; that typed
+`y` is this path's equivalent of the ntfy Approve tap the unattended daily
+planner requires (D-055). A non-TTY stdin aborts rather than proceeding.
 
 Once this proves the mechanism, the logic folds into calendar_planner.py
 as the recurring-block path.
@@ -30,6 +38,7 @@ WRITES BACK (SPEC §5.1 — an action that leaves no trace never happened):
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
@@ -37,6 +46,7 @@ import subprocess
 import sys
 from datetime import date as date_type
 from datetime import datetime, timedelta, timezone
+from typing import NamedTuple
 from pathlib import Path
 from urllib import request as urlreq
 
@@ -52,15 +62,22 @@ MIKAI_REPO = Path(os.environ.get("MIKAI_REPO", str(Path.home() / "Desktop" / "MI
 BRANCH_ACTIVITY_DAYS = int(os.environ.get("MIKAI_BRANCH_ACTIVITY_DAYS", "30"))
 BRANCH_MAX = int(os.environ.get("MIKAI_BRANCH_MAX", "12"))
 
-# Ground truth from GETting the master .ics.
-TARGET_UID = "46BF1457-63C5-464A-9C48-4D629B0AC7CC"
-TARGET_HREF = (
+# Which recurring event to rewrite. Overridable by env so the
+# account-specific href isn't a hardcoded constant in a tracked file.
+#
+# Everything ELSE about the block — start time, end time, timezone,
+# sequence — is read off the master .ics at runtime by _parse_master().
+# It used to be four more constants, which silently rotted the moment the
+# block was recreated: the old UID's series had an RRULE ending
+# 2026-07-15, so overrides were being aimed at instances that no longer
+# existed. The calendar is the ground truth; don't keep a second copy.
+_DEFAULT_TARGET_UID = "AB6210F8-6CDA-4A03-B950-0BDF5E71C682"
+TARGET_UID = os.environ.get("MIKAI_WEEKPLAN_UID", _DEFAULT_TARGET_UID)
+TARGET_HREF = os.environ.get(
+    "MIKAI_WEEKPLAN_HREF",
     "https://p137-caldav.icloud.com:443/1369754264/"
-    "calendars/work/46BF1457-63C5-464A-9C48-4D629B0AC7CC.ics"
+    f"calendars/work/{_DEFAULT_TARGET_UID}.ics",
 )
-DTSTART_TIME = "100000"   # 10:00 local
-DTEND_TIME = "153000"     # 15:30 local
-TZID = "America/Vancouver"
 
 def week_workdays(anchor: date_type | None = None) -> list[date_type]:
     """Return Mon-Fri dates for the current work week. If today is
@@ -178,14 +195,18 @@ def gather_uncommitted_across_worktrees() -> str:
             continue
         if status:
             # Only include worktrees that HAVE uncommitted state.
+            # 400 chars used to cut pear-seashore's status off after ~10 of
+            # 30 lines, hiding untracked dirs (which sort last) entirely —
+            # including a whole subproject under active development.
             out.append(f"  {branch} ({Path(wt).name}):\n    "
-                       + status.replace("\n", "\n    ")[:400])
-    joined = "\n".join(out)[:1500]
+                       + status.replace("\n", "\n    ")[:1500])
+    joined = "\n".join(out)[:5000]
     return joined or "(all worktrees clean)"
 
 
 def build_prompt(days: list[date_type], workspace_branches: str,
-                 uncommitted_worktrees: str, open_q: str) -> str:
+                 uncommitted_worktrees: str, open_q: str,
+                 inflight: str = "") -> str:
     """ENGINEERING-ONLY prompt for the Recommendations block.
 
     Life items (proposal, ocean farming, MSP, etc.) are deliberately
@@ -206,10 +227,16 @@ active MIKAI-workspace branches.
    personal admin. Only work drawn from the branches / open questions /
    uncommitted files listed below.
 
-2. Every pick MUST cite a specific branch name from the MIKAI WORKSPACE
-   list below. If you can't tie a pick to a listed branch or open
-   question, DROP IT. Do NOT invent a branch, file, or commit hash. Do
-   NOT reference a branch not in the list.
+2. Every pick MUST be traceable to something listed below — an IN FLIGHT
+   item, a branch in the MIKAI WORKSPACE list, an uncommitted path, or an
+   open question. If you can't tie a pick to one of those, DROP IT. Do
+   NOT invent a branch, file, or commit hash. Do NOT reference a branch
+   not in the list.
+
+   Note that active work does NOT always have a branch: untracked
+   directories and design docs are real work too. An IN FLIGHT item
+   citing a file path is a perfectly good citation — do not skip it for
+   lacking a commit.
 
 3. ONE tight theme per day. Pick 1-3 tightly related items — a
    coherent block of work, not a checklist.
@@ -226,6 +253,17 @@ active MIKAI-workspace branches.
 
 ## DAYS
 {days_lines}
+
+## IN FLIGHT — what the user says he is actually working on (authoritative)
+
+This is hand-written by the user and outranks everything below it. If it
+is non-empty, the week's plan should be built around it, and the items
+here should appear with the granularity they are written at — if an item
+names a file, a function, or a time estimate, carry that into the day's
+description rather than restating it abstractly. Git history is a lagging
+indicator of this; when the two disagree, this section wins.
+
+{inflight or "(empty — falling back to git activity below)"}
 
 ## MIKAI WORKSPACE — active branches (last {BRANCH_ACTIVITY_DAYS} days)
 
@@ -274,8 +312,89 @@ def call_llm(prompt: str, timeout: float = 300.0) -> dict:
     return json.loads(t.strip())
 
 
+class MasterShape(NamedTuple):
+    """The facts about the recurring series that overrides must match."""
+    tzid: str
+    start_time: str      # HHMMSS, local to tzid
+    end_time: str        # HHMMSS
+    sequence: int
+    until: date_type | None   # RRULE UNTIL, if the series is bounded
+    bydays: set[str]          # e.g. {"MO","TU","WE","TH","FR"}
+
+
+_ICS_DAYS = {"MO": 0, "TU": 1, "WE": 2, "TH": 3, "FR": 4, "SA": 5, "SU": 6}
+
+
+def _parse_master(ics: str) -> MasterShape:
+    """Read the recurring series' own shape out of the master .ics.
+
+    An override VEVENT only binds to an instance if its RECURRENCE-ID
+    matches that instance's start exactly — same clock time, same TZID.
+    Deriving those from the master (rather than hardcoding them) is what
+    keeps this correct when the block is edited or recreated.
+
+    Only the master VEVENT is read: the one carrying RRULE and no
+    RECURRENCE-ID. Existing override VEVENTs in the same .ics are skipped.
+    """
+    body = ics.replace("\r\n", "\n")
+    # Isolate the master VEVENT — the block with an RRULE but no RECURRENCE-ID.
+    master_block = None
+    for block in re.findall(r"BEGIN:VEVENT\n(.*?)END:VEVENT", body, re.S):
+        if "RRULE:" in block and "RECURRENCE-ID" not in block:
+            master_block = block
+            break
+    if master_block is None:
+        raise ValueError("no master VEVENT (RRULE, no RECURRENCE-ID) in .ics")
+
+    def _dt(prop: str) -> tuple[str, str]:
+        m = re.search(rf"^{prop};TZID=([^:]+):(\d{{8}})T(\d{{6}})$",
+                      master_block, re.M)
+        if not m:
+            raise ValueError(f"{prop} missing or not TZID-qualified in master")
+        return m.group(1), m.group(3)
+
+    tzid, start_time = _dt("DTSTART")
+    _, end_time = _dt("DTEND")
+
+    rrule = re.search(r"^RRULE:(.+)$", master_block, re.M).group(1)
+    parts = dict(p.split("=", 1) for p in rrule.split(";") if "=" in p)
+    until = None
+    if "UNTIL" in parts:
+        until = datetime.strptime(parts["UNTIL"][:8], "%Y%m%d").date()
+    bydays = set(parts.get("BYDAY", "").split(",")) - {""}
+
+    seq_m = re.search(r"^SEQUENCE:(\d+)$", master_block, re.M)
+    return MasterShape(tzid, start_time, end_time,
+                       int(seq_m.group(1)) if seq_m else 0, until, bydays)
+
+
+def check_days_covered(shape: MasterShape, days: list[date_type]) -> str | None:
+    """Return an error string if the target days aren't real instances of
+    the series, else None.
+
+    Without this the planner will happily PUT overrides whose
+    RECURRENCE-IDs point at instances that don't exist — which is exactly
+    what a stale hardcoded UID caused: the old series' RRULE ended
+    2026-07-15 and every override aimed past it was junk.
+    """
+    if shape.until and days[-1] > shape.until:
+        return (f"the recurring series ends {shape.until.isoformat()}, but this "
+                f"week runs to {days[-1].isoformat()}. There are no instances "
+                f"left to override — the block likely got recreated under a new "
+                f"UID. Point MIKAI_WEEKPLAN_UID / MIKAI_WEEKPLAN_HREF at the "
+                f"current event.")
+    if shape.bydays:
+        allowed = {_ICS_DAYS[d] for d in shape.bydays if d in _ICS_DAYS}
+        missing = [d.isoformat() for d in days if d.weekday() not in allowed]
+        if missing:
+            return (f"the series only recurs on {sorted(shape.bydays)}; these "
+                    f"target days have no instance: {', '.join(missing)}")
+    return None
+
+
 def render_override_vevent(day_date: date_type, title: str,
-                           description: str, sequence: int) -> str:
+                           description: str, sequence: int,
+                           shape: MasterShape) -> str:
     """Build a single override VEVENT string, ready to splice into the
     master's VCALENDAR. Every override carries the master's UID plus a
     RECURRENCE-ID pinpointing which instance it replaces.
@@ -285,9 +404,9 @@ def render_override_vevent(day_date: date_type, title: str,
     lines = [
         "BEGIN:VEVENT",
         f"UID:{TARGET_UID}",
-        f"RECURRENCE-ID;TZID={TZID}:{d}T{DTSTART_TIME}",
-        f"DTSTART;TZID={TZID}:{d}T{DTSTART_TIME}",
-        f"DTEND;TZID={TZID}:{d}T{DTEND_TIME}",
+        f"RECURRENCE-ID;TZID={shape.tzid}:{d}T{shape.start_time}",
+        f"DTSTART;TZID={shape.tzid}:{d}T{shape.start_time}",
+        f"DTEND;TZID={shape.tzid}:{d}T{shape.end_time}",
         f"DTSTAMP:{dt_stamp}",
         f"LAST-MODIFIED:{dt_stamp}",
         f"SEQUENCE:{sequence}",
@@ -299,9 +418,35 @@ def render_override_vevent(day_date: date_type, title: str,
     return "\r\n".join(lines)
 
 
+def _recurrence_ids(vevent: str) -> set[str]:
+    return set(re.findall(r"^RECURRENCE-ID[^:]*:(\S+)$", vevent, re.M))
+
+
 def splice_overrides(master_ics: str, overrides: list[str]) -> str:
-    """Insert the override VEVENT blocks immediately before END:VCALENDAR."""
+    """Insert override VEVENT blocks before END:VCALENDAR, replacing any
+    existing override for the same instance.
+
+    Replacement matters: two VEVENTs sharing a UID *and* a RECURRENCE-ID
+    are the same instance declared twice, which RFC 5545 doesn't define
+    and clients resolve inconsistently. Appending blindly meant a second
+    run in the same week stacked a duplicate on every day. Overrides for
+    *other* weeks are left untouched — they're real history.
+    """
     body = master_ics.replace("\r\n", "\n")
+    incoming = set()
+    for o in overrides:
+        incoming |= _recurrence_ids(o.replace("\r\n", "\n"))
+
+    def _superseded(block: str) -> bool:
+        return bool(_recurrence_ids(block) & incoming)
+
+    kept = []
+    for match in re.finditer(r"BEGIN:VEVENT\n.*?END:VEVENT\n?", body, re.S):
+        if _superseded(match.group(0)):
+            kept.append(match.span())
+    for start, end in reversed(kept):
+        body = body[:start] + body[end:]
+
     idx = body.rfind("END:VCALENDAR")
     if idx == -1:
         raise ValueError("no END:VCALENDAR marker in master .ics")
@@ -357,12 +502,82 @@ def _write_back(plan: dict, days: list[date_type]) -> None:
         print(f"WARN: brain write-back failed: {exc}", file=sys.stderr)
 
 
+ENV_FILE = Path.home() / ".mikai" / "launchd.env"
+
+
+def load_launchd_env(path: Path = ENV_FILE) -> None:
+    """Source KEY=VALUE pairs from launchd.env. Existing environment
+    variables win.
+
+    The LaunchAgent runners source this file in shell before exec'ing
+    python; a `make week` from an ordinary terminal does not, and would
+    otherwise fail the iCloud credential check for no good reason. Same
+    helper shape as backfill_to_wiki.load_launchd_env.
+    """
+    if not path.exists():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip().strip('"').strip("'")
+        os.environ.setdefault(key, value)
+
+
+def _confirm(days: list[date_type]) -> bool:
+    """Ask at the keyboard before writing to a real calendar.
+
+    This is the approval gate D-055 requires. The unattended 08:00 path
+    (calendar_planner.py) gets its approval from an ntfy Approve tap; the
+    typed path gets it here, from someone who has just read the preview
+    above. Anything that isn't an interactive `y` aborts — a non-TTY stdin
+    (pipe, cron, CI) has no one present to approve, so it must not proceed.
+    """
+    span = f"{days[0].isoformat()} → {days[-1].isoformat()}"
+    print()
+    print(f"This will REWRITE {len(days)} calendar blocks on iCloud ({span}).")
+    if not sys.stdin.isatty():
+        print("ABORT: stdin is not a TTY — no one is here to approve. "
+              "Re-run in a terminal, or pass --yes if you own this call.",
+              file=sys.stderr)
+        return False
+    try:
+        answer = input("Apply these overrides? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        print("ABORT: no confirmation received.", file=sys.stderr)
+        return False
+    if answer not in ("y", "yes"):
+        print("ABORT: not applied.")
+        return False
+    return True
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="week_planner",
+        description="Theme this week's 5 recurring Recommendations blocks "
+                    "from live MIKAI-workspace engineering activity.",
+    )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--apply", action="store_true",
+                      help="write the 5 overrides to iCloud (asks first)")
+    mode.add_argument("--dry-run", action="store_true",
+                      help="print the plan and stop (default)")
+    parser.add_argument("--yes", action="store_true",
+                        help="skip the confirmation prompt; only with --apply")
+    args = parser.parse_args()
+
+    if args.yes and not args.apply:
+        parser.error("--yes is meaningless without --apply")
+
+    load_launchd_env()
     user = os.environ.get("MIKAI_ICLOUD_USER", "")
     pw = os.environ.get("MIKAI_ICLOUD_APP_PASSWORD", "")
     if not (user and pw):
-        print("ERROR: MIKAI_ICLOUD_USER / MIKAI_ICLOUD_APP_PASSWORD not set.",
-              file=sys.stderr)
+        print(f"ERROR: MIKAI_ICLOUD_USER / MIKAI_ICLOUD_APP_PASSWORD not set "
+              f"(looked in the environment and {ENV_FILE}).", file=sys.stderr)
         return 2
 
     # 1. Fetch the master .ics (need its bytes + etag for optimistic PUT)
@@ -375,17 +590,42 @@ def main() -> int:
     etag = (headers.get("ETag") or headers.get("Etag") or "").strip().strip('"')
     print(f"fetched master ({len(master_ics)} bytes, etag={etag!r})")
 
-    # 2. Enumerate this week's Mon-Fri
+    # 2. Enumerate this week's Mon-Fri, and confirm they're real instances
+    #    of this series BEFORE spending 20-60s on an LLM call.
     days = week_workdays()
+    try:
+        shape = _parse_master(master_ics)
+    except ValueError as e:
+        print(f"ERROR: could not read the recurring series: {e}", file=sys.stderr)
+        return 3
+    print(f"block: {shape.start_time[:2]}:{shape.start_time[2:4]}–"
+          f"{shape.end_time[:2]}:{shape.end_time[2:4]} {shape.tzid} "
+          f"on {','.join(sorted(shape.bydays)) or '(no BYDAY)'}")
+    problem = check_days_covered(shape, days)
+    if problem:
+        print(f"ERROR: {problem}", file=sys.stderr)
+        return 7
     print(f"target days: {', '.join(d.isoformat() for d in days)}")
+    # Surface the repo the candidate pool is drawn from — MIKAI_REPO defaults
+    # to ~/Desktop/MIKAI while the installed runner works out of a worktree,
+    # so a wrong-repo run should be obvious rather than silently thin.
+    print(f"candidate repo: {MIKAI_REPO}")
     print()
 
     # 3. Gather ENGINEERING-only candidate pool from the full MIKAI workspace
     workspace_branches = gather_workspace_branches()
     uncommitted_wt = gather_uncommitted_across_worktrees()
     open_q = cp.gather_open_questions()
+    # Brian-curated override. Reuses calendar_planner's reader so both
+    # planners see the same file. Generous cap: this is the channel for
+    # work that has no branch yet, so it carries the detail git can't.
+    inflight = cp.gather_inflight(cap=6000)
+    print(f"in-flight: {len(inflight)} chars"
+          if inflight else
+          f"in-flight: (empty — {cp.INFLIGHT_PATH} not found; git activity only)")
 
-    prompt = build_prompt(days, workspace_branches, uncommitted_wt, open_q)
+    prompt = build_prompt(days, workspace_branches, uncommitted_wt, open_q,
+                          inflight)
 
     # 4. LLM call
     print("calling interactive-tier LLM (may take 20-60s)…")
@@ -414,20 +654,40 @@ def main() -> int:
         print(f"  WHY   : {d.get('rationale', '(no rationale)')}")
 
     # 6. If not --apply, stop here
-    apply = "--apply" in sys.argv
-    if not apply:
+    if not args.apply:
         print()
         print("↑ Preview only. Re-run with --apply to write these 5 overrides to iCloud.")
         return 0
 
-    # 7. Build overrides + splice + PUT
-    seq_match = re.search(r"^SEQUENCE:(\d+)$", master_ics, re.MULTILINE)
-    master_seq = int(seq_match.group(1)) if seq_match else 10
+    # 6b. Explicit approval before any mutation (D-055).
+    if not args.yes and not _confirm(days):
+        return 0
+
+    # 6c. Re-fetch the master immediately before the PUT. The GET above
+    #     happened before a 20-60s LLM call, and iCloud may have bumped the
+    #     etag in that window — a stale If-Match would 412. Same refetch the
+    #     tap-endpoint's /approve route does for the daily proposals.
+    try:
+        _, headers, body = _request("GET", TARGET_HREF, user, pw)
+    except CalDAVError as e:
+        print(f"ERROR: CalDAV re-GET before PUT failed: {e}", file=sys.stderr)
+        return 3
+    fresh_ics = body.decode("utf-8", errors="replace")
+    fresh_etag = (headers.get("ETag") or headers.get("Etag") or "").strip().strip('"')
+    if fresh_etag != etag:
+        print(f"note: etag moved during planning ({etag!r} → {fresh_etag!r}); "
+              f"splicing into the fresh master.")
+    master_ics, etag = fresh_ics, fresh_etag
+
+    # 7. Build overrides + splice + PUT. Re-parse: the re-GET above may have
+    #    returned a master edited since step 2.
+    shape = _parse_master(master_ics)
     overrides = []
     for i, d in enumerate(plan["days"]):
         day_date = datetime.strptime(d["date"], "%Y-%m-%d").date()
         overrides.append(render_override_vevent(
-            day_date, d["title"], d["description"], master_seq + 1 + i,
+            day_date, d["title"], d["description"], shape.sequence + 1 + i,
+            shape,
         ))
     new_ics = splice_overrides(master_ics, overrides)
 
@@ -443,6 +703,10 @@ def main() -> int:
         )
     except CalDAVError as e:
         print(f"ERROR: CalDAV PUT failed: {e}", file=sys.stderr)
+        if "412" in str(e):
+            print("  412 Precondition Failed — the event changed on iCloud "
+                  "between the re-GET and this PUT. Nothing was written. "
+                  "Re-run to plan against the current version.", file=sys.stderr)
         # Save the composite .ics for debugging
         Path("/tmp/mikai_weekplan_failed.ics").write_text(new_ics)
         print("Saved failing .ics to /tmp/mikai_weekplan_failed.ics", file=sys.stderr)

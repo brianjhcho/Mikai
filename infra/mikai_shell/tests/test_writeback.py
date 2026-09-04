@@ -320,10 +320,18 @@ class TestCalendarPlannerWriteback(WritebackTestCase):
 # ── week_planner.py (mode="week_planner") ────────────────────────────────
 
 
+# Mirrors the live recurring block: week_planner reads the series' timezone,
+# clock times, sequence and RRULE off this, so a stub without them is not a
+# valid fixture.
 MASTER_ICS = (
     "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n"
-    "BEGIN:VEVENT\r\nUID:46BF1457-63C5-464A-9C48-4D629B0AC7CC\r\n"
-    "SEQUENCE:11\r\nSUMMARY:Recommendations\r\nEND:VEVENT\r\n"
+    "BEGIN:VEVENT\r\n"
+    "UID:AB6210F8-6CDA-4A03-B950-0BDF5E71C682\r\n"
+    "DTSTART;TZID=America/Vancouver:20260810T070000\r\n"
+    "DTEND;TZID=America/Vancouver:20260810T120000\r\n"
+    "RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR\r\n"
+    "SEQUENCE:11\r\nSUMMARY:MIKAI: Noonchi + Sumimasen \r\n"
+    "END:VEVENT\r\n"
     "END:VCALENDAR\r\n"
 )
 
@@ -343,7 +351,11 @@ class TestWeekPlannerWriteback(WritebackTestCase):
             ],
         }
 
-    def _run(self, apply=True, put_fails=False, plan=None):
+    def _run(self, apply=True, put_fails=False, plan=None, confirm=True):
+        """confirm=True passes --yes, standing in for the typed `y` the
+        approval gate demands. Tests run with a non-TTY stdin, which the
+        gate treats as "nobody is here to approve" — see
+        test_apply_without_confirmation_refuses for that path."""
         put_exc = wp.CalDAVError("412 precondition failed")
 
         def fake_request(method, href, user, pw, body=None, headers=None):
@@ -353,7 +365,11 @@ class TestWeekPlannerWriteback(WritebackTestCase):
                 raise put_exc
             return 201, {"ETag": '"def"'}, b""
 
-        argv = ["week_planner.py"] + (["--apply"] if apply else [])
+        argv = ["week_planner.py"]
+        if apply:
+            argv.append("--apply")
+            if confirm:
+                argv.append("--yes")
         patches = [
             mock.patch.object(wp, "_request", side_effect=fake_request),
             mock.patch.object(wp, "call_llm",
@@ -378,8 +394,11 @@ class TestWeekPlannerWriteback(WritebackTestCase):
     def test_apply_success_logs_one_row(self):
         rc, req = self._run(apply=True)
         self.assertEqual(rc, 0)
-        self.assertEqual(req.call_count, 2)  # GET + PUT
-        self.assertEqual(req.call_args_list[1].args[0], "PUT")
+        # GET (plan against) + re-GET (fresh etag, the LLM call takes 20-60s)
+        # + PUT.
+        self.assertEqual(req.call_count, 3)
+        self.assertEqual([c.args[0] for c in req.call_args_list],
+                         ["GET", "GET", "PUT"])
         runs = self.runs()
         self.assertEqual(len(runs), 1)
         self.assertEqual(runs[0]["mode"], "week_planner")
@@ -395,6 +414,16 @@ class TestWeekPlannerWriteback(WritebackTestCase):
         rc, req = self._run(apply=False)
         self.assertEqual(rc, 0)
         self.assertEqual(req.call_count, 1)  # GET only, never PUT
+        self.assertEqual(self.runs(), [])
+
+    def test_apply_without_confirmation_refuses(self):
+        """--apply with nobody at the keyboard must not write. Test stdin is
+        not a TTY, which is the same condition a cron or piped caller
+        presents — the D-055 invariant is that no calendar write happens
+        without explicit approval."""
+        rc, req = self._run(apply=True, confirm=False)
+        self.assertEqual(rc, 0)
+        self.assertNotIn("PUT", [c.args[0] for c in req.call_args_list])
         self.assertEqual(self.runs(), [])
 
     def test_thread_append_when_day_plan_names_thread(self):

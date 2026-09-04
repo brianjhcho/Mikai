@@ -32,7 +32,7 @@ consolidate:
 consolidate-brain-md:
 	$(PY) -m infra.mikai_brain.consolidate --target=brain-md
 
-test: test-writeback test-exec
+test: test-writeback test-exec test-week
 	$(PY) -m unittest discover -s infra/mikai_brain/tests -t . -v
 
 # SPEC §5.1 write-back tests for the action scenarios (shell organize,
@@ -110,3 +110,17 @@ ask-dry:
 
 test-ask:
 	$(PY) -m unittest discover -s infra/mikai_ask/tests -t . -v
+
+# Week planner (D-055) — theme this week's 5 recurring Recommendations
+# blocks from live MIKAI-workspace engineering activity. Read-only preview;
+# real interactive-tier LLM call, but nothing is written anywhere.
+week:
+	$(PY) infra/decider/week_planner.py --dry-run
+
+# Same, then confirm at the keyboard and PUT the 5 RECURRENCE-ID overrides
+# to iCloud. Writes to a real calendar — the prompt is the approval gate.
+week-apply:
+	$(PY) infra/decider/week_planner.py --apply
+
+test-week:
+	$(PY) -m unittest infra.decider.tests.test_week_planner -v

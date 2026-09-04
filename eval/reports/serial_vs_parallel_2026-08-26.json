@@ -1,0 +1,2429 @@
+{
+  "vault_a": "/Users/briancho/.mikai/wiki-mikai-new",
+  "vault_b": "/Users/briancho/.mikai/wiki-mikai-parallel-test",
+  "label_a": "Serial (workers=1, 5h20m)",
+  "label_b": "Parallel (workers=8, 52min)",
+  "page_counts_a": {
+    "concepts": 196,
+    "entities": 56,
+    "sources": 45,
+    "queries": 25,
+    "journal": 4,
+    "goals": 4,
+    "habits": 1,
+    "reflections": 0,
+    "comparisons": 4,
+    "synthesis": 4,
+    "media": 0
+  },
+  "page_counts_b": {
+    "concepts": 174,
+    "entities": 57,
+    "sources": 46,
+    "queries": 34,
+    "journal": 27,
+    "goals": 7,
+    "habits": 4,
+    "reflections": 2,
+    "comparisons": 1,
+    "synthesis": 3,
+    "media": 0
+  },
+  "shared_sources": 46,
+  "only_in_a_sources": [],
+  "only_in_b_sources": [],
+  "english_only_sources": 46,
+  "concept_jaccard_all": 0.17088607594936708,
+  "concept_jaccard_english": 0.17088607594936708,
+  "entity_jaccard": 0.34523809523809523,
+  "concepts_only_in_a": [
+    "activity-vocabulary",
+    "addiction-vs-passion",
+    "agency-career-model",
+    "agent-harness",
+    "ai-development-phases",
+    "ai-legal-automation",
+    "ai-personality-farming",
+    "ai-public-information-mediation",
+    "ambient-computing",
+    "artist-entrepreneur-split",
+    "atomic-actionable-feed-card",
+    "attention-anchors",
+    "attention-as-injection-constraint",
+    "attention-economics",
+    "bdi-agent-theory",
+    "behavioral-trace-memory",
+    "beta",
+    "bidding-lease-system",
+    "bilt-four-phase-agent-architecture",
+    "brand-as-identity-substitute",
+    "browser-as-primary-capture-surface",
+    "build-ports-not-palaces",
+    "capture-loop-wedge",
+    "carry-rule",
+    "closed-loop-goal-controller",
+    "communication-degradation-loop",
+    "comprehensive-autofill-for-systems-change",
+    "consumer-quality-platform",
+    "consumer-unity",
+    "context-compiler",
+    "context-gatekeeper-risk",
+    "context-triggered-vs-time-triggered-resurfacing",
+    "convergence-guarantee",
+    "cross-ecosystem-user-owned-layer",
+    "culture-industry",
+    "culture-marketplace",
+    "dalio-deflationary-cycle",
+    "demo-ability-problem",
+    "democratized-physio",
+    "device-as-io-surface",
+    "device-proliferation-as-mikai-oxygen",
+    "dia-wedge",
+    "digital-supply-chain-transparency",
+    "dormant-agent-model",
+    "dreams-as-addiction",
+    "dynamic-social-pricing",
+    "enduring-human-need",
+    "entp-statelessness",
+    "event-sourcing-for-intent-graph",
+    "executive-assistant-feed",
+    "external-verifiability",
+    "faithfulness-invariant",
+    "fear-of-mistakes",
+    "follow-through-as-system",
+    "food-system-reform",
+    "four-hour-study-sweet-spot",
+    "general-manager-agent",
+    "generational-wealth-decay",
+    "goal-verification-partition",
+    "graph-not-folders-capture-model",
+    "housing-speculation-neutralization",
+    "imperfect-forward-motion",
+    "importance-prior",
+    "information-clustering",
+    "infrastructure-as-a-service",
+    "instruction-density-axis",
+    "integration-assembly-as-moat",
+    "intelligence-vs-judgment-work",
+    "intelligent-browser",
+    "interaction-conversion-metric",
+    "joy-as-performance-enabler",
+    "knowledge-graph-vs-neural-network",
+    "llm-product-development-mistakes",
+    "llm-wiki",
+    "love-first-principle",
+    "machine-readable-acceptance-criteria",
+    "memex",
+    "memory-promotion-gate",
+    "metabolism-mismatch",
+    "metabolism-monetization-problem",
+    "micro-randomized-trial",
+    "mikai-models-the-self",
+    "mikai-two-headless-stack",
+    "model-context-protocol",
+    "nature-as-dopamine-baseline",
+    "neural-network-taxonomy",
+    "news-saturation-threshold",
+    "noble-purpose",
+    "noonchi-retrieval-chain",
+    "observe-think-act-loop",
+    "outcome-oriented-ai",
+    "phase-change-materials",
+    "pm-as-agent-translation-layer",
+    "position-before-force",
+    "positive-reinforcement-leadership",
+    "potential-without-execution",
+    "predictive-ml-layer",
+    "protocol-stack-three-layers",
+    "psychology-policy-weighting-model",
+    "purpose-driven-purchasing",
+    "push-vs-pull-agent-architecture",
+    "query-time-synthesis-vs-write-time-promotion",
+    "re-entrant-deferral-surface",
+    "reading-people",
+    "relative-impact",
+    "religion-as-process-orientation",
+    "respect-as-confidentiality",
+    "return-skew",
+    "reward-signal-design",
+    "scope-minimization-as-credibility",
+    "se-first-product-strategy",
+    "second-brain-five-strata",
+    "skill-md",
+    "skill-routing-taxonomy",
+    "skills-vs-tools-distinction",
+    "sleep-time-compute",
+    "snapshot-brain-vs-continuous-ingestion",
+    "specialized-medicine-advocacy",
+    "spiritual-bypass",
+    "strength-first-development",
+    "sumimasen-gate",
+    "supply-chain-of-excellence",
+    "technology-philosophy-infusion",
+    "tension-release-through-expression",
+    "the-cave",
+    "the-space-between",
+    "the-why-sandwich",
+    "three-generation-failure-pattern",
+    "three-layer-governance-model",
+    "three-mikai-repositioning-options",
+    "three-pillar-life-quality",
+    "trading-checklist-discipline",
+    "transactive-memory",
+    "triggered-compaction",
+    "two-sets-of-three",
+    "unrefined-function-as-product",
+    "vigilance-vs-freedom",
+    "whale-shrimp-dynamic",
+    "wonder-as-purpose",
+    "workflow-inversion",
+    "working-knowledge",
+    "world-model-as-agent-instruction"
+  ],
+  "concepts_only_in_b": [
+    "action-rubric",
+    "action-tier-hierarchy",
+    "agency-model-for-work",
+    "agent-dormancy",
+    "ai-farm",
+    "ai-harness",
+    "assembled-context-retrieval",
+    "asset-bubbles",
+    "attention-as-path-determinant",
+    "brand-as-surrogate-community",
+    "brand-purpose-signaling",
+    "brand-vs-business",
+    "browser-agent-architecture",
+    "business-cycle-leading-indicators",
+    "capability-portfolio-control-layer",
+    "capability-portfolio-management",
+    "church-as-process-orientation",
+    "configuration-friction",
+    "consequence-weighted-action-gate",
+    "consumer-cooperative-power",
+    "consumption-to-resurfacing-loop",
+    "context-cost-ladder",
+    "context-injection-retrieval",
+    "context-write-back-gap",
+    "conversational-polling",
+    "credit-assignment-problem",
+    "debt-deflationary-cycle",
+    "degradation-of-digital-communication",
+    "dynamic-psychology-policy-weighting",
+    "dynamic-tool-discovery",
+    "ego-shedding-for-higher-cause",
+    "energy-as-master-variable",
+    "engine-not-product",
+    "extended-mind",
+    "extraverted-sensing-se-development",
+    "fascia-breathing-addiction-loop",
+    "food-system-excellence",
+    "four-hour-deep-work-rhythm",
+    "generative-synthesis-vs-discriminative-classification",
+    "goal-controller",
+    "good-regulator-theorem",
+    "hub-and-spoke-architecture",
+    "human-on-the-loop",
+    "ideal-and-its-expressions",
+    "information-diet",
+    "information-saturation-lag",
+    "innovation-vs-invention",
+    "intelligent-browsing",
+    "intent-first-interfaces",
+    "intent-layer-for-ambient-computing",
+    "intention-behavior-gap",
+    "introverted-intuition-ni",
+    "introverted-sensing-si",
+    "invisible-value-problem",
+    "kairos-architecture",
+    "knowledge-vs-working-knowledge",
+    "kuzu-memory",
+    "llm-product-retrofit-mistakes",
+    "llm-wiki-pattern",
+    "lost-in-the-middle",
+    "lsm-compaction",
+    "mape-k-loop",
+    "market-psychology",
+    "markets-psychology-vs-physics",
+    "memex-vision",
+    "mental-load-reduction",
+    "mikai-l4-state-machine",
+    "missionary-mindset",
+    "moat-as-integration-assembly",
+    "ni-over-reliance-in-trading",
+    "oapi",
+    "outcome-first-ai",
+    "ownership-vs-final-say",
+    "passion-vs-contribution",
+    "phase-change-materials-thermoregulation",
+    "picks-and-shovels-thesis-failure",
+    "plan-and-execute-pattern",
+    "plenitude-of-distraction",
+    "pm-translation-layer",
+    "positive-reinforcement",
+    "proactive-personal-intelligence-feed",
+    "project-state-graph-vs-cognitive-state-graph",
+    "push-vs-pull-architecture",
+    "reflective-router",
+    "relational-space",
+    "requisite-variety",
+    "retail-incubation-pipeline",
+    "return-skewness",
+    "sales-first-execution",
+    "sandwich-feedback",
+    "scientist-identity",
+    "second-brain-strata",
+    "seven-stage-skill-pipeline",
+    "shared-memory-blocks",
+    "skills-vs-tools-taxonomy",
+    "snapshot-architecture",
+    "space-between",
+    "stated-strategy-vs-revealed-configuration",
+    "substrate-beneath-surfaces",
+    "substrate-vs-destination",
+    "sumimasen",
+    "systems-change-autofill",
+    "taoism-entrepreneurship-duality",
+    "technology-externalization-ladder",
+    "technology-philosophy-harmonization",
+    "tenacious-joy",
+    "tensions-released-through-expression",
+    "thread-state-machine",
+    "three-pillars-of-wellbeing",
+    "three-selfs-taxonomy",
+    "time-model",
+    "time-triggered-vs-context-triggered-resurfacing",
+    "trap-door-effect",
+    "upper-lower-cross-syndrome",
+    "value-creation-vs-impact-creation",
+    "viable-system-model",
+    "vigilance-vs-creativity",
+    "visionary-vs-executor",
+    "whale-shrimp-dynamics",
+    "world-model-progression"
+  ],
+  "adjacent_concept_pairs": [
+    {
+      "a": "addiction-vs-passion",
+      "b": "fascia-breathing-addiction-loop",
+      "reason": "shared:addiction"
+    },
+    {
+      "a": "addiction-vs-passion",
+      "b": "passion-vs-contribution",
+      "reason": "shared:passion"
+    },
+    {
+      "a": "agency-career-model",
+      "b": "agency-model-for-work",
+      "reason": "shared:agency,model"
+    },
+    {
+      "a": "agency-career-model",
+      "b": "time-model",
+      "reason": "shared:model"
+    },
+    {
+      "a": "agency-career-model",
+      "b": "viable-system-model",
+      "reason": "shared:model"
+    },
+    {
+      "a": "agency-career-model",
+      "b": "world-model-progression",
+      "reason": "shared:model"
+    },
+    {
+      "a": "agent-harness",
+      "b": "agent-dormancy",
+      "reason": "shared:agent"
+    },
+    {
+      "a": "agent-harness",
+      "b": "ai-harness",
+      "reason": "shared:harness"
+    },
+    {
+      "a": "agent-harness",
+      "b": "browser-agent-architecture",
+      "reason": "shared:agent"
+    },
+    {
+      "a": "ai-development-phases",
+      "b": "extraverted-sensing-se-development",
+      "reason": "shared:development"
+    },
+    {
+      "a": "ai-public-information-mediation",
+      "b": "information-diet",
+      "reason": "shared:information"
+    },
+    {
+      "a": "ai-public-information-mediation",
+      "b": "information-saturation-lag",
+      "reason": "shared:information"
+    },
+    {
+      "a": "ambient-computing",
+      "b": "intent-layer-for-ambient-computing",
+      "reason": "substring"
+    },
+    {
+      "a": "atomic-actionable-feed-card",
+      "b": "proactive-personal-intelligence-feed",
+      "reason": "shared:feed"
+    },
+    {
+      "a": "attention-anchors",
+      "b": "attention-as-path-determinant",
+      "reason": "shared:attention"
+    },
+    {
+      "a": "attention-as-injection-constraint",
+      "b": "attention-as-path-determinant",
+      "reason": "shared:attention"
+    },
+    {
+      "a": "attention-as-injection-constraint",
+      "b": "context-injection-retrieval",
+      "reason": "shared:injection"
+    },
+    {
+      "a": "attention-economics",
+      "b": "attention-as-path-determinant",
+      "reason": "shared:attention"
+    },
+    {
+      "a": "bdi-agent-theory",
+      "b": "agent-dormancy",
+      "reason": "shared:agent"
+    },
+    {
+      "a": "bdi-agent-theory",
+      "b": "browser-agent-architecture",
+      "reason": "shared:agent"
+    },
+    {
+      "a": "behavioral-trace-memory",
+      "b": "kuzu-memory",
+      "reason": "shared:memory"
+    },
+    {
+      "a": "behavioral-trace-memory",
+      "b": "shared-memory-blocks",
+      "reason": "shared:memory"
+    },
+    {
+      "a": "bidding-lease-system",
+      "b": "food-system-excellence",
+      "reason": "shared:system"
+    },
+    {
+      "a": "bidding-lease-system",
+      "b": "viable-system-model",
+      "reason": "shared:system"
+    },
+    {
+      "a": "bilt-four-phase-agent-architecture",
+      "b": "agent-dormancy",
+      "reason": "shared:agent"
+    },
+    {
+      "a": "bilt-four-phase-agent-architecture",
+      "b": "browser-agent-architecture",
+      "reason": "shared:agent,architecture"
+    },
+    {
+      "a": "bilt-four-phase-agent-architecture",
+      "b": "four-hour-deep-work-rhythm",
+      "reason": "shared:four"
+    },
+    {
+      "a": "bilt-four-phase-agent-architecture",
+      "b": "hub-and-spoke-architecture",
+      "reason": "shared:architecture"
+    },
+    {
+      "a": "bilt-four-phase-agent-architecture",
+      "b": "kairos-architecture",
+      "reason": "shared:architecture"
+    },
+    {
+      "a": "bilt-four-phase-agent-architecture",
+      "b": "phase-change-materials-thermoregulation",
+      "reason": "shared:phase"
+    },
+    {
+      "a": "bilt-four-phase-agent-architecture",
+      "b": "push-vs-pull-architecture",
+      "reason": "shared:architecture"
+    },
+    {
+      "a": "bilt-four-phase-agent-architecture",
+      "b": "snapshot-architecture",
+      "reason": "shared:architecture"
+    },
+    {
+      "a": "brand-as-identity-substitute",
+      "b": "brand-as-surrogate-community",
+      "reason": "shared:brand"
+    },
+    {
+      "a": "brand-as-identity-substitute",
+      "b": "brand-purpose-signaling",
+      "reason": "shared:brand"
+    },
+    {
+      "a": "brand-as-identity-substitute",
+      "b": "brand-vs-business",
+      "reason": "shared:brand"
+    },
+    {
+      "a": "brand-as-identity-substitute",
+      "b": "scientist-identity",
+      "reason": "shared:identity"
+    },
+    {
+      "a": "browser-as-primary-capture-surface",
+      "b": "browser-agent-architecture",
+      "reason": "shared:browser"
+    },
+    {
+      "a": "capture-loop-wedge",
+      "b": "consumption-to-resurfacing-loop",
+      "reason": "shared:loop"
+    },
+    {
+      "a": "capture-loop-wedge",
+      "b": "fascia-breathing-addiction-loop",
+      "reason": "shared:loop"
+    },
+    {
+      "a": "capture-loop-wedge",
+      "b": "human-on-the-loop",
+      "reason": "shared:loop"
+    },
+    {
+      "a": "capture-loop-wedge",
+      "b": "mape-k-loop",
+      "reason": "shared:loop"
+    },
+    {
+      "a": "closed-loop-goal-controller",
+      "b": "consumption-to-resurfacing-loop",
+      "reason": "shared:loop"
+    },
+    {
+      "a": "closed-loop-goal-controller",
+      "b": "fascia-breathing-addiction-loop",
+      "reason": "shared:loop"
+    },
+    {
+      "a": "closed-loop-goal-controller",
+      "b": "goal-controller",
+      "reason": "substring"
+    },
+    {
+      "a": "closed-loop-goal-controller",
+      "b": "human-on-the-loop",
+      "reason": "shared:loop"
+    },
+    {
+      "a": "closed-loop-goal-controller",
+      "b": "mape-k-loop",
+      "reason": "shared:loop"
+    },
+    {
+      "a": "communication-degradation-loop",
+      "b": "consumption-to-resurfacing-loop",
+      "reason": "shared:loop"
+    },
+    {
+      "a": "communication-degradation-loop",
+      "b": "degradation-of-digital-communication",
+      "reason": "shared:communication,degradation"
+    },
+    {
+      "a": "communication-degradation-loop",
+      "b": "fascia-breathing-addiction-loop",
+      "reason": "shared:loop"
+    },
+    {
+      "a": "communication-degradation-loop",
+      "b": "human-on-the-loop",
+      "reason": "shared:loop"
+    },
+    {
+      "a": "communication-degradation-loop",
+      "b": "mape-k-loop",
+      "reason": "shared:loop"
+    },
+    {
+      "a": "comprehensive-autofill-for-systems-change",
+      "b": "phase-change-materials-thermoregulation",
+      "reason": "shared:change"
+    },
+    {
+      "a": "comprehensive-autofill-for-systems-change",
+      "b": "systems-change-autofill",
+      "reason": "shared:autofill,change,systems"
+    },
+    {
+      "a": "consumer-quality-platform",
+      "b": "consumer-cooperative-power",
+      "reason": "shared:consumer"
+    },
+    {
+      "a": "consumer-unity",
+      "b": "consumer-cooperative-power",
+      "reason": "shared:consumer"
+    },
+    {
+      "a": "context-compiler",
+      "b": "assembled-context-retrieval",
+      "reason": "shared:context"
+    },
+    {
+      "a": "context-compiler",
+      "b": "context-cost-ladder",
+      "reason": "shared:context"
+    },
+    {
+      "a": "context-compiler",
+      "b": "context-injection-retrieval",
+      "reason": "shared:context"
+    },
+    {
+      "a": "context-compiler",
+      "b": "context-write-back-gap",
+      "reason": "shared:context"
+    },
+    {
+      "a": "context-compiler",
+      "b": "time-triggered-vs-context-triggered-resurfacing",
+      "reason": "shared:context"
+    },
+    {
+      "a": "context-gatekeeper-risk",
+      "b": "assembled-context-retrieval",
+      "reason": "shared:context"
+    },
+    {
+      "a": "context-gatekeeper-risk",
+      "b": "context-cost-ladder",
+      "reason": "shared:context"
+    },
+    {
+      "a": "context-gatekeeper-risk",
+      "b": "context-injection-retrieval",
+      "reason": "shared:context"
+    },
+    {
+      "a": "context-gatekeeper-risk",
+      "b": "context-write-back-gap",
+      "reason": "shared:context"
+    },
+    {
+      "a": "context-gatekeeper-risk",
+      "b": "time-triggered-vs-context-triggered-resurfacing",
+      "reason": "shared:context"
+    },
+    {
+      "a": "context-triggered-vs-time-triggered-resurfacing",
+      "b": "assembled-context-retrieval",
+      "reason": "shared:context"
+    },
+    {
+      "a": "context-triggered-vs-time-triggered-resurfacing",
+      "b": "consumption-to-resurfacing-loop",
+      "reason": "shared:resurfacing"
+    },
+    {
+      "a": "context-triggered-vs-time-triggered-resurfacing",
+      "b": "context-cost-ladder",
+      "reason": "shared:context"
+    },
+    {
+      "a": "context-triggered-vs-time-triggered-resurfacing",
+      "b": "context-injection-retrieval",
+      "reason": "shared:context"
+    },
+    {
+      "a": "context-triggered-vs-time-triggered-resurfacing",
+      "b": "context-write-back-gap",
+      "reason": "shared:context"
+    },
+    {
+      "a": "context-triggered-vs-time-triggered-resurfacing",
+      "b": "time-model",
+      "reason": "shared:time"
+    },
+    {
+      "a": "context-triggered-vs-time-triggered-resurfacing",
+      "b": "time-triggered-vs-context-triggered-resurfacing",
+      "reason": "shared:context,resurfacing,time,triggered"
+    },
+    {
+      "a": "cross-ecosystem-user-owned-layer",
+      "b": "capability-portfolio-control-layer",
+      "reason": "shared:layer"
+    },
+    {
+      "a": "cross-ecosystem-user-owned-layer",
+      "b": "intent-layer-for-ambient-computing",
+      "reason": "shared:layer"
+    },
+    {
+      "a": "cross-ecosystem-user-owned-layer",
+      "b": "pm-translation-layer",
+      "reason": "shared:layer"
+    },
+    {
+      "a": "cross-ecosystem-user-owned-layer",
+      "b": "upper-lower-cross-syndrome",
+      "reason": "shared:cross"
+    },
+    {
+      "a": "dalio-deflationary-cycle",
+      "b": "business-cycle-leading-indicators",
+      "reason": "shared:cycle"
+    },
+    {
+      "a": "dalio-deflationary-cycle",
+      "b": "debt-deflationary-cycle",
+      "reason": "shared:cycle,deflationary"
+    },
+    {
+      "a": "demo-ability-problem",
+      "b": "credit-assignment-problem",
+      "reason": "shared:problem"
+    },
+    {
+      "a": "demo-ability-problem",
+      "b": "invisible-value-problem",
+      "reason": "shared:problem"
+    },
+    {
+      "a": "device-proliferation-as-mikai-oxygen",
+      "b": "mikai-l4-state-machine",
+      "reason": "shared:mikai"
+    },
+    {
+      "a": "digital-supply-chain-transparency",
+      "b": "degradation-of-digital-communication",
+      "reason": "shared:digital"
+    },
+    {
+      "a": "dormant-agent-model",
+      "b": "agency-model-for-work",
+      "reason": "shared:model"
+    },
+    {
+      "a": "dormant-agent-model",
+      "b": "agent-dormancy",
+      "reason": "shared:agent"
+    },
+    {
+      "a": "dormant-agent-model",
+      "b": "browser-agent-architecture",
+      "reason": "shared:agent"
+    },
+    {
+      "a": "dormant-agent-model",
+      "b": "time-model",
+      "reason": "shared:model"
+    },
+    {
+      "a": "dormant-agent-model",
+      "b": "viable-system-model",
+      "reason": "shared:model"
+    },
+    {
+      "a": "dormant-agent-model",
+      "b": "world-model-progression",
+      "reason": "shared:model"
+    },
+    {
+      "a": "dreams-as-addiction",
+      "b": "fascia-breathing-addiction-loop",
+      "reason": "shared:addiction"
+    },
+    {
+      "a": "dynamic-social-pricing",
+      "b": "dynamic-psychology-policy-weighting",
+      "reason": "shared:dynamic"
+    },
+    {
+      "a": "dynamic-social-pricing",
+      "b": "dynamic-tool-discovery",
+      "reason": "shared:dynamic"
+    },
+    {
+      "a": "enduring-human-need",
+      "b": "human-on-the-loop",
+      "reason": "shared:human"
+    },
+    {
+      "a": "event-sourcing-for-intent-graph",
+      "b": "intent-first-interfaces",
+      "reason": "shared:intent"
+    },
+    {
+      "a": "event-sourcing-for-intent-graph",
+      "b": "intent-layer-for-ambient-computing",
+      "reason": "shared:intent"
+    },
+    {
+      "a": "event-sourcing-for-intent-graph",
+      "b": "project-state-graph-vs-cognitive-state-graph",
+      "reason": "shared:graph"
+    },
+    {
+      "a": "executive-assistant-feed",
+      "b": "proactive-personal-intelligence-feed",
+      "reason": "shared:feed"
+    },
+    {
+      "a": "fear-of-mistakes",
+      "b": "llm-product-retrofit-mistakes",
+      "reason": "shared:mistakes"
+    },
+    {
+      "a": "follow-through-as-system",
+      "b": "food-system-excellence",
+      "reason": "shared:system"
+    },
+    {
+      "a": "follow-through-as-system",
+      "b": "tensions-released-through-expression",
+      "reason": "shared:through"
+    },
+    {
+      "a": "follow-through-as-system",
+      "b": "viable-system-model",
+      "reason": "shared:system"
+    },
+    {
+      "a": "food-system-reform",
+      "b": "food-system-excellence",
+      "reason": "shared:food,system"
+    },
+    {
+      "a": "food-system-reform",
+      "b": "viable-system-model",
+      "reason": "shared:system"
+    },
+    {
+      "a": "four-hour-study-sweet-spot",
+      "b": "four-hour-deep-work-rhythm",
+      "reason": "shared:four,hour"
+    },
+    {
+      "a": "general-manager-agent",
+      "b": "agent-dormancy",
+      "reason": "shared:agent"
+    },
+    {
+      "a": "general-manager-agent",
+      "b": "browser-agent-architecture",
+      "reason": "shared:agent"
+    },
+    {
+      "a": "goal-verification-partition",
+      "b": "goal-controller",
+      "reason": "shared:goal"
+    },
+    {
+      "a": "graph-not-folders-capture-model",
+      "b": "agency-model-for-work",
+      "reason": "shared:model"
+    },
+    {
+      "a": "graph-not-folders-capture-model",
+      "b": "project-state-graph-vs-cognitive-state-graph",
+      "reason": "shared:graph"
+    },
+    {
+      "a": "graph-not-folders-capture-model",
+      "b": "time-model",
+      "reason": "shared:model"
+    },
+    {
+      "a": "graph-not-folders-capture-model",
+      "b": "viable-system-model",
+      "reason": "shared:model"
+    },
+    {
+      "a": "graph-not-folders-capture-model",
+      "b": "world-model-progression",
+      "reason": "shared:model"
+    },
+    {
+      "a": "information-clustering",
+      "b": "information-diet",
+      "reason": "shared:information"
+    },
+    {
+      "a": "information-clustering",
+      "b": "information-saturation-lag",
+      "reason": "shared:information"
+    },
+    {
+      "a": "integration-assembly-as-moat",
+      "b": "moat-as-integration-assembly",
+      "reason": "shared:assembly,integration,moat"
+    },
+    {
+      "a": "intelligence-vs-judgment-work",
+      "b": "agency-model-for-work",
+      "reason": "shared:work"
+    },
+    {
+      "a": "intelligence-vs-judgment-work",
+      "b": "four-hour-deep-work-rhythm",
+      "reason": "shared:work"
+    },
+    {
+      "a": "intelligence-vs-judgment-work",
+      "b": "proactive-personal-intelligence-feed",
+      "reason": "shared:intelligence"
+    },
+    {
+      "a": "intelligent-browser",
+      "b": "browser-agent-architecture",
+      "reason": "shared:browser"
+    },
+    {
+      "a": "intelligent-browser",
+      "b": "intelligent-browsing",
+      "reason": "shared:intelligent"
+    },
+    {
+      "a": "knowledge-graph-vs-neural-network",
+      "b": "knowledge-vs-working-knowledge",
+      "reason": "shared:knowledge"
+    },
+    {
+      "a": "knowledge-graph-vs-neural-network",
+      "b": "project-state-graph-vs-cognitive-state-graph",
+      "reason": "shared:graph"
+    },
+    {
+      "a": "llm-product-development-mistakes",
+      "b": "engine-not-product",
+      "reason": "shared:product"
+    },
+    {
+      "a": "llm-product-development-mistakes",
+      "b": "extraverted-sensing-se-development",
+      "reason": "shared:development"
+    },
+    {
+      "a": "llm-product-development-mistakes",
+      "b": "llm-product-retrofit-mistakes",
+      "reason": "shared:mistakes,product"
+    },
+    {
+      "a": "llm-wiki",
+      "b": "llm-wiki-pattern",
+      "reason": "substring"
+    },
+    {
+      "a": "love-first-principle",
+      "b": "intent-first-interfaces",
+      "reason": "shared:first"
+    },
+    {
+      "a": "love-first-principle",
+      "b": "outcome-first-ai",
+      "reason": "shared:first"
+    },
+    {
+      "a": "love-first-principle",
+      "b": "sales-first-execution",
+      "reason": "shared:first"
+    },
+    {
+      "a": "machine-readable-acceptance-criteria",
+      "b": "mikai-l4-state-machine",
+      "reason": "shared:machine"
+    },
+    {
+      "a": "machine-readable-acceptance-criteria",
+      "b": "thread-state-machine",
+      "reason": "shared:machine"
+    },
+    {
+      "a": "memex",
+      "b": "memex-vision",
+      "reason": "substring"
+    },
+    {
+      "a": "memory-promotion-gate",
+      "b": "consequence-weighted-action-gate",
+      "reason": "shared:gate"
+    },
+    {
+      "a": "memory-promotion-gate",
+      "b": "kuzu-memory",
+      "reason": "shared:memory"
+    },
+    {
+      "a": "memory-promotion-gate",
+      "b": "shared-memory-blocks",
+      "reason": "shared:memory"
+    },
+    {
+      "a": "metabolism-monetization-problem",
+      "b": "credit-assignment-problem",
+      "reason": "shared:problem"
+    },
+    {
+      "a": "metabolism-monetization-problem",
+      "b": "invisible-value-problem",
+      "reason": "shared:problem"
+    },
+    {
+      "a": "mikai-models-the-self",
+      "b": "mikai-l4-state-machine",
+      "reason": "shared:mikai"
+    },
+    {
+      "a": "mikai-two-headless-stack",
+      "b": "mikai-l4-state-machine",
+      "reason": "shared:mikai"
+    },
+    {
+      "a": "model-context-protocol",
+      "b": "agency-model-for-work",
+      "reason": "shared:model"
+    },
+    {
+      "a": "model-context-protocol",
+      "b": "assembled-context-retrieval",
+      "reason": "shared:context"
+    },
+    {
+      "a": "model-context-protocol",
+      "b": "context-cost-ladder",
+      "reason": "shared:context"
+    },
+    {
+      "a": "model-context-protocol",
+      "b": "context-injection-retrieval",
+      "reason": "shared:context"
+    },
+    {
+      "a": "model-context-protocol",
+      "b": "context-write-back-gap",
+      "reason": "shared:context"
+    },
+    {
+      "a": "model-context-protocol",
+      "b": "time-model",
+      "reason": "shared:model"
+    },
+    {
+      "a": "model-context-protocol",
+      "b": "time-triggered-vs-context-triggered-resurfacing",
+      "reason": "shared:context"
+    },
+    {
+      "a": "model-context-protocol",
+      "b": "viable-system-model",
+      "reason": "shared:model"
+    },
+    {
+      "a": "model-context-protocol",
+      "b": "world-model-progression",
+      "reason": "shared:model"
+    },
+    {
+      "a": "neural-network-taxonomy",
+      "b": "skills-vs-tools-taxonomy",
+      "reason": "shared:taxonomy"
+    },
+    {
+      "a": "neural-network-taxonomy",
+      "b": "three-selfs-taxonomy",
+      "reason": "shared:taxonomy"
+    },
+    {
+      "a": "news-saturation-threshold",
+      "b": "information-saturation-lag",
+      "reason": "shared:saturation"
+    },
+    {
+      "a": "noble-purpose",
+      "b": "brand-purpose-signaling",
+      "reason": "shared:purpose"
+    },
+    {
+      "a": "noonchi-retrieval-chain",
+      "b": "assembled-context-retrieval",
+      "reason": "shared:retrieval"
+    },
+    {
+      "a": "noonchi-retrieval-chain",
+      "b": "context-injection-retrieval",
+      "reason": "shared:retrieval"
+    },
+    {
+      "a": "observe-think-act-loop",
+      "b": "consumption-to-resurfacing-loop",
+      "reason": "shared:loop"
+    },
+    {
+      "a": "observe-think-act-loop",
+      "b": "fascia-breathing-addiction-loop",
+      "reason": "shared:loop"
+    },
+    {
+      "a": "observe-think-act-loop",
+      "b": "human-on-the-loop",
+      "reason": "shared:loop"
+    },
+    {
+      "a": "observe-think-act-loop",
+      "b": "mape-k-loop",
+      "reason": "shared:loop"
+    },
+    {
+      "a": "outcome-oriented-ai",
+      "b": "outcome-first-ai",
+      "reason": "shared:outcome"
+    },
+    {
+      "a": "phase-change-materials",
+      "b": "phase-change-materials-thermoregulation",
+      "reason": "substring"
+    },
+    {
+      "a": "phase-change-materials",
+      "b": "systems-change-autofill",
+      "reason": "shared:change"
+    },
+    {
+      "a": "pm-as-agent-translation-layer",
+      "b": "agent-dormancy",
+      "reason": "shared:agent"
+    },
+    {
+      "a": "pm-as-agent-translation-layer",
+      "b": "browser-agent-architecture",
+      "reason": "shared:agent"
+    },
+    {
+      "a": "pm-as-agent-translation-layer",
+      "b": "capability-portfolio-control-layer",
+      "reason": "shared:layer"
+    },
+    {
+      "a": "pm-as-agent-translation-layer",
+      "b": "intent-layer-for-ambient-computing",
+      "reason": "shared:layer"
+    },
+    {
+      "a": "pm-as-agent-translation-layer",
+      "b": "pm-translation-layer",
+      "reason": "shared:layer,translation"
+    },
+    {
+      "a": "positive-reinforcement-leadership",
+      "b": "positive-reinforcement",
+      "reason": "substring"
+    },
+    {
+      "a": "potential-without-execution",
+      "b": "sales-first-execution",
+      "reason": "shared:execution"
+    },
+    {
+      "a": "predictive-ml-layer",
+      "b": "capability-portfolio-control-layer",
+      "reason": "shared:layer"
+    },
+    {
+      "a": "predictive-ml-layer",
+      "b": "intent-layer-for-ambient-computing",
+      "reason": "shared:layer"
+    },
+    {
+      "a": "predictive-ml-layer",
+      "b": "pm-translation-layer",
+      "reason": "shared:layer"
+    },
+    {
+      "a": "protocol-stack-three-layers",
+      "b": "three-pillars-of-wellbeing",
+      "reason": "shared:three"
+    },
+    {
+      "a": "protocol-stack-three-layers",
+      "b": "three-selfs-taxonomy",
+      "reason": "shared:three"
+    },
+    {
+      "a": "psychology-policy-weighting-model",
+      "b": "agency-model-for-work",
+      "reason": "shared:model"
+    },
+    {
+      "a": "psychology-policy-weighting-model",
+      "b": "dynamic-psychology-policy-weighting",
+      "reason": "shared:policy,psychology,weighting"
+    },
+    {
+      "a": "psychology-policy-weighting-model",
+      "b": "market-psychology",
+      "reason": "shared:psychology"
+    },
+    {
+      "a": "psychology-policy-weighting-model",
+      "b": "markets-psychology-vs-physics",
+      "reason": "shared:psychology"
+    },
+    {
+      "a": "psychology-policy-weighting-model",
+      "b": "time-model",
+      "reason": "shared:model"
+    },
+    {
+      "a": "psychology-policy-weighting-model",
+      "b": "viable-system-model",
+      "reason": "shared:model"
+    },
+    {
+      "a": "psychology-policy-weighting-model",
+      "b": "world-model-progression",
+      "reason": "shared:model"
+    },
+    {
+      "a": "purpose-driven-purchasing",
+      "b": "brand-purpose-signaling",
+      "reason": "shared:purpose"
+    },
+    {
+      "a": "push-vs-pull-agent-architecture",
+      "b": "agent-dormancy",
+      "reason": "shared:agent"
+    },
+    {
+      "a": "push-vs-pull-agent-architecture",
+      "b": "browser-agent-architecture",
+      "reason": "shared:agent,architecture"
+    },
+    {
+      "a": "push-vs-pull-agent-architecture",
+      "b": "hub-and-spoke-architecture",
+      "reason": "shared:architecture"
+    },
+    {
+      "a": "push-vs-pull-agent-architecture",
+      "b": "kairos-architecture",
+      "reason": "shared:architecture"
+    },
+    {
+      "a": "push-vs-pull-agent-architecture",
+      "b": "push-vs-pull-architecture",
+      "reason": "shared:architecture,pull,push"
+    },
+    {
+      "a": "push-vs-pull-agent-architecture",
+      "b": "snapshot-architecture",
+      "reason": "shared:architecture"
+    },
+    {
+      "a": "query-time-synthesis-vs-write-time-promotion",
+      "b": "context-write-back-gap",
+      "reason": "shared:write"
+    },
+    {
+      "a": "query-time-synthesis-vs-write-time-promotion",
+      "b": "generative-synthesis-vs-discriminative-classification",
+      "reason": "shared:synthesis"
+    },
+    {
+      "a": "query-time-synthesis-vs-write-time-promotion",
+      "b": "time-model",
+      "reason": "shared:time"
+    },
+    {
+      "a": "query-time-synthesis-vs-write-time-promotion",
+      "b": "time-triggered-vs-context-triggered-resurfacing",
+      "reason": "shared:time"
+    },
+    {
+      "a": "relative-impact",
+      "b": "value-creation-vs-impact-creation",
+      "reason": "shared:impact"
+    },
+    {
+      "a": "religion-as-process-orientation",
+      "b": "church-as-process-orientation",
+      "reason": "shared:orientation,process"
+    },
+    {
+      "a": "return-skew",
+      "b": "return-skewness",
+      "reason": "substring"
+    },
+    {
+      "a": "se-first-product-strategy",
+      "b": "engine-not-product",
+      "reason": "shared:product"
+    },
+    {
+      "a": "se-first-product-strategy",
+      "b": "intent-first-interfaces",
+      "reason": "shared:first"
+    },
+    {
+      "a": "se-first-product-strategy",
+      "b": "llm-product-retrofit-mistakes",
+      "reason": "shared:product"
+    },
+    {
+      "a": "se-first-product-strategy",
+      "b": "outcome-first-ai",
+      "reason": "shared:first"
+    },
+    {
+      "a": "se-first-product-strategy",
+      "b": "sales-first-execution",
+      "reason": "shared:first"
+    },
+    {
+      "a": "se-first-product-strategy",
+      "b": "stated-strategy-vs-revealed-configuration",
+      "reason": "shared:strategy"
+    },
+    {
+      "a": "second-brain-five-strata",
+      "b": "second-brain-strata",
+      "reason": "shared:brain,second,strata"
+    },
+    {
+      "a": "skill-md",
+      "b": "seven-stage-skill-pipeline",
+      "reason": "shared:skill"
+    },
+    {
+      "a": "skill-routing-taxonomy",
+      "b": "seven-stage-skill-pipeline",
+      "reason": "shared:skill"
+    },
+    {
+      "a": "skill-routing-taxonomy",
+      "b": "skills-vs-tools-taxonomy",
+      "reason": "shared:taxonomy"
+    },
+    {
+      "a": "skill-routing-taxonomy",
+      "b": "three-selfs-taxonomy",
+      "reason": "shared:taxonomy"
+    },
+    {
+      "a": "skills-vs-tools-distinction",
+      "b": "skills-vs-tools-taxonomy",
+      "reason": "shared:skills,tools"
+    },
+    {
+      "a": "sleep-time-compute",
+      "b": "time-model",
+      "reason": "shared:time"
+    },
+    {
+      "a": "sleep-time-compute",
+      "b": "time-triggered-vs-context-triggered-resurfacing",
+      "reason": "shared:time"
+    },
+    {
+      "a": "snapshot-brain-vs-continuous-ingestion",
+      "b": "second-brain-strata",
+      "reason": "shared:brain"
+    },
+    {
+      "a": "snapshot-brain-vs-continuous-ingestion",
+      "b": "snapshot-architecture",
+      "reason": "shared:snapshot"
+    },
+    {
+      "a": "strength-first-development",
+      "b": "extraverted-sensing-se-development",
+      "reason": "shared:development"
+    },
+    {
+      "a": "strength-first-development",
+      "b": "intent-first-interfaces",
+      "reason": "shared:first"
+    },
+    {
+      "a": "strength-first-development",
+      "b": "outcome-first-ai",
+      "reason": "shared:first"
+    },
+    {
+      "a": "strength-first-development",
+      "b": "sales-first-execution",
+      "reason": "shared:first"
+    },
+    {
+      "a": "sumimasen-gate",
+      "b": "consequence-weighted-action-gate",
+      "reason": "shared:gate"
+    },
+    {
+      "a": "sumimasen-gate",
+      "b": "sumimasen",
+      "reason": "substring"
+    },
+    {
+      "a": "supply-chain-of-excellence",
+      "b": "food-system-excellence",
+      "reason": "shared:excellence"
+    },
+    {
+      "a": "technology-philosophy-infusion",
+      "b": "technology-externalization-ladder",
+      "reason": "shared:technology"
+    },
+    {
+      "a": "technology-philosophy-infusion",
+      "b": "technology-philosophy-harmonization",
+      "reason": "shared:philosophy,technology"
+    },
+    {
+      "a": "tension-release-through-expression",
+      "b": "tensions-released-through-expression",
+      "reason": "shared:expression,through"
+    },
+    {
+      "a": "the-space-between",
+      "b": "relational-space",
+      "reason": "shared:space"
+    },
+    {
+      "a": "the-space-between",
+      "b": "space-between",
+      "reason": "substring"
+    },
+    {
+      "a": "the-why-sandwich",
+      "b": "sandwich-feedback",
+      "reason": "shared:sandwich"
+    },
+    {
+      "a": "three-generation-failure-pattern",
+      "b": "llm-wiki-pattern",
+      "reason": "shared:pattern"
+    },
+    {
+      "a": "three-generation-failure-pattern",
+      "b": "picks-and-shovels-thesis-failure",
+      "reason": "shared:failure"
+    },
+    {
+      "a": "three-generation-failure-pattern",
+      "b": "plan-and-execute-pattern",
+      "reason": "shared:pattern"
+    },
+    {
+      "a": "three-generation-failure-pattern",
+      "b": "three-pillars-of-wellbeing",
+      "reason": "shared:three"
+    },
+    {
+      "a": "three-generation-failure-pattern",
+      "b": "three-selfs-taxonomy",
+      "reason": "shared:three"
+    },
+    {
+      "a": "three-layer-governance-model",
+      "b": "agency-model-for-work",
+      "reason": "shared:model"
+    },
+    {
+      "a": "three-layer-governance-model",
+      "b": "capability-portfolio-control-layer",
+      "reason": "shared:layer"
+    },
+    {
+      "a": "three-layer-governance-model",
+      "b": "intent-layer-for-ambient-computing",
+      "reason": "shared:layer"
+    },
+    {
+      "a": "three-layer-governance-model",
+      "b": "pm-translation-layer",
+      "reason": "shared:layer"
+    },
+    {
+      "a": "three-layer-governance-model",
+      "b": "three-pillars-of-wellbeing",
+      "reason": "shared:three"
+    },
+    {
+      "a": "three-layer-governance-model",
+      "b": "three-selfs-taxonomy",
+      "reason": "shared:three"
+    },
+    {
+      "a": "three-layer-governance-model",
+      "b": "time-model",
+      "reason": "shared:model"
+    },
+    {
+      "a": "three-layer-governance-model",
+      "b": "viable-system-model",
+      "reason": "shared:model"
+    },
+    {
+      "a": "three-layer-governance-model",
+      "b": "world-model-progression",
+      "reason": "shared:model"
+    },
+    {
+      "a": "three-mikai-repositioning-options",
+      "b": "mikai-l4-state-machine",
+      "reason": "shared:mikai"
+    },
+    {
+      "a": "three-mikai-repositioning-options",
+      "b": "three-pillars-of-wellbeing",
+      "reason": "shared:three"
+    },
+    {
+      "a": "three-mikai-repositioning-options",
+      "b": "three-selfs-taxonomy",
+      "reason": "shared:three"
+    },
+    {
+      "a": "three-pillar-life-quality",
+      "b": "three-pillars-of-wellbeing",
+      "reason": "shared:three"
+    },
+    {
+      "a": "three-pillar-life-quality",
+      "b": "three-selfs-taxonomy",
+      "reason": "shared:three"
+    },
+    {
+      "a": "trading-checklist-discipline",
+      "b": "ni-over-reliance-in-trading",
+      "reason": "shared:trading"
+    },
+    {
+      "a": "transactive-memory",
+      "b": "kuzu-memory",
+      "reason": "shared:memory"
+    },
+    {
+      "a": "transactive-memory",
+      "b": "shared-memory-blocks",
+      "reason": "shared:memory"
+    },
+    {
+      "a": "triggered-compaction",
+      "b": "lsm-compaction",
+      "reason": "shared:compaction"
+    },
+    {
+      "a": "triggered-compaction",
+      "b": "time-triggered-vs-context-triggered-resurfacing",
+      "reason": "shared:triggered"
+    },
+    {
+      "a": "two-sets-of-three",
+      "b": "three-pillars-of-wellbeing",
+      "reason": "shared:three"
+    },
+    {
+      "a": "two-sets-of-three",
+      "b": "three-selfs-taxonomy",
+      "reason": "shared:three"
+    },
+    {
+      "a": "unrefined-function-as-product",
+      "b": "engine-not-product",
+      "reason": "shared:product"
+    },
+    {
+      "a": "unrefined-function-as-product",
+      "b": "llm-product-retrofit-mistakes",
+      "reason": "shared:product"
+    },
+    {
+      "a": "vigilance-vs-freedom",
+      "b": "vigilance-vs-creativity",
+      "reason": "shared:vigilance"
+    },
+    {
+      "a": "whale-shrimp-dynamic",
+      "b": "dynamic-psychology-policy-weighting",
+      "reason": "shared:dynamic"
+    },
+    {
+      "a": "whale-shrimp-dynamic",
+      "b": "dynamic-tool-discovery",
+      "reason": "shared:dynamic"
+    },
+    {
+      "a": "whale-shrimp-dynamic",
+      "b": "whale-shrimp-dynamics",
+      "reason": "substring"
+    },
+    {
+      "a": "wonder-as-purpose",
+      "b": "brand-purpose-signaling",
+      "reason": "shared:purpose"
+    },
+    {
+      "a": "working-knowledge",
+      "b": "knowledge-vs-working-knowledge",
+      "reason": "substring"
+    },
+    {
+      "a": "world-model-as-agent-instruction",
+      "b": "agency-model-for-work",
+      "reason": "shared:model"
+    },
+    {
+      "a": "world-model-as-agent-instruction",
+      "b": "agent-dormancy",
+      "reason": "shared:agent"
+    },
+    {
+      "a": "world-model-as-agent-instruction",
+      "b": "browser-agent-architecture",
+      "reason": "shared:agent"
+    },
+    {
+      "a": "world-model-as-agent-instruction",
+      "b": "time-model",
+      "reason": "shared:model"
+    },
+    {
+      "a": "world-model-as-agent-instruction",
+      "b": "viable-system-model",
+      "reason": "shared:model"
+    },
+    {
+      "a": "world-model-as-agent-instruction",
+      "b": "world-model-progression",
+      "reason": "shared:model,world"
+    }
+  ],
+  "non_english_concepts_a": 0,
+  "non_english_concepts_b": 0,
+  "wisdom_a": {
+    "pages": [
+      {
+        "slug": "authentic-leadership-and-impact",
+        "quotes": 5,
+        "attributions": 5
+      },
+      {
+        "slug": "carson-on-belief-and-influence",
+        "quotes": 9,
+        "attributions": 9
+      },
+      {
+        "slug": "chosen-life-and-direction",
+        "quotes": 6,
+        "attributions": 6
+      },
+      {
+        "slug": "desire-and-discipline",
+        "quotes": 8,
+        "attributions": 8
+      },
+      {
+        "slug": "execution-and-product-philosophy",
+        "quotes": 7,
+        "attributions": 7
+      },
+      {
+        "slug": "faith-presence-and-imperfect-action",
+        "quotes": 7,
+        "attributions": 7
+      },
+      {
+        "slug": "greatness-and-self-seizure",
+        "quotes": 6,
+        "attributions": 6
+      },
+      {
+        "slug": "inner-voice-and-creative-authority",
+        "quotes": 7,
+        "attributions": 7
+      },
+      {
+        "slug": "legacy-and-the-age-of-empires",
+        "quotes": 7,
+        "attributions": 6
+      },
+      {
+        "slug": "love-first-and-foundation",
+        "quotes": 5,
+        "attributions": 5
+      },
+      {
+        "slug": "movement-through-hesitation",
+        "quotes": 8,
+        "attributions": 8
+      },
+      {
+        "slug": "quest-and-the-long-game",
+        "quotes": 8,
+        "attributions": 7
+      },
+      {
+        "slug": "self-and-others",
+        "quotes": 5,
+        "attributions": 5
+      },
+      {
+        "slug": "systems-and-leverage",
+        "quotes": 6,
+        "attributions": 6
+      },
+      {
+        "slug": "wu-wei-and-flow",
+        "quotes": 7,
+        "attributions": 7
+      }
+    ],
+    "total_pages": 15,
+    "total_quotes": 101,
+    "median_quotes": 7,
+    "p90_quotes": 8,
+    "weak_pages": [],
+    "unattributed_pages": []
+  },
+  "wisdom_b": {
+    "pages": [
+      {
+        "slug": "attention-and-effort",
+        "quotes": 6,
+        "attributions": 6
+      },
+      {
+        "slug": "avoidance-and-self-knowledge",
+        "quotes": 1,
+        "attributions": 1
+      },
+      {
+        "slug": "building-and-legacy",
+        "quotes": 12,
+        "attributions": 10
+      },
+      {
+        "slug": "consciousness-and-impermanence",
+        "quotes": 7,
+        "attributions": 7
+      },
+      {
+        "slug": "direction-and-purpose",
+        "quotes": 5,
+        "attributions": 5
+      },
+      {
+        "slug": "faith-and-perception",
+        "quotes": 6,
+        "attributions": 6
+      },
+      {
+        "slug": "focus-and-presence",
+        "quotes": 9,
+        "attributions": 9
+      },
+      {
+        "slug": "ganas-and-determination",
+        "quotes": 8,
+        "attributions": 7
+      },
+      {
+        "slug": "growth-resilience-and-ambition",
+        "quotes": 10,
+        "attributions": 10
+      },
+      {
+        "slug": "joy-and-selflessness",
+        "quotes": 7,
+        "attributions": 7
+      },
+      {
+        "slug": "leadership-and-authenticity",
+        "quotes": 5,
+        "attributions": 5
+      },
+      {
+        "slug": "leadership-and-ownership",
+        "quotes": 6,
+        "attributions": 6
+      },
+      {
+        "slug": "potential-and-actualization",
+        "quotes": 4,
+        "attributions": 4
+      },
+      {
+        "slug": "reciprocity-and-self",
+        "quotes": 5,
+        "attributions": 5
+      },
+      {
+        "slug": "tao-and-effortless-action",
+        "quotes": 8,
+        "attributions": 8
+      },
+      {
+        "slug": "will-and-action",
+        "quotes": 7,
+        "attributions": 6
+      }
+    ],
+    "total_pages": 16,
+    "total_quotes": 106,
+    "median_quotes": 6.5,
+    "p90_quotes": 9,
+    "weak_pages": [
+      "avoidance-and-self-knowledge",
+      "potential-and-actualization"
+    ],
+    "unattributed_pages": []
+  },
+  "source_summary_rows": [
+    {
+      "source": "2015-05-09-may-2015-bf4604.md",
+      "english_only": true,
+      "words_a": 553,
+      "words_b": 361,
+      "wikilinks_a": 3,
+      "wikilinks_b": 2,
+      "wikilink_jaccard": 0.25,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.0026246719160104987,
+      "non_ascii_b": 0.0035382574082264487
+    },
+    {
+      "source": "2018-04-25-apr-2018-e72fa9.md",
+      "english_only": true,
+      "words_a": 185,
+      "words_b": 221,
+      "wikilinks_a": 4,
+      "wikilinks_b": 0,
+      "wikilink_jaccard": 0.0,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.003048780487804878,
+      "non_ascii_b": 0.002073255010366275
+    },
+    {
+      "source": "2021-10-04-oct-2021-the-pressure-to-be-exemplary-weighed-heavily-653fcf.md",
+      "english_only": true,
+      "words_a": 578,
+      "words_b": 667,
+      "wikilinks_a": 7,
+      "wikilinks_b": 7,
+      "wikilink_jaccard": 0.0,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.001974821031843989,
+      "non_ascii_b": 0.003027681660899654
+    },
+    {
+      "source": "2022-06-06-june-2022-09da74.md",
+      "english_only": true,
+      "words_a": 578,
+      "words_b": 458,
+      "wikilinks_a": 3,
+      "wikilinks_b": 0,
+      "wikilink_jaccard": 0.0,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.002459419576979833,
+      "non_ascii_b": 0.003316749585406302
+    },
+    {
+      "source": "2022-08-10-august-2022-a55fa3.md",
+      "english_only": true,
+      "words_a": 392,
+      "words_b": 478,
+      "wikilinks_a": 4,
+      "wikilinks_b": 2,
+      "wikilink_jaccard": 0.2,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.0026830203142966655,
+      "non_ascii_b": 0.0030349013657056147
+    },
+    {
+      "source": "2023-05-04-may-2023-af1a10.md",
+      "english_only": true,
+      "words_a": 268,
+      "words_b": 250,
+      "wikilinks_a": 5,
+      "wikilinks_b": 7,
+      "wikilink_jaccard": 0.0,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.004298764105319721,
+      "non_ascii_b": 0.0036307053941908715
+    },
+    {
+      "source": "2023-05-06-may-2023-af1a10.md",
+      "english_only": true,
+      "words_a": 1210,
+      "words_b": 484,
+      "wikilinks_a": 8,
+      "wikilinks_b": 4,
+      "wikilink_jaccard": 0.0,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.003027027027027027,
+      "non_ascii_b": 0.0036385688295936932
+    },
+    {
+      "source": "2023-06-08-june-2023-2ccca6.md",
+      "english_only": true,
+      "words_a": 371,
+      "words_b": 260,
+      "wikilinks_a": 4,
+      "wikilinks_b": 4,
+      "wikilink_jaccard": 0.0,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.002369668246445498,
+      "non_ascii_b": 0.003567787971457696
+    },
+    {
+      "source": "2023-06-13-june-2023-2ccca6.md",
+      "english_only": true,
+      "words_a": 269,
+      "words_b": 249,
+      "wikilinks_a": 4,
+      "wikilinks_b": 6,
+      "wikilink_jaccard": 0.0,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.005574136008918618,
+      "non_ascii_b": 0.002880184331797235
+    },
+    {
+      "source": "2023-07-04-july-2023-27d2b1.md",
+      "english_only": true,
+      "words_a": 575,
+      "words_b": 598,
+      "wikilinks_a": 5,
+      "wikilinks_b": 4,
+      "wikilink_jaccard": 0.0,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.003056546102903719,
+      "non_ascii_b": 0.002214022140221402
+    },
+    {
+      "source": "2023-08-02-july-2023-27d2b1.md",
+      "english_only": true,
+      "words_a": 271,
+      "words_b": 280,
+      "wikilinks_a": 6,
+      "wikilinks_b": 4,
+      "wikilink_jaccard": 0.0,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.004819277108433735,
+      "non_ascii_b": 0.003233256351039261
+    },
+    {
+      "source": "2023-10-09-october-2023-18e6ee.md",
+      "english_only": true,
+      "words_a": 418,
+      "words_b": 575,
+      "wikilinks_a": 7,
+      "wikilinks_b": 8,
+      "wikilink_jaccard": 0.07142857142857142,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.005649717514124294,
+      "non_ascii_b": 0.005862646566164154
+    },
+    {
+      "source": "2023-10-30-november-2023-cbb021.md",
+      "english_only": true,
+      "words_a": 371,
+      "words_b": 337,
+      "wikilinks_a": 6,
+      "wikilinks_b": 3,
+      "wikilink_jaccard": 0.0,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.002162162162162162,
+      "non_ascii_b": 0.003795866722901729
+    },
+    {
+      "source": "2023-12-13-december-2023-225c10.md",
+      "english_only": true,
+      "words_a": 534,
+      "words_b": 480,
+      "wikilinks_a": 7,
+      "wikilinks_b": 7,
+      "wikilink_jaccard": 0.0,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.0026028110359187923,
+      "non_ascii_b": 0.0008610792192881745
+    },
+    {
+      "source": "2024-05-02-may-2024-if-you-can-identify-an-enduring-human-need-you-can-88ac7f.md",
+      "english_only": true,
+      "words_a": 649,
+      "words_b": 555,
+      "wikilinks_a": 6,
+      "wikilinks_b": 4,
+      "wikilink_jaccard": 0.1111111111111111,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.0034626038781163434,
+      "non_ascii_b": 0.0025621316935690495
+    },
+    {
+      "source": "2024-06-06-june-2024-e1e5db.md",
+      "english_only": true,
+      "words_a": 357,
+      "words_b": 339,
+      "wikilinks_a": 11,
+      "wikilinks_b": 8,
+      "wikilink_jaccard": 0.05555555555555555,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.0034588777863182167,
+      "non_ascii_b": 0.0019646365422396855
+    },
+    {
+      "source": "2024-06-18-june-2024-e1e5db.md",
+      "english_only": true,
+      "words_a": 570,
+      "words_b": 501,
+      "wikilinks_a": 9,
+      "wikilinks_b": 6,
+      "wikilink_jaccard": 0.15384615384615385,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.003570517725070135,
+      "non_ascii_b": 0.004470155140678412
+    },
+    {
+      "source": "2024-07-08-july-2024-1b5fde.md",
+      "english_only": true,
+      "words_a": 220,
+      "words_b": 233,
+      "wikilinks_a": 6,
+      "wikilinks_b": 3,
+      "wikilink_jaccard": 0.125,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.00424757281553398,
+      "non_ascii_b": 0.0024227740763173833
+    },
+    {
+      "source": "2024-07-10-july-2024-1b5fde.md",
+      "english_only": true,
+      "words_a": 222,
+      "words_b": 267,
+      "wikilinks_a": 9,
+      "wikilinks_b": 9,
+      "wikilink_jaccard": 0.38461538461538464,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.0011862396204033216,
+      "non_ascii_b": 0.00303951367781155
+    },
+    {
+      "source": "2024-07-26-july-2024-1b5fde.md",
+      "english_only": true,
+      "words_a": 453,
+      "words_b": 518,
+      "wikilinks_a": 8,
+      "wikilinks_b": 7,
+      "wikilink_jaccard": 0.0,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.002162496138399753,
+      "non_ascii_b": 0.0018602179112410311
+    },
+    {
+      "source": "2025-03-02-march-2025-35500f.md",
+      "english_only": true,
+      "words_a": 519,
+      "words_b": 354,
+      "wikilinks_a": 8,
+      "wikilinks_b": 9,
+      "wikilink_jaccard": 0.13333333333333333,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.0041876046901172526,
+      "non_ascii_b": 0.004338394793926247
+    },
+    {
+      "source": "2025-04-15-apr-2025-ff80a4.md",
+      "english_only": true,
+      "words_a": 170,
+      "words_b": 201,
+      "wikilinks_a": 3,
+      "wikilinks_b": 4,
+      "wikilink_jaccard": 0.0,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.0016116035455278,
+      "non_ascii_b": 0.0014005602240896359
+    },
+    {
+      "source": "2025-05-13-may-2025-39cfa4.md",
+      "english_only": true,
+      "words_a": 630,
+      "words_b": 454,
+      "wikilinks_a": 8,
+      "wikilinks_b": 9,
+      "wikilink_jaccard": 0.13333333333333333,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.004559963520291838,
+      "non_ascii_b": 0.0029079159935379646
+    },
+    {
+      "source": "2025-06-14-june-2025-c24248.md",
+      "english_only": true,
+      "words_a": 460,
+      "words_b": 561,
+      "wikilinks_a": 9,
+      "wikilinks_b": 6,
+      "wikilink_jaccard": 0.25,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.002601156069364162,
+      "non_ascii_b": 0.001488833746898263
+    },
+    {
+      "source": "2025-07-03-july-2025-893bce.md",
+      "english_only": true,
+      "words_a": 482,
+      "words_b": 452,
+      "wikilinks_a": 7,
+      "wikilinks_b": 6,
+      "wikilink_jaccard": 0.0,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.0028506271379703536,
+      "non_ascii_b": 0.001504664459825459
+    },
+    {
+      "source": "2025-08-04-august-2025-fd3b01.md",
+      "english_only": true,
+      "words_a": 378,
+      "words_b": 485,
+      "wikilinks_a": 7,
+      "wikilinks_b": 4,
+      "wikilink_jaccard": 0.0,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.0039826212889210715,
+      "non_ascii_b": 0.004087591240875913
+    },
+    {
+      "source": "2025-08-31-sept-2025-d0bac0.md",
+      "english_only": true,
+      "words_a": 655,
+      "words_b": 640,
+      "wikilinks_a": 16,
+      "wikilinks_b": 15,
+      "wikilink_jaccard": 0.03333333333333333,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.00629458665547629,
+      "non_ascii_b": 0.005595007531740908
+    },
+    {
+      "source": "2025-10-04-oct-2025-5a72e0.md",
+      "english_only": true,
+      "words_a": 647,
+      "words_b": 516,
+      "wikilinks_a": 15,
+      "wikilinks_b": 10,
+      "wikilink_jaccard": 0.08695652173913043,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.009041591320072333,
+      "non_ascii_b": 0.007619047619047619
+    },
+    {
+      "source": "2025-11-03-nov-2025-aed4ff.md",
+      "english_only": true,
+      "words_a": 396,
+      "words_b": 590,
+      "wikilinks_a": 10,
+      "wikilinks_b": 9,
+      "wikilink_jaccard": 0.11764705882352941,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.0003332222592469177,
+      "non_ascii_b": 0.0017901096442157081
+    },
+    {
+      "source": "2025-11-03-oct-2025-review-2ed441.md",
+      "english_only": true,
+      "words_a": 138,
+      "words_b": 104,
+      "wikilinks_a": 3,
+      "wikilinks_b": 1,
+      "wikilink_jaccard": 0.0,
+      "same_title": true,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.0009737098344693282,
+      "non_ascii_b": 0.0013440860215053765
+    },
+    {
+      "source": "2025-12-08-dec-2025-acbf96.md",
+      "english_only": true,
+      "words_a": 381,
+      "words_b": 327,
+      "wikilinks_a": 10,
+      "wikilinks_b": 8,
+      "wikilink_jaccard": 0.2,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.0032269630692004303,
+      "non_ascii_b": 0.001165954139137194
+    },
+    {
+      "source": "2026-01-08-jan-2026-5604c3.md",
+      "english_only": true,
+      "words_a": 2145,
+      "words_b": 694,
+      "wikilinks_a": 20,
+      "wikilinks_b": 10,
+      "wikilink_jaccard": 0.07142857142857142,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.0029058749210360076,
+      "non_ascii_b": 0.0028659160696008186
+    },
+    {
+      "source": "2026-02-17-feb-2026-f0ac37.md",
+      "english_only": true,
+      "words_a": 431,
+      "words_b": 652,
+      "wikilinks_a": 11,
+      "wikilinks_b": 14,
+      "wikilink_jaccard": 0.08695652173913043,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.0029354207436399216,
+      "non_ascii_b": 0.0016913319238900633
+    },
+    {
+      "source": "2026-03-06-march-2026-9140a8.md",
+      "english_only": true,
+      "words_a": 556,
+      "words_b": 641,
+      "wikilinks_a": 11,
+      "wikilinks_b": 11,
+      "wikilink_jaccard": 0.2222222222222222,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.004577706569008927,
+      "non_ascii_b": 0.0017010418881564958
+    },
+    {
+      "source": "2026-03-20-llm-best-use-case-competitive-positioning-0419ac.md",
+      "english_only": true,
+      "words_a": 1001,
+      "words_b": 1270,
+      "wikilinks_a": 21,
+      "wikilinks_b": 25,
+      "wikilink_jaccard": 0.24324324324324326,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.0035889937524923566,
+      "non_ascii_b": 0.00436241610738255
+    },
+    {
+      "source": "2026-04-02-agent-memory-640e67.md",
+      "english_only": true,
+      "words_a": 1328,
+      "words_b": 1494,
+      "wikilinks_a": 14,
+      "wikilinks_b": 0,
+      "wikilink_jaccard": 0.0,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.004093373160747871,
+      "non_ascii_b": 0.004892909896602658
+    },
+    {
+      "source": "2026-04-02-apr-2026-daee5e.md",
+      "english_only": true,
+      "words_a": 292,
+      "words_b": 358,
+      "wikilinks_a": 4,
+      "wikilinks_b": 5,
+      "wikilink_jaccard": 0.125,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.003745318352059925,
+      "non_ascii_b": 0.004098360655737705
+    },
+    {
+      "source": "2026-05-13-task-state-awareness-375542.md",
+      "english_only": true,
+      "words_a": 1159,
+      "words_b": 1416,
+      "wikilinks_a": 2,
+      "wikilinks_b": 10,
+      "wikilink_jaccard": 0.0,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.006247703050349137,
+      "non_ascii_b": 0.008018775669861138
+    },
+    {
+      "source": "2026-06-17-understanding-harnesses-vs-prompts-655ec2.md",
+      "english_only": true,
+      "words_a": 611,
+      "words_b": 1023,
+      "wikilinks_a": 9,
+      "wikilinks_b": 13,
+      "wikilink_jaccard": 0.0,
+      "same_title": true,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.00233446519524618,
+      "non_ascii_b": 0.002462734931950745
+    },
+    {
+      "source": "2026-06-18-task-state-awareness-2-0-b2f08c.md",
+      "english_only": true,
+      "words_a": 836,
+      "words_b": 701,
+      "wikilinks_a": 13,
+      "wikilinks_b": 12,
+      "wikilink_jaccard": 0.08695652173913043,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.0026974374344372848,
+      "non_ascii_b": 0.002000727537286286
+    },
+    {
+      "source": "2026-07-03-personal-operating-system-for-life-34666b.md",
+      "english_only": true,
+      "words_a": 973,
+      "words_b": 760,
+      "wikilinks_a": 26,
+      "wikilinks_b": 9,
+      "wikilink_jaccard": 0.12903225806451613,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.002644453259288642,
+      "non_ascii_b": 0.003237900477164281
+    },
+    {
+      "source": "2026-07-04-consolidating-multiple-discussion-threads-c6ea03.md",
+      "english_only": true,
+      "words_a": 806,
+      "words_b": 924,
+      "wikilinks_a": 7,
+      "wikilinks_b": 6,
+      "wikilink_jaccard": 0.4444444444444444,
+      "same_title": false,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.0039656311962987445,
+      "non_ascii_b": 0.003240058910162003
+    },
+    {
+      "source": "2026-07-15-claude-as-an-executive-assistant-platform-45e405.md",
+      "english_only": true,
+      "words_a": 1034,
+      "words_b": 701,
+      "wikilinks_a": 13,
+      "wikilinks_b": 12,
+      "wikilink_jaccard": 0.0,
+      "same_title": true,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.0022084195997239477,
+      "non_ascii_b": 0.0014172909495849362
+    },
+    {
+      "source": "2026-08-05-daily-reminder-system-for-overcoming-action-friction-9fee59.md",
+      "english_only": true,
+      "words_a": 1420,
+      "words_b": 1192,
+      "wikilinks_a": 9,
+      "wikilinks_b": 2,
+      "wikilink_jaccard": 0.1,
+      "same_title": true,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.003781909864481563,
+      "non_ascii_b": 0.002777777777777778
+    },
+    {
+      "source": "2026-08-09-memory-management-systems-for-claude-a28e30.md",
+      "english_only": true,
+      "words_a": 589,
+      "words_b": 2209,
+      "wikilinks_a": 13,
+      "wikilinks_b": 10,
+      "wikilink_jaccard": 0.045454545454545456,
+      "same_title": true,
+      "same_tags_set": false,
+      "same_related_set": false,
+      "non_ascii_a": 0.0031204493447056377,
+      "non_ascii_b": 0.002796107817917459
+    }
+  ]
+}

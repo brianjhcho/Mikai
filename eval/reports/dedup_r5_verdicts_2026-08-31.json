@@ -1,0 +1,315 @@
+{
+  "source": "eval/reports/dedup_r5_embed_2026-08-31.json",
+  "total": 33,
+  "counts": {
+    "KEEP": 24,
+    "MERGE": 7,
+    "HUB": 2
+  },
+  "pairs": [
+    {
+      "retire": "ni-fe-infj-childhood",
+      "retire_to": "fe-ni-enfj-childhood",
+      "cosine": 0.9489,
+      "body_a": 3655,
+      "body_b": 3488,
+      "verdict": "KEEP",
+      "reason": "These are mirror-image sibling types \u2014 same two functions in opposite dominant/auxiliary order (Ni-dom/Fe-aux vs. Fe-dom/Ni-aux), yielding genuinely different childhood presentations and developmental arcs, and each page already cross-links the other as its explicit contrast case while both point to the existing parent `[[concepts/cognitive-function-development-arc]]`, so no new hub is needed."
+    },
+    {
+      "retire": "information-asymmetry",
+      "retire_to": "asymmetric-information",
+      "cosine": 0.9456,
+      "body_a": 3586,
+      "body_b": 3009,
+      "verdict": "MERGE",
+      "reason": "Both pages define the identical concept (information asymmetry as the condition undermining welfare-theorem efficiency), cite the same Stiglitz/Akerlof/Spence lineage, and enumerate the same mechanisms (adverse selection, moral hazard) \u2014 the titles are synonyms, and Page B is simply the more developed version into which Page A's inequality and Hayekian-limitation sections should be folded.",
+      "merged_page_path": "eval/reports/dedup_r5_merged_pages/asymmetric-information.md"
+    },
+    {
+      "retire": "extended-mind",
+      "retire_to": "extended-mind-thesis",
+      "cosine": 0.9366,
+      "body_a": 2682,
+      "body_b": 2562,
+      "verdict": "MERGE",
+      "reason": "Both pages define the same Clark\u2013Chalmers thesis as their subject and differ only in which downstream applications they elaborate (design criteria + PIM/transactive memory vs. DSRP + cognitive load), so one should retire into the other with the distinct sections folded in as subsections.",
+      "merged_page_path": "eval/reports/dedup_r5_merged_pages/extended-mind-thesis.md"
+    },
+    {
+      "retire": "value-bridging",
+      "retire_to": "value-contrast-dark-anchor",
+      "cosine": 0.9254,
+      "body_a": 1791,
+      "body_b": 2295,
+      "verdict": "MERGE",
+      "reason": "Page A's entire thesis \u2014 the three-step light/mid/dark gradient, the chair-must-bridge rule, the same Van Duysen attribution, and the same light-oak-on-oak-floor failure case \u2014 is already stated in Page B's \"Value Bridging (Chairs)\" section, so A is a duplicate elaboration rather than a distinct concept; retire A into B (relocating the Wegner chair-back-visibility material to a chair-selection page or a subsection of B).",
+      "merged_page_path": "eval/reports/dedup_r5_merged_pages/value-contrast-dark-anchor.md"
+    },
+    {
+      "retire": "too-many-platforms-problem",
+      "retire_to": "platform-fragmentation",
+      "cosine": 0.9237,
+      "body_a": 2581,
+      "body_b": 2229,
+      "verdict": "MERGE",
+      "reason": "Page B explicitly names \"too-many-platforms problem\" as its own alias, and both pages share the same definition (competing platforms \u2192 overlapping mental topography), the same cause (VC-driven ecosystem lock-in), and the same MIKAI response (orchestration substrate + noonchi/sumimasen) \u2014 Page B is simply the fuller treatment, so Page A should retire into it.",
+      "merged_page_path": "eval/reports/dedup_r5_merged_pages/platform-fragmentation.md"
+    },
+    {
+      "retire": "sharpe-ratio",
+      "retire_to": "sortino-ratio",
+      "cosine": 0.9194,
+      "body_a": 694,
+      "body_b": 1095,
+      "verdict": "KEEP",
+      "reason": "They are distinct, well-defined metrics with different denominators (total standard deviation vs. downside deviation) \u2014 the Sharpe page serves as the baseline definition and the Sortino page as the author's preferred variant, so merging would collapse a meaningful derivation relationship, and both already live naturally under the existing risk-adjusted-return linkage without needing a new parent."
+    },
+    {
+      "retire": "capital-velocity",
+      "retire_to": "chained-velocity-of-capital",
+      "cosine": 0.9191,
+      "body_a": 2744,
+      "body_b": 3141,
+      "verdict": "KEEP",
+      "reason": "Page A defines the single-cycle mechanism (one investor\u2192company\u2192return loop) while Page B defines a distinct multi-layer network phenomenon built on top of it, and each page already cross-references the other in a coherent parent/child relationship with no redundant overlap beyond the shared 4\u20135 year GPU/exit facts."
+    },
+    {
+      "retire": "residual-income-affordability",
+      "retire_to": "stir-30-percent-rule",
+      "cosine": 0.9047,
+      "body_a": 1577,
+      "body_b": 1989,
+      "verdict": "KEEP",
+      "reason": "These are two competing, mutually-contrasting affordability metrics \u2014 a ratio-based benchmark and a residual-based one \u2014 and each page's substance is largely its critique of the other, so merging would collapse a genuine conceptual opposition that the cross-links already express correctly."
+    },
+    {
+      "retire": "surplus-allocation",
+      "retire_to": "financialisation-of-surplus",
+      "cosine": 0.9046,
+      "body_a": 2374,
+      "body_b": 2126,
+      "verdict": "HUB",
+      "reason": "Page A is the general analytical frame (surplus allocation as a variable, spanning all historical phases and both productive and extractive routings) while Page B is one specific value of that variable (the Phase-3 financialised routing, with its own causal mechanisms, diagnostics, and policy levers) \u2014 B is properly a child of A rather than a duplicate, so A should be promoted to the parent hub with B (and a productive-reinvestment sibling) beneath it."
+    },
+    {
+      "retire": "personal-intent-graph",
+      "retire_to": "intent-graph",
+      "cosine": 0.9027,
+      "body_a": 5709,
+      "body_b": 4664,
+      "verdict": "MERGE",
+      "reason": "Both pages describe the identical artifact \u2014 MIKAI's typed, user-owned graph of goals/cognitive state populated by passive behavioral signal and claimed as the data moat \u2014 differing only in vocabulary and which source they were synthesized from, so `intent-graph` should retire into the more specific `personal-intent-graph` (keeping B's RAG distinction, compounding properties, and travels-across-surfaces material).",
+      "merged_page_path": "eval/reports/dedup_r5_merged_pages/intent-graph.md"
+    },
+    {
+      "retire": "high-voltage-contracting",
+      "retire_to": "low-voltage-contracting",
+      "cosine": 0.9,
+      "body_a": 1722,
+      "body_b": 1775,
+      "verdict": "KEEP",
+      "reason": "These are complementary sibling specializations distinguished by a real technical and regulatory boundary (the ~1000V licensing threshold), each with its own market structure, project types, and strategic logic \u2014 they already cross-reference each other as contrasting paths rather than restating one concept, and no parent page is needed since \"electrical contracting\" would add a layer without adding content."
+    },
+    {
+      "retire": "recall-vs-graph-inference",
+      "retire_to": "memory-consolidation-architecture",
+      "cosine": 0.8993,
+      "body_a": 1727,
+      "body_b": 1586,
+      "verdict": "KEEP",
+      "reason": "Page A is a MIKAI-specific architectural decision (two layers with different latency/quality targets and its design consequences), while Page B is the general neuroscientific model that grounds and justifies it \u2014 a rationale that stands on its own and applies beyond this one decision, so the right relation is the existing cross-link, not a merge."
+    },
+    {
+      "retire": "belgian-minimalism-path",
+      "retire_to": "italian-revival-palette",
+      "cosine": 0.897,
+      "body_a": 2442,
+      "body_b": 2888,
+      "verdict": "KEEP",
+      "reason": "These are explicitly contrasting sibling design paths \u2014 opposing wood temperatures and harmony logics (chromatic vs. temperature matching) \u2014 held as a live either/or decision in the loft project, so merging them would destroy the distinction the pages exist to hold."
+    },
+    {
+      "retire": "entj-social-paradox",
+      "retire_to": "intj-social-illegibility",
+      "cosine": 0.8959,
+      "body_a": 3610,
+      "body_b": 4120,
+      "verdict": "HUB",
+      "reason": "Each page describes a type-specific variant of the same underlying structure \u2014 an NT social wound framed identically (mental model, classroom/party/club settings, SP-type dynamics, inferior-function layer) and defined by explicit contrast with the other \u2014 so they are non-overlapping siblings that belong under a shared parent like \"NT social alienation\" rather than merging or standing alone."
+    },
+    {
+      "retire": "beautiful-deleveraging",
+      "retire_to": "long-term-debt-cycle",
+      "cosine": 0.8928,
+      "body_a": 2170,
+      "body_b": 2298,
+      "verdict": "KEEP",
+      "reason": "Beautiful deleveraging is one possible outcome at the terminal phase of the long-term debt cycle \u2014 a parent/child relation with genuinely different scope (a 50\u201375 year accumulation arc vs. a prescriptive policy mix at its peak), and the shared four-lever section is overlapping mechanism, not a shared identity."
+    },
+    {
+      "retire": "structural-vs-semantic-embeddings",
+      "retire_to": "self-supervised-graph-representation-learning",
+      "cosine": 0.8924,
+      "body_a": 2981,
+      "body_b": 2948,
+      "verdict": "KEEP",
+      "reason": "Page A is a conceptual contrast between two representation types (including the semantic side, which B doesn't cover), while Page B is the method family that produces only the structural half \u2014 they overlap on shared MIKAI motivation (the `boost` constant) but neither subsumes the other, and they already cross-link correctly as related-but-distinct."
+    },
+    {
+      "retire": "rent-seeking",
+      "retire_to": "economic-rents",
+      "cosine": 0.8906,
+      "body_a": 3403,
+      "body_b": 1640,
+      "verdict": "KEEP",
+      "reason": "Page B explicitly frames the two as parent/child \u2014 economic rents is the broad microeconomic category of above-competitive income, while rent-seeking is one specific political/institutional mechanism that generates it \u2014 so they are distinct pages in a hierarchy rather than duplicates, and the parent already exists (B), which rules out HUB."
+    },
+    {
+      "retire": "five-marble-pairing-strategies",
+      "retire_to": "verde-marble-pairings",
+      "cosine": 0.8905,
+      "body_a": 3970,
+      "body_b": 4815,
+      "verdict": "KEEP",
+      "reason": "Page A is a general taxonomy of material-pairing strategies (the framework, applicable to any marble), while Page B is a historical catalog of specific verde combinations that instantiates that framework \u2014 a parent/child relationship with genuinely different content axes (strategy types vs. period-by-period evidence), so the duplicated designer-translation table should be pruned from B rather than the pages collapsed."
+    },
+    {
+      "retire": "coffee-information-asymmetry",
+      "retire_to": "roaster-feedback-loop-gap",
+      "cosine": 0.89,
+      "body_a": 2238,
+      "body_b": 2842,
+      "verdict": "KEEP",
+      "reason": "Page A is the broad multi-actor asymmetry condition (of which the buyer-only cupping gap is its own instance), while Page B is one specific downstream sub-gap nested inside it \u2014 a parent/child relationship where B's roaster-outcome mechanism, tech layer, and platform thesis would be lost or would swamp A if merged."
+    },
+    {
+      "retire": "comparative-advantage",
+      "retire_to": "dynamic-comparative-advantage",
+      "cosine": 0.8898,
+      "body_a": 2335,
+      "body_b": 2641,
+      "verdict": "KEEP",
+      "reason": "They are a thesis/antithesis pair \u2014 static Ricardian endowment-given advantage versus deliberately constructed advantage \u2014 and each page's substance (mechanisms, case studies, critiques) is defined by contrast with the other, so merging would collapse a distinction both pages exist to draw."
+    },
+    {
+      "retire": "marble-needs-warm-soft-and-textural",
+      "retire_to": "five-marble-pairing-strategies",
+      "cosine": 0.8898,
+      "body_a": 3970,
+      "body_b": 1974,
+      "verdict": "KEEP",
+      "reason": "Page B is a taxonomy of five pairing strategies while Page A is a single cross-cutting constraint that those strategies are evaluated against \u2014 the principle is referenced by, not equivalent to, the taxonomy, so they stand as parent/child rather than duplicates."
+    },
+    {
+      "retire": "reserve-currency-cycle",
+      "retire_to": "long-term-debt-cycle",
+      "cosine": 0.8886,
+      "body_a": 2298,
+      "body_b": 2103,
+      "verdict": "KEEP",
+      "reason": "Both pages explicitly describe a nesting relationship in which the long-term debt cycle (a 50\u201375 year domestic debt-accumulation arc) sits inside the reserve currency cycle (a multi-century arc of currency dominance and power transition), making them parent/child layers of Dalio's framework rather than one concept described twice."
+    },
+    {
+      "retire": "ni-fe-infj-childhood",
+      "retire_to": "cognitive-function-development-arc",
+      "cosine": 0.8848,
+      "body_a": 3895,
+      "body_b": 3488,
+      "verdict": "KEEP",
+      "reason": "Page B is the general parent framework (dominant-then-auxiliary arc across many types, with Ni-first as one of several sections), while Page A is a specific instance of it (INFJ Ni\u2013Fe in depth), and Page A already links to B as its broader framework \u2014 a parent/child relationship, not duplication."
+    },
+    {
+      "retire": "labor-share-of-income",
+      "retire_to": "productivity-wage-decoupling",
+      "cosine": 0.8844,
+      "body_a": 1693,
+      "body_b": 2152,
+      "verdict": "KEEP",
+      "reason": "Labor share of income is a measurable distributional statistic that serves as one mechanism and evidence stream for productivity-wage decoupling, which is a broader phenomenon about median wage stagnation (also driven by within-labor inequality and cost-of-living effects) \u2014 a parent/child relationship, not identity."
+    },
+    {
+      "retire": "surplus-allocation",
+      "retire_to": "phase-2-phase-3-capitalism",
+      "cosine": 0.8836,
+      "body_a": 3078,
+      "body_b": 2126,
+      "verdict": "KEEP",
+      "reason": "Page A defines an analytical variable (where surplus flows, plus its hydraulic model and measurement method) while Page B is a historical periodization that *uses* that variable as one of its diagnostic axes \u2014 a parent-concept/applied-framework pair with substantially non-overlapping content (Phase 2/3 market structure, transition signals, four future paths), so merging would bury the general category inside a specific periodization."
+    },
+    {
+      "retire": "debt-deflationary-cycle",
+      "retire_to": "long-term-debt-cycle",
+      "cosine": 0.8831,
+      "body_a": 1081,
+      "body_b": 2298,
+      "verdict": "MERGE",
+      "reason": "Page A contains no mechanism that Page B lacks \u2014 it restates the same Dalio long-term debt cycle arc in thinner form (and even defers to it in its own opening line), so it should retire into `long-term-debt-cycle`, carrying over the June 2023 CPI-mapping context and the unresolved \"check the timeline\" thread.",
+      "merged_page_path": "eval/reports/dedup_r5_merged_pages/long-term-debt-cycle.md"
+    },
+    {
+      "retire": "consolidation-as-displacement",
+      "retire_to": "ni-te-overload-loop",
+      "cosine": 0.8819,
+      "body_a": 2291,
+      "body_b": 2576,
+      "verdict": "KEEP",
+      "reason": "The overload loop is the broader cognitive pattern (Ni outpacing Te selection, ending in scope explosion and freeze), while consolidation-as-displacement is one specific mechanism *within* it \u2014 a parent/child relationship the pages already encode via explicit cross-links, not two names for one thing."
+    },
+    {
+      "retire": "polycentric-governance",
+      "retire_to": "constitutional-polycentrism",
+      "cosine": 0.8818,
+      "body_a": 1916,
+      "body_b": 1406,
+      "verdict": "KEEP",
+      "reason": "Page A is Ostrom's general institutional-design pattern, while Page B is the user's broader synthesis that incorporates polycentricity as only one of three pillars (alongside constitutional invariants and rule-shaped markets) \u2014 a parent/child relationship, not the same concept."
+    },
+    {
+      "retire": "cloud-capital",
+      "retire_to": "technofeudalism",
+      "cosine": 0.8817,
+      "body_a": 1553,
+      "body_b": 3180,
+      "verdict": "KEEP",
+      "reason": "Cloud capital is the asset/mechanism component *within* technofeudalism \u2014 a parent/child relationship where Page B already links to Page A as one of its structural features, and each carries distinct content (A: properties of the asset and its rent-diagnostic test; B: the regime-shift thesis, its evidence, and its critics)."
+    },
+    {
+      "retire": "debt-deflationary-cycle",
+      "retire_to": "beautiful-deleveraging",
+      "cosine": 0.8811,
+      "body_a": 2170,
+      "body_b": 1081,
+      "verdict": "KEEP",
+      "reason": "Page A describes the descriptive cycle mechanics (how debt-driven expansion turns into deflationary contraction), while Page B describes a prescriptive policy outcome at one specific point in that cycle \u2014 the deleveraging phase \u2014 making them parent-stage/child-remedy rather than the same concept, and B's Hayekian objection and ugly-deleveraging contrasts have no counterpart in A."
+    },
+    {
+      "retire": "hardware-abstraction-layer",
+      "retire_to": "cuda-ecosystem",
+      "cosine": 0.8811,
+      "body_a": 2472,
+      "body_b": 2168,
+      "verdict": "KEEP",
+      "reason": "They are opposing forces in the same argument \u2014 CUDA Ecosystem is the incumbent lock-in mechanism while Hardware Abstraction Layer is the class of technology that could erode it, and each page already cites the other as a distinct counterparty rather than restating it."
+    },
+    {
+      "retire": "ni-te-overload-loop",
+      "retire_to": "ni-te-synchronization",
+      "cosine": 0.8809,
+      "body_a": 2576,
+      "body_b": 4533,
+      "verdict": "MERGE",
+      "reason": "Both pages describe the identical core mechanism \u2014 Ni generating faster than Te can select/execute against, with Te losing a committed external target \u2014 and differ only in which downstream discharge they emphasize (over-structuring/freeze in A vs. Se escape in B) and in intervention granularity; their prescriptions are near-identical (pre-commit one concrete external action, reduce rather than add structure), so A should retire into B as a \"scope explosion / freeze\" branch alongside B's existing Te-Se and Ni-Fi branches.",
+      "merged_page_path": "eval/reports/dedup_r5_merged_pages/ni-te-synchronization.md"
+    },
+    {
+      "retire": "tertiary-fi-flood",
+      "retire_to": "total-stress-collapse-sequence",
+      "cosine": 0.8803,
+      "body_a": 2711,
+      "body_b": 3345,
+      "verdict": "KEEP",
+      "reason": "Page B is the six-stage parent sequence and Page A is one of its stages (Stage 4) elaborated with its own phenomenology, ENTJ contrast, and eruption mechanics \u2014 a parent/child pair, not two names for one concept."
+    }
+  ]
+}

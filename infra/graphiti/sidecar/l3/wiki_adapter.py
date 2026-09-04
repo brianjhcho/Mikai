@@ -72,6 +72,13 @@ logger = logging.getLogger("mikai-graphiti.wiki-adapter")
 WIKI_ROOT = Path(
     os.environ.get("MIKAI_WIKI_ROOT", str(Path.home() / ".mikai" / "wiki"))
 )
+# Raw append-only capture (wiki.md + wiki.index + wiki.fts.db) lives
+# OUTSIDE the vault so Obsidian's indexer doesn't stat/scan the 57MB
+# markdown file on every open. Vault-side stays at WIKI_ROOT for
+# concepts/, sources/, ontology, etc. Overridable via env for tests.
+WIKI_RAW = Path(
+    os.environ.get("MIKAI_WIKI_RAW", str(Path.home() / ".mikai" / "wiki-raw"))
+)
 
 # Legacy cap for the whole-bundle fallback path only (wikis with no
 # dated sections). Selective reads are governed by MAX_RETURN_BYTES.
@@ -95,11 +102,11 @@ ONTOLOGY_FILE = "wiki-ontology-v1.md"
 
 
 def _wiki_md() -> Path:
-    return WIKI_ROOT / "wiki.md"
+    return WIKI_RAW / "wiki.md"
 
 
 def _index_path() -> Path:
-    return WIKI_ROOT / "wiki.index"
+    return WIKI_RAW / "wiki.index"
 
 
 def _episode_log() -> Path:
@@ -110,7 +117,7 @@ def _fts_db() -> Path:
     env = os.environ.get("MIKAI_WIKI_FTS_DB")
     if env:
         return Path(env)
-    return WIKI_ROOT / "wiki.fts.db"
+    return WIKI_RAW / "wiki.fts.db"
 
 
 def _fts_disabled() -> bool:
