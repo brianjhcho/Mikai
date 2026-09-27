@@ -64,7 +64,13 @@ private/
 
 # OMC internal state
 .omc/
-.claude/
+
+# Claude Code project config — commit repo-shared config (settings, hooks) but
+# ignore personal-local files (settings.local.json, session state, logs).
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
+!.claude/hooks/**
 
 # Superset / project session tool state
 .superset/
