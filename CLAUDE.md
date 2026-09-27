@@ -18,10 +18,11 @@ The wiki files ARE the substrate now. Product code should read `~/.mikai/wiki/co
 
 ## Where to look for what — docs router
 
-Always start with `docs/STATUS.md` for the volatile "what's actually on main right now" view. CLAUDE.md itself is the constitution — stable principles, not state.
+Always start with `docs/STATUS.md` for the volatile "what's actually on main right now" view. CLAUDE.md itself is the constitution — stable principles, not state. **Also start with the branch context section below** — if you're on a non-main branch, the branch manifest names the constitution to consult BEFORE architectural decisions.
 
 | Working on... | Read first |
 |---|---|
+| **Product goal / three-test filter for architectural decisions** | **`docs/VISION.md` §0** |
 | Current state of main / what's live | `docs/STATUS.md` |
 | Product vision / noonchi / positioning / moat | `docs/VISION.md` |
 | Scope boundaries vs Hermes / OpenClaw / adjacent tools · consumer-product bet | `docs/COMPARISON.md` |
@@ -29,9 +30,35 @@ Always start with `docs/STATUS.md` for the volatile "what's actually on main rig
 | L3 port/adapter design | `docs/ARCHITECTURE.md`, `docs/DECISIONS.md` → ARCH-024, ARCH-025 |
 | Ingestion (filesystem, MCP client, drop folder) | `docs/ARCHITECTURE.md`, `docs/DECISIONS.md` → ARCH-023 |
 | L4 design / edge vocabulary / epistemic schema / segmentation | `docs/FOUNDATIONS.md` |
+| **Consolidation architecture (canonicalization, salience, Path 2)** | **`docs/CONSOLIDATION_ARCHITECTURE.md`** |
+| Dream pass design (Louvain + LLM adjudication) | `docs/DREAM_PASS.md`, `docs/DREAM_BOOTSTRAP.md` |
+| MIKAI dream vs Anthropic / GraphRAG / MemGPT | `docs/DREAM_RESEARCH_COMPARISON.md` |
+| Semantic matching — proven vs experimental methods | `docs/SEMANTIC_MATCHING_AUDIT.md`, `docs/SEMANTIC_CLUSTERING_GAP.md` |
+| Ingestion pipeline diagnostic (Fable P1-P5 frame) | `docs/INGESTION_PIPELINE_ANALYSIS_2026-08-14.md` |
+| Entity model (file-first entities, kebab-case, singular) | `docs/ENTITY_MODEL.md` |
+| Epistemic schema (edge vocabulary, source-of-truth) | `docs/EPISTEMIC_DESIGN.md` |
+| Memory architecture (7-day capture buffer → consolidation) | `docs/MEMORY_ARCHITECTURE.md` |
+| Harness architecture (subagent orchestration, loops, .omc) | `docs/HARNESS_ARCHITECTURE.md` |
+| Named-concepts registry / glossary lookup | `docs/GLOSSARY.md` |
+| Cockpit design / L4 surfacing UX | `docs/COCKPIT_*.md`, `docs/CONCEPT_NAVIGATION_DEFERRED.md` |
 | Open questions / structural gaps / unresolved | `docs/OPEN.md` |
 | Architecture decisions (append-only) | `docs/DECISIONS.md` |
+| Vault index (which vaults exist, which is production, which is test) | `docs/VAULT_INDEX.md` |
 | Raw research / archived drafts (Graphiti review, cleanup inventory, L4 papers, memory thesis) | `docs/research/` |
+
+## Branch context
+
+Every session, run `git branch --show-current` early. If it's a non-main branch listed below, **read the branch manifest before making architectural decisions on that branch**. The manifest names the branch's constitution, current phase, and do-not list scoped to that branch.
+
+| Branch | Manifest | Constitution |
+|---|---|---|
+| `main` | (no manifest; use `docs/STATUS.md`) | `docs/VISION.md` §0 + `docs/ARCHITECTURE.md` |
+| `feat/pure-file-brain` | `docs/branches/feat-pure-file-brain.md` | `docs/CONSOLIDATION_ARCHITECTURE.md` §5a/§5b |
+| `feat/ingestion-mcp-client` | (TBD — add when active) | `docs/ARCHITECTURE.md` + ARCH-023 |
+| `feat/phase-b-local-expand` | (TBD — add when active) | `docs/ARCHITECTURE.md` + ARCH-023 |
+| `feat/l4-testing` | (TBD — add when active) | `docs/FOUNDATIONS.md` + D-041 |
+
+**Rule:** if a branch has a manifest, that manifest's do-not list overrides / supplements CLAUDE.md's global do-not list for work on that branch. Branch manifests are additive constraints, not replacements.
 
 ## Architectural direction
 
@@ -70,6 +97,8 @@ Provide two explanations:
 - Leak adapter-specific types into port signatures. If a method can't be described without saying "Graphiti," "Neo4j," or "SQLite," it belongs in an adapter, not in the port.
 - Pull from `legacy/sqlite-local` or `legacy/supabase` into main as source material. They are archival references. `LocalAdapter` is a fresh build informed by (not copied from) `legacy/sqlite-local`.
 - Describe MIKAI as "local-first" as if it's the only mode. It's one of two first-class modes, selected by `L3_BACKEND`.
+- Spawn subagents for architectural work without propagating the branch manifest. Every fresh subagent starts with generic priors — it doesn't inherit CLAUDE.md, MEMORY.md, or the branch manifest. **When the task is constitution-sensitive** (canonicalization, dream pass, ingest pipeline, L3/L4 architecture): either use `subagent_type: "fork"` (inherits full context) OR paste the relevant lines from the current branch manifest at `docs/branches/<branch>.md` into the subagent's prompt. Skipping this is where "dedup-lens" and similar priors leak in.
+- Add a new `docs/*.md` file without updating CLAUDE.md's `## Where to look for what` router table AND (if the doc changes architecture on a branch) the branch manifest at `docs/branches/<branch>.md`. **Every new ADR entry (ARCH-* / D-*) must include two checkboxes**: `router updated ☐` and `branch manifest updated ☐`. Discoverability decays silently when this isn't enforced — the SessionStart hook now surfaces unrouted docs at every session, but the fix must happen at ADR-write time.
 
 ## Settled decisions
 
