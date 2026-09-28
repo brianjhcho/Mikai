@@ -2,7 +2,12 @@
 
 > **What this file is:** The volatile state-of-the-world doc. It describes what is actually live on `main` right now — not the long-term vision (`CLAUDE.md`), not the architectural decisions (`docs/DECISIONS.md`), not the intellectual foundations (`docs/EPISTEMIC_*.md`). Update this file as main changes. If it contradicts CLAUDE.md, update CLAUDE.md only if the change is a principle, not a state.
 
-**Last meaningful update:** 2026-08-14 (Option A flat `sources/` — bucket subdirs deleted; 8-worker parallel two-step ingest verified safe via controlled A/B test [serial vs parallel on same 50 sources, 8.04× speedup, no structural races, semantic drift = LLM temperature not parallelism]; chained backfill of 800 pre-v2 sources + fresh 200 batches running as of writing. Raw corpus recount: 19,054 sections in `wiki-raw/wiki.md`, not 9,691 as prior claim — remaining backlog is ~2× larger than previously reported. New ADRs: ARCH-030, D-060.)
+> **⚠ For active branch state, see `docs/branches/<branch>.md`** — this file only reflects what's on `main`. Substantial work happens on feature branches without landing on main; STATUS.md updates trail merges. **The SessionStart hook (installed 2026-09-27) surfaces the correct branch manifest at every session start.**
+
+**Last meaningful update on main:** 2026-08-14 (Option A flat `sources/` — bucket subdirs deleted; 8-worker parallel two-step ingest verified safe via controlled A/B test [serial vs parallel on same 50 sources, 8.04× speedup, no structural races, semantic drift = LLM temperature not parallelism]; chained backfill of 800 pre-v2 sources + fresh 200 batches running as of writing. Raw corpus recount: 19,054 sections in `wiki-raw/wiki.md`, not 9,691 as prior claim — remaining backlog is ~2× larger than previously reported. New ADRs: ARCH-030, D-060.)
+
+**Header sync 2026-09-27:** file body content unchanged (main hasn't moved since Aug 14), but header now points at branch manifests. Substantive work Sept 2026 lives on `feat/pure-file-brain` (see `docs/branches/feat-pure-file-brain.md`): canonicalization pipeline (ARCH-036, CANON-1..8), headless MCP server (`infra/mikai-mcp/`), SessionStart hook + branch manifest infrastructure, CHANGE_LEDGER.md governance file. None merged to main yet.
+
 **Prior updates:** 2026-08-13 (Two-step ingest + SCHEMA v3 + 1,091-page normalization) · 2026-08-11 (Karpathy-native wiki substrate, graph deprecated, wiki-raw split) · 2026-08-05 (pure-file Second Brain substrate + FIGS/mikai_shell)
 **Latest commit on main at writing:** merge of `ac4c731` (file-based L4 substrate) and `339b569` (mikai_shell v1) plus 2026-08-11 through 2026-08-14 architecture-decision-record additions
 

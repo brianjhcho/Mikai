@@ -41,10 +41,25 @@ Always start with `docs/STATUS.md` for the volatile "what's actually on main rig
 | Harness architecture (subagent orchestration, loops, .omc) | `docs/HARNESS_ARCHITECTURE.md` |
 | Named-concepts registry / glossary lookup | `docs/GLOSSARY.md` |
 | Cockpit design / L4 surfacing UX | `docs/COCKPIT_*.md`, `docs/CONCEPT_NAVIGATION_DEFERRED.md` |
+| Salience score formula S(c,t) — concrete implementation | `docs/SALIENCE_FORMULA.md` |
+| Salience iteration history (v001..v00N) | `docs/SALIENCE_VERSION_HISTORY.md` |
+| Retrieval stack — what runs at query time | `docs/RETRIEVAL_STACK.md` |
+| Segmentation framework — how sources decompose into pages | `docs/SEGMENTATION_FRAMEWORK.md` |
+| Surface engine design + loss function | `docs/SURFACE_ENGINE_DECISION.md`, `docs/SURFACE_ENGINE_LOSS_FUNCTION.md` |
+| User context substrate + model + needs registry | `docs/USER_CONTEXT_SUBSTRATE.md`, `docs/USER_MODEL_RESEARCH.md`, `docs/USER_NEEDS_REGISTRY.md` |
+| Dream runtime + cron schedule | `docs/DREAM_WIKI_RUNTIME.md`, `docs/DREAM_CRONS.md` |
+| MCP operator guide + pattern survey (setup, ecosystem patterns) | `docs/MCP_OPERATOR_GUIDE.md`, `docs/MCP_PATTERN_SURVEY.md` |
+| Architecture idea backlog (unfiltered brainstorm) | `docs/ARCHITECTURE_IDEAS.md` |
+| Design dimensions (framing axes) | `docs/DIMENSIONS.md` |
+| Health check / operational status | `docs/HEALTH_CHECK.md` |
+| Input refactor design (cockpit input flow) | `docs/INPUT_REFACTOR_DESIGN.md` |
+| **Change ledger — reversibility record for every mechanism** | **`docs/CHANGE_LEDGER.md`** |
 | Open questions / structural gaps / unresolved | `docs/OPEN.md` |
 | Architecture decisions (append-only) | `docs/DECISIONS.md` |
 | Vault index (which vaults exist, which is production, which is test) | `docs/VAULT_INDEX.md` |
 | Raw research / archived drafts (Graphiti review, cleanup inventory, L4 papers, memory thesis) | `docs/research/` |
+
+**Not routed (session artifacts — read only when the specific session is being audited):** `BRAIN_REVIEW.md`, `INGESTION_LOG.md`, `NOISE_DIAGNOSTIC_2026-08-09.md`, `SALIENCE_MVP_DIAGNOSIS.md`, `SALIENCE_MVP_TEST_PROTOCOL.md`, `STAGE-5-OAUTH-PLAN.md`, `STAGE-6-TYPED-EXTRACTION-BRIEF.md`. The SessionStart hook flags these as unrouted; extend its ignore pattern (currently `DAY_LOG|BACKFILL|INGESTION_NOTES|LINT_PASS|GRAPHITI_FREEZE`) to include `NOISE_DIAGNOSTIC|STAGE-|_MVP_|INGESTION_LOG|BRAIN_REVIEW` in a future change.
 
 ## Branch context
 
