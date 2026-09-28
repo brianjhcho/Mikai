@@ -135,6 +135,17 @@
 
 ---
 
+## CHANGE-012: mikai-wiki-v1 search — live-embed on cache miss (fix)
+**Date:** 2026-09-28 · **Files:** `infra/mikai-mcp/src/search.ts`, `infra/mikai-mcp/dist/src/search.js` (rebuilt)
+**Plain-English:** Replaces the silent `continue` on cache-miss in `semanticSearch()` with a `loadOrEmbed()` call — same helper already used for the query itself and mirroring `dedup_embed.py`'s convention. If a page's cached embedding is missing (because its body was modified after the last embed pass), the search now embeds the current body via Ollama, caches it, and includes the page in scoring instead of skipping it.
+**Why:** Bug found 2026-09-27 when `mikai_wiki_search` for "MIKAI intent graph" returned semantically-adjacent pages but not `personal-intent-graph` itself. Root cause: canonicalization + CANON-8 wrap modified `personal-intent-graph.md`, invalidating its cached SHA-keyed embedding, and the search silently skipped it. Bias direction was bad — most-worked-on pages became least-findable. Fix restores expected behavior.
+**Blast radius:** First search after a large edit gets slower by (missing-page count × ~200ms Ollama latency). Second search hits cache. On a static vault, no change vs prior behavior. If Ollama is unreachable, the outer try/catch on the query-embed step falls back to lexical search unchanged.
+**Approver said:** "fix it" (2026-09-28)
+**Revert:** `git revert <SHA-of-CHANGE-012-commit>` — restores the silent-skip behavior.
+**Watch for:** Ollama connection storms if hundreds of pages are stale simultaneously (embed calls are sequential — bounded but slow). If this becomes a problem, batch or parallelize embed calls in the loop.
+
+---
+
 ## Template for future entries
 
 ```
