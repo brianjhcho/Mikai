@@ -133,12 +133,14 @@ def read_source_body(source_path: Path) -> str:
     return text.strip()
 
 
-def load_page_titles(project_path: Path) -> dict[str, str]:
-    """Map "concepts/foo" -> "Foo Title" by reading each page's
-    frontmatter title. Skips retired-to redirect stubs (short bodies
-    with retired_to: frontmatter). Uses parse_page to be consistent
-    with dedup_embed's page-selection semantics."""
-    titles: dict[str, str] = {}
+def load_page_metadata(project_path: Path) -> dict[str, dict]:
+    """Map "concepts/foo" -> {title, aliases} by reading each page's
+    frontmatter. Aliases are emitted in the neighbors block so the LLM
+    sees each canonical page's known synonyms and stops coining new ones
+    (CONSOLIDATION_ARCHITECTURE.md §5a — Wikipedia-redirect model).
+    Skips retired-to redirect stubs — they aren't valid canonical
+    neighbors and shouldn't be suggested."""
+    meta: dict[str, dict] = {}
     for dir_name in CANONICAL_DIRS:
         dir_path = project_path / "wiki" / dir_name
         if not dir_path.is_dir():
@@ -148,12 +150,10 @@ def load_page_titles(project_path: Path) -> dict[str, str]:
                 text = md.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            # Skip redirects — they carry retired_to: and shouldn't be
-            # suggested as canonical neighbors
             if "retired_to:" in text[:400]:
                 continue
-            # Extract title from YAML frontmatter
             title = md.stem
+            aliases: list[str] = []
             if text.startswith("---\n"):
                 fm_end = text.find("\n---\n", 4)
                 if fm_end > 0:
@@ -161,10 +161,22 @@ def load_page_titles(project_path: Path) -> dict[str, str]:
                     for line in fm.split("\n"):
                         if line.startswith("title:"):
                             title = line.split(":", 1)[1].strip().strip('"').strip("'")
-                            break
+                        elif line.startswith("aliases:"):
+                            raw = line.split(":", 1)[1].strip()
+                            if raw.startswith("[") and raw.endswith("]"):
+                                aliases = [
+                                    a.strip().strip('"').strip("'")
+                                    for a in raw[1:-1].split(",")
+                                    if a.strip()
+                                ]
             slug = f"{dir_name}/{md.stem}"
-            titles[slug] = title
-    return titles
+            meta[slug] = {"title": title, "aliases": aliases}
+    return meta
+
+
+def load_page_titles(project_path: Path) -> dict[str, str]:
+    """Backward-compat shim — returns just the title map."""
+    return {slug: m["title"] for slug, m in load_page_metadata(project_path).items()}
 
 
 def collect_page_vectors(
@@ -263,9 +275,11 @@ def main() -> int:
     scored.sort(key=lambda t: t[0], reverse=True)
     top = scored[: args.top_k]
 
-    titles = load_page_titles(project)
+    metadata = load_page_metadata(project)
 
-    # Emit markdown block
+    # Emit markdown block. Aliases: are surfaced so the LLM sees each
+    # canonical's known synonyms and doesn't mint new synonym slugs
+    # (CONSOLIDATION_ARCHITECTURE.md §5a — Wikipedia-redirect model).
     lines: list[str] = []
     lines.append(f"## Semantic Neighbors (top {len(top)} by embedding cosine, most-similar first)")
     lines.append("")
@@ -273,11 +287,17 @@ def main() -> int:
     lines.append(
         "REUSE these slugs when a concept/entity in the source matches or is a synonym — do NOT coin new synonym slugs."
     )
+    lines.append(
+        "Each neighbor is followed by known aliases (if any); a mention that matches an alias must route to the canonical slug, not a new one."
+    )
     lines.append("The full lexical directory below is a fallback for concepts these neighbors miss.")
     lines.append("")
     for cos, slug in top:
-        title = titles.get(slug, slug.split("/")[-1])
-        lines.append(f"- [[{slug}]] — {title} (cosine {cos:.3f})")
+        m = metadata.get(slug, {"title": slug.split("/")[-1], "aliases": []})
+        title = m["title"]
+        aliases = m.get("aliases") or []
+        alias_note = f" (also: {', '.join(aliases)})" if aliases else ""
+        lines.append(f"- [[{slug}]] — {title} (cosine {cos:.3f}){alias_note}")
     lines.append("")
 
     out_md.parent.mkdir(parents=True, exist_ok=True)
