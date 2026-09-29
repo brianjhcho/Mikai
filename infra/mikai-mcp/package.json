@@ -1,0 +1,32 @@
+{
+  "name": "mikai-wiki-mcp",
+  "version": "1.0.0",
+  "description": "Headless MCP server for MIKAI's file-based wiki — reads the vault directly, no Desktop app required. Sibling to nashsu's llm-wiki-mcp-server but Desktop-independent.",
+  "type": "module",
+  "main": "dist/src/index.js",
+  "bin": {
+    "mikai-wiki-mcp": "dist/src/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/src/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "mcp",
+    "mikai",
+    "wiki",
+    "knowledge-base"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.7.3"
+  }
+}

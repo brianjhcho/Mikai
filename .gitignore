@@ -87,6 +87,10 @@ package-lock.json
 # Worktree parent artifact
 .superset/
 
+# mikai-mcp — Node package, source tracked, deps + build artifacts not
+infra/mikai-mcp/node_modules/
+infra/mikai-mcp/dist/
+
 # Vendored nashsu — runtime + generated dirs (source tracked, deps not)
 infra/nashsu/vendor/node_modules/
 infra/nashsu/vendor/.llm-wiki/
