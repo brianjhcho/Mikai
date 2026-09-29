@@ -1495,3 +1495,264 @@ The brain is MIKAI's L4 reasoning (the LLM). There is no rules engine, no priori
 **Related:**
 - `docs/INGESTION_PIPELINE_ANALYSIS_2026-08-14.md` § "Fable 5 — Session Retrospective" insight #3
 - Anthropic Structured Outputs docs (beta 2025-11-13)
+
+---
+
+## ARCH-032: Vendored nashsu headless CLI is the L3 write path (supersedes smoke_ingest_v2 lineage)
+**Date:** 2026-08-25 (originally); ratified 2026-09-11
+**Decision:** All new L3 writes flow through `infra/nashsu/vendor/` (nashsu/llm_wiki v0.6.9, pinned SHA `723e259`) invoked by the MIKAI headless CLI at `infra/nashsu/cli/ingest.ts`. `smoke_ingest_v2.py` / `smoke_ingest_B.py` / their dependents are archived — no longer maintained.
+**Why:**
+- Nashsu is the reference Karpathy-lineage file wiki. We were re-implementing it badly (Session-5 Fable audit: "adapted the pattern, reinvented the code" — six weeks of tech debt shipped under the "adapted from nashsu" label).
+- Zero-translation port eliminates the class of drift bugs that made `smoke_ingest_v2` diverge.
+- Ports over subscription-auth `claude -p` via Node-native transport shim (`infra/nashsu/transport/claude-cli-transport.ts`).
+**Rejected:** Rewriting nashsu into Python (perpetuates the drift problem), running the Tauri desktop app (no headless automation).
+**Supersedes:** D-057 (write-time Jaccard dedup lived in `smoke_ingest_B`, not in nashsu), D-059 (SHA256 cache — nashsu has its own via `ingest-cache.json`), D-062 (`--json-schema` wiring was for the abandoned lineage).
+**Revisit if:** Nashsu's design ceiling is proven insufficient AND the mention-level gate (ARCH-033) alone can't close the gap.
+
+---
+
+## ARCH-033: Semantic Matching ≠ Synonym Matching — write-time compression requires mention-level embedding
+**Date:** 2026-09-11
+**Decision:** Recognize two architecturally distinct retrieval problems: (a) **semantic matching** — per-document embedding retrieves thematically related pages, appropriate for RAG / context-injection / related-page hints; (b) **synonym matching** (entity linking) — per-mention embedding retrieves the canonical page for a specific mention, appropriate for slug reuse / dedup / stable identity. Write-time compression requires (b), not (a).
+**Why:**
+- Mechanism B (per-document top-K, R7 build) empirically inert for compression: 0-1% reuse rate across R7 novelty batch + control high-alias-risk batch (D-063).
+- Failure mode is proven: mean-pooled source embedding drifts toward broad thematic vocab, misses per-mention synonyms. Fable audit 2026-09-02 diagnosis, reconfirmed 2026-09-11.
+- State-of-art in entity linking (BLINK, DeepBlocker → DITTO) does per-mention retrieval. Nashsu's LLM-as-librarian at write-time is the small-scale equivalent; degrades past ~500 concepts.
+**Implication:** any future write-time compression gate must operate on mention-embeddings + local context, cosine against title+first-paragraph embeddings of existing pages. Not on source-body embeddings.
+**Rejected:** Continuing to iterate Mechanism B's per-document retrieval quality (wrong shape, no threshold sweep will fix it).
+**Revisit if:** A better-shape retrieval abstraction than per-mention is discovered.
+
+---
+
+## D-063: Mechanism B (pre-extract per-document top-K) proven INERT for compression
+**Date:** 2026-09-02 (measured); 2026-09-11 (ratified)
+**Decision:** Mechanism B — `infra/nashsu/bridge/pre_extract_topk.py` writing top-40 semantic neighbors into `wiki/.mikai-neighbors/` for each source, injected into the extraction prompt — is retained for context but demoted from primary compression lever. Runs by default; disabled via `--no-topk` for baseline / measurement runs.
+**Why:**
+- R7 measurement (76 pages, 6 novelty sources): 1/76 REUSED (1.3%), 0 SLUG DISCIPLINE failures — no coined slug matched a top-K neighbor because the top-K didn't contain the actual synonyms.
+- Control test (24 pages, 3 high-alias-risk sources): 0/24 REUSED. Confirmed the mechanism is inert regardless of source selection.
+- Diagnosis (ARCH-033): wrong retrieval granularity.
+**Rejected:** Killing Mechanism B outright — the neighbors data may be useful downstream for RAG / L4 context-injection, distinct from compression. Cost is bounded (~10s/source at workers=1 with warm cache).
+**Revisit if:** Mention-level gate (ARCH-033 direction) lands and reveals a use case for per-document neighbors that per-mention doesn't cover.
+
+---
+
+## D-064: `enrichWithWikilinks` per-page call KILLED from CLI
+**Date:** 2026-09-02
+**Decision:** Removed the per-page `enrichWithWikilinks` LLM call from `infra/nashsu/cli/ingest.ts`. Each written knowledge page no longer fires a separate `claude -p` for wikilink enrichment.
+**Why:**
+- Fable audit KILL rec: redundant with SLUG DISCIPLINE prompt in stage-2 generation, which already instructs the LLM to use existing slugs in body wikilinks.
+- Dominant cost + fragility multiplier: R7 fired 76 extra `claude -p` calls (one per written page) → ~40% of ingest cost, no measurable link-density benefit over what the generation prompt produces.
+- Kept the import removed cleanly; vendor code untouched.
+**Rejected:** Batched offline enrichment sweep (deferred — reinstate ONLY if links/page regresses after gate lands).
+**Revisit if:** Chunk 2+ measurement shows links/page regressed vs Chunk 1's 4.4→9.3 climb.
+
+---
+
+## D-065: Ablation flags — `--no-topk`, `--no-index`, `--no-slug-discipline`
+**Date:** 2026-09-03
+**Decision:** MIKAI headless CLI (`infra/nashsu/cli/ingest.ts`) exposes three ablation flags. Vendor's `buildAnalysisPrompt` + `buildGenerationPrompt` gate the SLUG DISCIPLINE blocks on `MIKAI_NO_SLUG_DISCIPLINE=1` env var. `--no-topk` skips `pre_extract_topk.py`. `--no-index` skips `refreshCanonicalDirectory`.
+**Why:**
+- R7 shipped three interventions simultaneously (Mechanism B + SLUG DISCIPLINE + comprehensive index). Attribution across them requires ablation.
+- Also lets us run corpus batches with proven-inert Mechanism B disabled without deleting code.
+**Rejected:** Removing the interventions entirely (loses the toggle for future re-testing).
+
+---
+
+## D-066: `claude -p exit 1` root cause — 5-hour subscription cap, not concurrency
+**Date:** 2026-09-06 (diagnosis); 2026-09-11 (ratified)
+**Decision:** The clustered `Analysis failed: claude -p exited with code 1` failures observed in the 64-source corpus ingest (Sep 3-5) were caused by the Claude Pro/Max **5-hour usage window cap** hitting utilization=1.0, combined with `overageStatus: rejected` / `overageDisabledReason: out_of_credits` on the subscription. Not concurrency, not prompt size, not model availability.
+**Why:**
+- Trivial + 60KB parallel probes both succeeded at workers=5 (2026-09-03) → falsified size×concurrency.
+- Rate-limit-event JSON captured 2026-09-06 explicitly showed `overageStatus: "rejected"`.
+- Failure pattern (cluster of 14 consecutive fails at sources 41-54) matches 5-hour window fill.
+**Implication for batching:** Cap batches to ≤30-40 sources per 5-hour window when overage is disabled. Larger batches must either (a) span multiple windows with pacing, (b) enable overage in the subscription, or (c) accept ~30% failure rate.
+**D-060 caveat:** The "8-Worker Parallel — Verified Safe" claim in D-060 is qualified: safe under low utilization; fails under near-cap utilization even at workers=1. Not a parallelism issue.
+
+---
+
+## D-067: Nashsu-native dedup CLI wrapper landed; embedding prefilter falls back to full-scan
+**Date:** 2026-09-03
+**Decision:** `infra/nashsu/cli/dedup.ts` (~231 LOC) invokes nashsu's `runDuplicateDetection` + `executeMerge` + `rewriteCrossReferences` + `rewriteIndexMd` from vendor. **Embedding-based prefilter cannot run headlessly** — `loadEmbeddingConfig()` uses `@tauri-apps/plugin-store` (throws in Node); `fetchEmbedding()` routes through Tauri Rust IPC (`embedding_fetch`) which our `tauri-core.ts` shim throws on. Wrapper falls back to nashsu's full-scan LLM detector. Retire our Python `dedup_embed.py` for embedding blocking + feed candidate pairs to nashsu's LLM detector as an integration path (not yet built).
+**Why:**
+- Fable audit 2026-09-02: nashsu has the full dedup stack we've been shadow-implementing.
+- Direct adoption blocked by Tauri IPC in the embedding path. Fallback to full-scan works but is O(N²) LLM cost — not practical at 1000+ concept scale.
+- Hybrid path (Python prefilter → nashsu LLM detector → nashsu merge/rewrite): documented, not built.
+**Rejected:** Building an alternative Node embedding transport for nashsu's native path (~2-4h; blocked by LanceDB Rust dependency for vector store per Session-5).
+
+---
+
+## D-068: Session-5's "post-ingest dedup as standard" — confidence DOWNGRADED
+**Date:** 2026-09-11
+**Decision:** Session-5's plan-file statement — *"Retroactive post-ingest dedup keeps working meanwhile — treat as the current standard pattern, not a workaround"* — is downgraded. It was infrastructure-driven (Tauri Rust dependency on Path A blocked write-time embedding), not quality-driven. Post-ingest dedup and write-time dedup are NOT quality-equivalent.
+**Why (quality delta):**
+- Write-time merge: incoming content appended to established page structure by LLM with source context → richer merge.
+- Post-ingest merge: two grown pages synthesized without source context → some claims collide, some de-emphasized.
+- Timing gap: between mint and merge, KB is fragmented; L4 queries get ambiguous results.
+- Retire-stubs are second-class citizens: persistent files with `retired_to:`, still referenced in git-blame, source-summaries.
+- Cost: write-time = 1 LLM merge call. Post-ingest = extraction + embed + judge + body-merge = 3-4 calls per dupe.
+**Kept:** Post-ingest dedup remains the SAFETY NET for whatever write-time misses (nashsu's original two-layer design). But it is no longer THE primary compression mechanism by default.
+**Revisit if:** Write-time gate proves ineffective (Open-Q gate below).
+
+---
+
+## ARCH-034: Two-Tier Write-Time Semantic Gate (Cosine Prefilter + LLM Adjudication)
+**Date:** 2026-09-11
+**Decision:** Introduce a write-time compression gate operating between nashsu's stage-1 analysis and stage-2 generation. Three-tier decision per mention:
+1. **Cosine ≥ 0.95** — hard redirect: rewrite SLUG DECISION to EXISTING with the matched slug. No LLM call.
+2. **Cosine 0.85–0.95** — LLM adjudication: pipe both page bodies to `claude -p` with nashsu's `detectDuplicateGroups` prompt (1-pair variant). Verdict = MERGE → rewrite SLUG DECISION to EXISTING. Verdict = KEEP → allow creation. Cost: 1 extra `claude -p` call per adjudication.
+3. **Cosine < 0.85** — no gate. Pass through to stage-2 generation.
+
+Embedding via Ollama `nomic-embed-text` on **title + first paragraph** of each existing page (proxy for "canonical definition"). Mention embedding uses the slug + one-line description from nashsu's stage-1 analysis output. Reuses `.embed-cache/` for existing-page embeddings.
+
+**Why the two tiers instead of Fable's single 0.85 hard gate**:
+- Empirical test 2026-09-11 (task #13): pure cosine ≥ 0.85 has ~30% false-positive rate. Examples: `enfj ↔ entj` (cos 0.921, different MBTI types), `hilton ↔ hyatt` (0.938, different hotel chains), `extraverted-feeling-fe ↔ extraverted-thinking-te` (0.920, different cognitive functions). Hard-merging these degrades KB quality.
+- Cosine ≥ 0.95 has clean precision (leapfrog-pattern-ai-native ↔ leapfrog-pattern-ai-native-software at 0.978; monopsony ↔ monopsony-labor at 0.929 is on the fence).
+- LLM handles pairwise semantic judgment reliably (proven in R5 dedup verdicts: 33/33 pairs judged cleanly, no PARSE_FAIL / ERROR). Nashsu already ships the prompt — we just wire it earlier.
+
+**Why this fulfills the branch goal**:
+- Solves the ARCH-033 granularity problem: per-mention retrieval + cosine prefilter surfaces the RIGHT candidates (proven 28.9% hit rate at 0.85, dropping to 13.8% at 0.90).
+- Delivers Heaps' compression on the falling-slug axis (D-063 was inert; this replaces it).
+- Nashsu-compatible: same LLM judge, same merge machinery (`mergeDuplicateGroup` + `rewriteCrossReferences`). No fork.
+- Uses subscription-auth `claude -p` (MIKAI policy). No paid API.
+
+**Test protocol before adoption confirmed**:
+- Chunk 2 (91 Claude threads) ingest with gate active
+- Success criterion: <15 new HIGH-cosine pairs generated (vs current rate of ~115 per 1200 concepts = ~10% dupe rate)
+- If chunk 2 hits >30 new HIGH pairs, gate is not sufficient — escalate to per-mention body-embedding instead of title+first-paragraph, OR raise Tier-1 threshold.
+
+**Rejected:**
+- Single-threshold hard gate at 0.85 (false-positive rate too high per empirical data)
+- LLM-only gate (no cosine prefilter) — reverts to nashsu's LLM-as-librarian failure mode at scale (needs a 1500-entry directory scan)
+- Post-ingest dedup as PRIMARY compression (D-068 downgraded)
+- Deferring to nashsu's Rust LanceDB embedding path (unshimmable per D-067)
+
+**Cost profile**:
+- Extra embedding: ~50ms/mention (Ollama, local). At 10 mentions/source = 500ms overhead per source. Negligible.
+- Extra LLM adjudications: ~15-20% of mentions × ~$0.05 each = ~$0.10-0.15 per source. At 100-source batches = $10-15 in adjudication cost. Well within subscription budget.
+
+**Implementation**:
+- New file: `infra/nashsu/bridge/write_time_gate.py` (200-300 LOC) — parses stage-1 analysis, embeds mentions, runs cosine, invokes claude -p for tier-2, returns modified SLUG DECISIONS
+- Integration point in `infra/nashsu/cli/ingest.ts`: hook between analysis and generation stages (~30 LOC)
+- Reuses: `dedup_embed.py` helpers, `.embed-cache/`, nashsu's `detectDuplicateGroups` prompt
+
+**Revisit if:**
+- Chunk 2 test shows >30 new HIGH pairs (gate not tight enough)
+- Adjudication cost exceeds $50/1000 sources (threshold tuning needed)
+- False-positive rate at tier-1 hard gate exceeds 10% (raise threshold above 0.95)
+
+---
+
+## ARCH-035: Wiki Crystallization Principle + Dream Pass (Periodic Cluster Consolidation)
+**Date:** 2026-09-12
+**Load-bearing principle (adopt as branch constitution):**
+
+> **"Over time, the wiki should crystallize into a small number of very dense, canonical pages that everything references."** — Karpathy, llm-wiki gist (2026-04-04)
+
+This is the load-bearing target for MIKAI's L3 substrate. The mature-state distribution follows a **power law**:
+- **Head**: a small number of very-dense canonical hubs (30-50 pages, 1500+ words each, deeply interconnected)
+- **Body**: dense mid-tier pages that link into hubs (150-200 pages, 700-1500 words)
+- **Tail**: sparse leaf concepts (500-700 pages) that reference hubs but aren't orphaned
+- **Zero orphans**: every page pulled into a cluster over time
+
+The write-time gate (ARCH-034) handles the falling-slug axis of Heaps' law (prevent synonym dupes). ARCH-035 handles the **compounding-density axis**: retroactive consolidation of related-but-distinct concepts into canonical hubs.
+
+### Current-vault gap (2026-09-12 baseline, N=1201 concepts)
+
+- Only 6 pages (0.5%) are "rich" (≥1500 words) — target 30-50
+- 365 pages (30.4%) are "thin" (100-300 words) — target should be leaves, not thin-in-isolation
+- **66 orphans (5.5%)** with zero inbound links; 96 more (8%) with exactly one — 13.5% of concepts are structurally disconnected
+
+### Decision
+
+Introduce a **periodic dream pass** as the third layer of L3 compression:
+
+1. **Write-time gate (ARCH-034)** — prevents synonym mint at write path. Falling-slug axis.
+2. **Post-ingest embedding dedup (D-067)** — catches synonym mint that gate missed. Safety net.
+3. **Dream pass (ARCH-035)** — **periodic** (weekly/monthly, NOT per-source) cluster consolidation. Compounding-density axis.
+
+### Dream pass mechanism
+
+1. **Cluster detection**: build wikilink graph over vault; run Louvain community detection to surface natural clusters (concepts that co-reference each other).
+2. **Cluster scoring**: for each community of 3-15 pages, compute density (word count sum, mean inbound-degree), identify pre-existing hubs (inbound ≥ 20), identify orphan siblings (inbound 0-1).
+3. **LLM adjudication per cluster**: `claude -p` with cluster members' titles + first paragraphs. Verdict:
+   - **PROMOTE-HUB**: an existing hub in the cluster absorbs orphan siblings as `## H2` sections
+   - **MERGE-CREATE-HUB**: no existing hub; synthesize a new canonical page with H2 sections per sub-concept
+   - **KEEP-INDEPENDENT**: cluster is genuinely orthogonal, no action
+4. **Apply**: use nashsu's `mergeDuplicateGroup` + `rewriteCrossReferences` (same tools we validated Sep 3 / Sep 11) — retire absorbed pages as `retired_to:` stubs, redirect inbound wikilinks to the canonical hub.
+
+### Success criteria after ONE dream pass on current vault
+
+- Concept count: 1201 → 800-900 (retire ~300 into hubs)
+- Rich pages (≥1500 words): 6 → 30-40 (hubs enriched via body-merge)
+- Orphans: 66 → 0-10 (absorbed into cluster canonicals)
+- Mean words/concept: 464 → ~900
+
+### Cadence
+
+Run after every N sources ingested (initial default N=50) OR weekly, whichever comes first. Not per-source — the periodic nature is what allows cross-source clustering to emerge.
+
+### Rejected alternatives
+
+- **Do write-time clustering (not just synonym gate)**: would require every mention to be checked against N candidate clusters, not just synonym pairs. LLM+embedding cost multiplies. Post-ingest periodic is cheaper AND lets clusters emerge naturally.
+- **Manual curation only**: doesn't scale past a few hundred pages.
+- **No consolidation at all (sparse-many forever)**: Karpathy explicitly rejects this. The wiki must crystallize to be useful for retrieval.
+
+### Files (planned)
+
+- `infra/nashsu/bridge/dream_pass.py` — Louvain + LLM adjudication + apply. ~350-400 LOC.
+- Reuses: `dedup_embed.py`'s embedding helpers, nashsu's `mergeDuplicateGroup`, `rewrite-retire-stubs.ts`.
+
+### Revisit if
+
+- Dream pass proves compute-prohibitive at N=1200+ concepts (Louvain scales but LLM adjudication may become bottleneck)
+- Clusters don't cleanly separate — LLM adjudication returns >30% KEEP-INDEPENDENT (suggests graph structure is too flat to cluster meaningfully)
+
+---
+
+## ARCH-036: Canonicalization pipeline — Wikipedia-redirect model at ingest time (CONSOLIDATION_ARCHITECTURE.md §5a)
+
+**Date:** 2026-09-13
+**Decision:** Every new concept/entity/wisdom page written by nashsu passes through a deterministic three-tier resolution pipeline BEFORE it becomes visible to other tools:
+1. Alias-table exact/normalized match (from `wiki/.aliases-index.json`)
+2. Embedding kNN over existing pages (Ollama nomic-embed-text, cache-aligned with `dedup_embed.py` / `pre_extract_topk.py`)
+3. LLM merge adjudication via `claude -p` (JSON verdict `{action: mint|merge|rename, canonical, reasoning}`), only when tier 2 returns candidates above cosine floor
+
+Verdicts:
+- `mint` → page stays as written
+- `merge` → append body to canonical (fenced with `MIKAI-CANONICALIZE-MERGE-FROM/END` markers for reversibility), add proposed slug to canonical's `aliases:` frontmatter, delete just-written file, write retire stub in its place
+- `rename` → downgraded to merge in v1 (LLM adjudication rules avoid retiring existing pages from this hook)
+
+Every non-mint verdict is logged to `.canonicalization-log.jsonl` with archive copy of the loser body at `.canonicalization-archive/<slug>.<timestamp>.md` — `canonicalize_undo.py` reverses individual entries and produces byte-identical round-trip on canonical + aliases-index (verified 2026-09-13).
+
+**Why:** The problem this branch was named for — consolidation, not dedup. §5a explicitly rejects "LLM freelances the whole decision" and mandates "LLM operates inside a deterministic scoring-and-policy harness." Post-hoc dream pass (ARCH-035) is a clustering tool; canonicalization is the mandatory-per-write resolution pipeline. The two are complementary, not redundant — canonicalization handles the REPETITION bucket at write time (a proposed synonym routes to existing canonical), dream pass handles cross-source clustering at periodic intervals for consolidation into denser hubs.
+
+Brian's three-way source-content model maps directly onto §5a + §5b:
+- ~25% SIGNAL → mint new canonical pages (or route to existing via tier 3)
+- X% REPETITION → routes through tier 1/2/3 → appends to existing canonical + alias added
+- Y% NOISE → stays in raw sources, never crosses gate (§5b work; not built in this decision)
+
+**Rejected:**
+- Vendor patch to `parseFileBlocks`/`autoIngestImpl` (larger maintenance cost on upstream sync). Post-write hook in `cli/ingest.ts` achieves the same final state.
+- Standalone TypeScript resolveNewPage (would duplicate embedding + adjudication patterns already proven in Python `dream_pass.py:adjudicate` and `dedup_embed.load_or_embed`).
+- Pairwise cosine-only pipeline (finds duplicates but not consolidation targets; wrong task).
+
+**Files landed:**
+- `infra/nashsu/bridge/build_aliases.py` (295 LOC) — one-shot alias bootstrap from existing retire stubs. Applied to `~/.mikai/wiki-mikai-parallel-test`: 22 canonicals now carry `aliases:` frontmatter; `wiki/.aliases-index.json` = 1881 entries.
+- `infra/nashsu/bridge/canonicalize.py` (~640 LOC) — the resolution + apply pipeline. `--dry-run` flag for measurement passes.
+- `infra/nashsu/bridge/canonicalize_undo.py` (~290 LOC) — reversibility tool.
+- `infra/nashsu/bridge/canonicalize_batch.py` — dry-run batch harness for measuring merge yield on the existing vault.
+- `infra/nashsu/bridge/pre_extract_topk.py` — extended to emit each candidate's `aliases:` inline in the semantic-neighbors block, so the LLM sees synonyms during analysis and stops coining new ones.
+- `infra/nashsu/cli/ingest.ts` + mirror `vendor/src/mikai-cli/ingest.ts` — wired via `canonicalizeWritten()` post-autoIngest loop, mtime-cutoff guard, `--no-canonicalize` kill-switch + `MIKAI_CANONICALIZE=0` env var.
+
+**Verifiable outcomes:**
+- Tier-1 live-tested with canary: proposed page correctly downgraded to retire stub, body appended with fence markers, alias added, archive written, log entry appended. Cleanup byte-identical.
+- Undo round-trip: canonical + aliases-index byte-identical after `canonicalize_undo.py --slug` on a fresh merge.
+
+**Revisit if:**
+- LLM adjudication cost dominates (>1 tier-3 call per source on average) — tighten cosine floor.
+- Post-write interception leaks intermediate state to downstream tools — promote to pre-write hook via vendor patch.
+- End-to-end merge rate on new sources < 5% — resolve whether canonicalization is inert (LLM already reuses slugs via SLUG DISCIPLINE + top-K aliases) or the pipeline is broken.
+
+## Anti-drift discipline (paired with ARCH-036)
+
+The correction Brian issued on 2026-09-13 must persist: past sessions repeatedly re-derived the problem as DEDUP because the tool vocabulary in `infra/nashsu/bridge/` (`dedup_embed.py`, `apply_dedup.py`, `dedup_report.py`) primes the frame. Actual problem space is CONSOLIDATION per `docs/CONSOLIDATION_ARCHITECTURE.md`. Rename cleanup deferred pending explicit approval (would break existing invocations). Future architectural changes to L3 must re-read that doc before proposing, per branch constitution.

@@ -181,7 +181,19 @@ The Surface Engine V0 design (D-053) implicitly answers part of this: L4 reasoni
 
 ---
 
-## Resolved
+### [O-050] Should MIKAI adopt Fable's write-time mention-level embedding gate?
+**Surfaced:** 2026-09-11 (Fable audit follow-up + Brian's semantic-vs-synonym distinction, ARCH-033).
+
+**The gap:** L3 vault at ~1200 concepts has 115 HIGH-cosine near-duplicate pairs and shows FLAT concepts/source over 255 ingests (no Heaps' compression on the falling-slug axis). Nashsu's designed compression — LLM-as-librarian scanning the in-prompt directory — provably degrades past ~500 pages because the LLM can't reliably scan a 1500-entry list and self-certifies "GENUINELY NEW" without audit. Mechanism B (per-document top-K in the prompt) tested and proven inert (D-063). Nashsu's periodic dedup pass is the safety net but has real quality costs vs write-time (D-068).
+
+**The proposal:** intercept nashsu's write path AFTER stage-1 analysis extracts entity mentions. For each mention marked GENUINELY NEW: embed with local context via Ollama, cosine against title+first-paragraph embeddings of existing pages, above ~0.85 → force SLUG DECISION to EXISTING; below → allow creation. Log gate hit-rate per source. Operates OUTSIDE nashsu's native Tauri-blocked embedding path.
+
+**Resolution path (in progress):** standalone test harness `infra/nashsu/bridge/test_write_time_gate.py` completed 2026-09-11. Test on 20 known-synonym-coining sources returned **28.9% hit rate at cosine ≥ 0.85** (target was ≥15%). BUT ~30% of those hits are false-positives (`enfj ↔ entj`, `hilton ↔ hyatt` — related-but-distinct entities at high cosine). Decision landed as **ARCH-034** (two-tier gate: hard redirect at ≥0.95, LLM adjudication at 0.85-0.95, no gate below 0.85). Remaining validation gate:
+
+- **Task #14 (in progress)**: chunk 2 (91 Claude threads) ingest with two-tier gate active. Success = <15 new HIGH-cosine pairs generated. If passed, ARCH-034 is validated end-to-end and O-050 closes to Resolved.
+- If chunk 2 shows >30 new HIGH pairs, gate is not tight enough — escalate to per-mention body-embedding vs current title+first-paragraph proxy.
+
+
 
 - **[O-001]** Which surface first? — **Resolved 2026-03-14** via D-019. V1: WhatsApp bot. Final destination: Siri integration.
 - **[O-039]** Daemon-restart dedup — **Resolved 2026-04-29** on `feat/stage-2-ingestion-prod`. Per-source content-hash checkpoint shipped: `sync.py` keys Apple Notes by ZIDENTIFIER (UUID) and Claude Code by JSONL byte offset; `mcp_ingest.py` keys cloud sources by ISO poll-time. State persists to `~/.mikai/sync_state.json` after every pass.

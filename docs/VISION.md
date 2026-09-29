@@ -5,6 +5,20 @@
 
 ---
 
+## §0 — Goal (load-bearing)
+
+**MIKAI's goal:** a task-state awareness engine — captures Brian's context ambiently across every source he interacts with, consolidates it into a small set of dense canonical pages via Karpathy-style crystallization, and surfaces next-steps at the right moment. Never on request; always on judgment.
+
+**The three tests every architectural decision must pass:**
+
+1. **Does it improve one of ambient capture / consolidation / intervention timing?** — the three load-bearing product surfaces. If it doesn't advance one of these, it's off-scope.
+2. **Would an off-the-shelf memory tool (Mem0, Rewind, Letta, Zep) already do this?** — if yes, MIKAI's differentiator isn't in this decision; use the off-the-shelf and move on.
+3. **Does it reduce Brian's cognitive load, or does it require Brian to change his behavior?** — MIKAI wins by adapting to Brian, not by asking Brian to adapt. Any decision that hinges on new user rituals is a red flag.
+
+**The success signal:** MIKAI knows what Brian is trying to do *before* Brian articulates it, and helps at the moment where help is most useful — the intervention-timing bar Anthropic Claude Orbit and ChatGPT Pulse both attempt but neither has cracked. See [[docs/COMPARISON.md]] for the competitive delta.
+
+---
+
 ## §1 — Intent intelligence, not memory
 
 Every LLM conversation starts cold. You open Claude or ChatGPT and the model has no idea that you are deciding between two job offers and can't sleep, that you have been researching the same problem for six weeks without moving forward, or that you've already contradicted yourself on which outcome you actually want. Each conversation begins in amnesia.
