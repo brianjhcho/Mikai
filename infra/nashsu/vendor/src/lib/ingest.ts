@@ -43,6 +43,11 @@ import { GENERATION_WIKI_TYPES } from "@/lib/wiki-page-types"
 import { computeContextBudget } from "@/lib/context-budget"
 import { refreshProjectFileTree } from "@/lib/project-file-tree-refresh"
 import { persistParsedMarkdown } from "@/lib/parsed-source-output"
+import { spawn } from "node:child_process"
+import { writeFile as nodeWriteFile, readFile as nodeReadFile, rm as nodeRm } from "node:fs/promises"
+import { randomUUID } from "node:crypto"
+import nodeOs from "node:os"
+import nodePath from "node:path"
 
 const LONG_SOURCE_MIN_BUDGET = 8_000
 const LONG_SOURCE_MAX_SINGLE_PASS_BUDGET = 300_000
@@ -666,6 +671,294 @@ async function appendIngestWarningLog(
   }
 }
 
+// ── ARCH-034: write-time semantic gate ──────────────────────────────
+//
+// Between stage-1 analysis and stage-2 generation, catch entity/concept
+// mentions the analysis marked "SLUG DECISION: GENUINELY NEW" that are
+// actually near-duplicates of an existing wiki page, and rewrite the
+// decision to redirect before generation ever writes a synonym page.
+// See infra/nashsu/bridge/write_time_gate.py for the tier logic
+// (cosine >= 0.95 hard redirect; 0.85-0.95 LLM MERGE/KEEP adjudication;
+// < 0.85 passthrough). Degrades to a no-op on any failure (Ollama down,
+// script error, etc.) — this must never block ingest.
+
+const WRITE_TIME_GATE_SCRIPT = "/Users/briancho/.superset/worktrees/MIKAI/pear-seashore/infra/nashsu/bridge/write_time_gate.py"
+
+interface ParsedSlugMention {
+  kind: "entity" | "concept"
+  name: string
+  proposedSlug: string
+  description: string
+  lineIndex: number
+  linePrefix: string
+  decisionText: string
+}
+
+function slugifyMentionName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+}
+
+// Parses the freeform "## Key Entities" / "## Key Concepts" sections of
+// a stage-1 analysis for SLUG DECISION lines. Recognizes three top-level
+// header forms the LLM actually emits:
+//   `**Bold Name**`   (most common with sonnet-4-5)
+//   `1. Name`         (numbered list)
+//   `- Name` / `* Name`  (bulleted list)
+// Sub-bullets (including `- ` at column 0 when currentName is already set,
+// unless they start with a bold header) accumulate as description. A
+// "SLUG DECISION: GENUINELY NEW" line closes out the mention.
+function parseAnalysisMentions(analysis: string): ParsedSlugMention[] {
+  const lines = analysis.split("\n")
+  const mentions: ParsedSlugMention[] = []
+
+  // Language-tolerant section detection: the LLM sometimes ignores the
+  // hard English directive and translates "Key Entities" / "Key Concepts"
+  // into German / French / Korean. We match English literally OR the
+  // language variants observed in the wild (2026-09-13 debug dumps).
+  //
+  // Also allows "Core" prefix variant (Kernentitäten = "core entities",
+  // observed once when LLM chose that framing).
+  // Also allow ANY `## <native-language phrase> (Key Entities)` form — the
+  // LLM commonly puts the English fallback in parens for less-common
+  // languages (Swahili observed 2026-09-13: `## Vipengele Muhimu (Key Entities)`).
+  const headingEntitiesRx = /^##\s+(?:.*\(Key\s+Entities\)|Key\s+Entit(?:ies|äten)|Core\s+Entities|Schlüsselentitäten|Kernentitäten|Wichtige\s*Entitäten|Vipengele\s*Muhimu|Entités[- ]?clés|Entidades[- ]?clave|주요\s*엔티티)/i
+  const headingConceptsRx = /^##\s+(?:.*\(Key\s+Concepts\)|Key\s+Concepts|Core\s+Concepts|Schlüsselkonzepte|Kernkonzepte|Wichtige\s*Konzepte|Dhana\s*Kuu|Concepts[- ]?clés|Conceptos[- ]?clave|주요\s*개념)/i
+  const otherHeadingRx = /^##\s+/
+  // Item name headers — accept H3 `### Name`, bold `**Name**`, numbered, or bulleted.
+  const h3HeaderRx = /^###\s+(.+)/
+  const boldHeaderRx = /^\*\*(.+?)\*\*/
+  const numberedItemRx = /^\d+\.\s+(.+)/
+  const bulletedItemRx = /^[-*]\s+(.+)/
+  // SLUG DECISION lines — the LLM sometimes translates "DECISION" into
+  // ENTSCHEIDUNG (de), DÉCISION (fr), DECISIÓN (es), 결정 (ko). Match all
+  // variants, wrapped or unwrapped in **bold** markdown, with optional
+  // leading list marker (`- **SLUG DECISION**:` and `- SLUG DECISION:`
+  // both need to work).
+  // Colon can sit either OUTSIDE the closing bold (English `**SLUG DECISION**: value`)
+  // or INSIDE it (German LLM output: `**SLUG-ENTSCHEIDUNG:** value`). Accept both.
+  const slugDecisionRx = /^(\s*(?:[-*]\s+)?)\**\s*SLUG[-\s]?(?:DECISION|ENTSCHEIDUNG|DÉCISION|DECISI[ÓO]N|결정)(?::\**|\**:)\s*(.+)$/i
+
+  // Extract the top-level name from a line if it opens a new mention.
+  // Returns null if the line is NOT a top-level item.
+  function extractTopLevelName(line: string): string | null {
+    // 1. Bold header (**Name** or **Name**: extra) — highest priority.
+    let m = line.match(boldHeaderRx)
+    if (m) return m[1]
+    // 2. Numbered "1. Name"
+    m = line.match(numberedItemRx)
+    if (m) return m[1]
+    // 3. Bulleted "- Name" — BUT only if it's NOT a SLUG DECISION sub-bullet.
+    //    LLM emits SLUG DECISION lines with the same `- ` prefix; those must
+    //    stay as sub-bullets of the current mention, not start a new one.
+    m = line.match(bulletedItemRx)
+    if (m && !/^SLUG DECISION:/i.test(m[1].trim())) return m[1]
+    return null
+  }
+
+  let currentKind: "entity" | "concept" | null = null
+  let currentName = ""
+  let currentDescLines: string[] = []
+  // When the current mention was opened by a bold header, sub-bullets
+  // that appear at column 0 with "- " should NOT open a new mention —
+  // they're description lines. We only advance out of a bold block on
+  // the next bold header or the next "## " heading.
+  let inBoldBlock = false
+
+  lines.forEach((line, i) => {
+    if (headingEntitiesRx.test(line)) {
+      currentKind = "entity"; currentName = ""; currentDescLines = []; inBoldBlock = false
+      return
+    }
+    if (headingConceptsRx.test(line)) {
+      currentKind = "concept"; currentName = ""; currentDescLines = []; inBoldBlock = false
+      return
+    }
+    if (otherHeadingRx.test(line)) {
+      currentKind = null; currentName = ""; currentDescLines = []; inBoldBlock = false
+      return
+    }
+    if (currentKind === null) return
+
+    // SLUG DECISION line always closes out the current mention (regardless
+    // of whether it's the sub-bullet form or col-0 form).
+    const slugMatch = line.match(slugDecisionRx)
+    if (slugMatch && currentName) {
+      const decisionText = slugMatch[2].trim()
+      // "GENUINELY NEW" and its multilingual variants observed in real
+      // LLM output when nashsu's languageRule triggers non-English mode
+      // (2026-09-13). ECHT NEU (de), VRAIMENT NOUVEAU (fr), REALMENTE
+      // NUEVO (es), 진짜 새로움 (ko).
+      if (/GENUINELY[-\s]NEW|ECHT[-\s]NEU|VRAIMENT[-\s]NOUVEAU|REALMENTE[-\s]NUEVO|진짜\s*새로움/i.test(decisionText)) {
+        mentions.push({
+          kind: currentKind,
+          name: currentName,
+          proposedSlug: slugifyMentionName(currentName),
+          description: currentDescLines.join(" ").replace(/\s+/g, " ").trim().slice(0, 400),
+          lineIndex: i,
+          linePrefix: slugMatch[1],
+          decisionText,
+        })
+      }
+      return
+    }
+
+    // H3 header opens a new mention (LLM uses `### Anthropic` format).
+    const h3Match = line.match(h3HeaderRx)
+    if (h3Match) {
+      const name = h3Match[1].replace(/\s*\([^()]*\)\s*$/, "").replace(/:\s*$/, "").trim()
+      currentName = name
+      currentDescLines = [line]
+      inBoldBlock = true
+      return
+    }
+    // Bold header also opens a new mention.
+    if (/^\*\*(.+?)\*\*/.test(line)) {
+      const m = line.match(boldHeaderRx)!
+      const name = m[1].replace(/\s*\([^()]*\)\s*$/, "").replace(/:\s*$/, "").trim()
+      currentName = name
+      currentDescLines = [line]
+      inBoldBlock = true
+      return
+    }
+
+    // If we're inside a bold block, treat everything (including col-0 `- `)
+    // as description until the next bold header / heading.
+    if (inBoldBlock) {
+      currentDescLines.push(line)
+      return
+    }
+
+    // Otherwise: numbered or bulleted top-level items open a new mention.
+    const rawName = /^\S/.test(line) ? extractTopLevelName(line) : null
+    if (rawName !== null) {
+      const name = rawName
+        .replace(/\*\*/g, "")
+        .replace(/\s*\([^()]*\)\s*$/, "")
+        .replace(/:\s*$/, "")
+        .trim()
+      currentName = name
+      currentDescLines = [line]
+      return
+    }
+
+    // Sub-bullet or continuation line — accumulate as description.
+    currentDescLines.push(line)
+  })
+
+  return mentions
+}
+
+interface WriteTimeGateResult {
+  analysis: string
+  tier1: number
+  tier2Merge: number
+  tier2Keep: number
+  passthrough: number
+  error?: string
+}
+
+async function runWriteTimeGate(
+  projectPath: string,
+  sourceIdentity: string,
+  analysis: string,
+): Promise<WriteTimeGateResult> {
+  const mentions = parseAnalysisMentions(analysis)
+  // DEBUG (2026-09-12): dump raw analysis + parsed mention count for parser debugging.
+  // Remove after gate is validated working on real ingests.
+  if (process.env.MIKAI_GATE_DEBUG === "1") {
+    try {
+      const dumpPath = nodePath.join(nodeOs.tmpdir(), `mikai-gate-debug-${Date.now()}-${sourceIdentity.replace(/[^a-z0-9]/gi, "_").slice(0, 40)}.txt`)
+      await nodeWriteFile(
+        dumpPath,
+        `# GATE DEBUG for ${sourceIdentity}\n# parsed_mentions=${mentions.length}\n\n---ANALYSIS TEXT---\n${analysis}\n\n---PARSED MENTIONS---\n${JSON.stringify(mentions, null, 2)}\n`,
+        "utf-8",
+      )
+      console.log(`[gate:debug] dumped analysis + ${mentions.length} mentions → ${dumpPath}`)
+    } catch (e) {
+      console.warn(`[gate:debug] dump failed: ${e instanceof Error ? e.message : e}`)
+    }
+  }
+  if (mentions.length === 0) {
+    return { analysis, tier1: 0, tier2Merge: 0, tier2Keep: 0, passthrough: 0 }
+  }
+
+  const runId = randomUUID()
+  const mentionsPath = nodePath.join(nodeOs.tmpdir(), `mikai-gate-mentions-${runId}.json`)
+  const outPath = nodePath.join(nodeOs.tmpdir(), `mikai-gate-out-${runId}.json`)
+
+  try {
+    await nodeWriteFile(
+      mentionsPath,
+      JSON.stringify({
+        source: sourceIdentity,
+        existing_pages_dir: nodePath.join(projectPath, "wiki"),
+        mentions: mentions.map((m) => ({
+          kind: m.kind,
+          proposed_slug: m.proposedSlug,
+          one_line_description: m.description,
+        })),
+      }),
+      "utf-8",
+    )
+
+    const ok = await new Promise<boolean>((resolve) => {
+      const proc = spawn(
+        "python3",
+        [WRITE_TIME_GATE_SCRIPT, "--mentions", mentionsPath, "--out", outPath],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      )
+      let stderr = ""
+      proc.stderr.on("data", (b: Buffer) => { stderr += b.toString() })
+      proc.on("close", (code) => {
+        if (code !== 0) {
+          console.warn(`[gate] write_time_gate.py exit ${code}: ${stderr.split("\n")[0] ?? ""}`)
+        }
+        resolve(code === 0)
+      })
+      proc.on("error", (err) => {
+        console.warn(`[gate] failed to spawn write_time_gate.py: ${err.message}`)
+        resolve(false)
+      })
+    })
+
+    if (!ok) {
+      return { analysis, tier1: 0, tier2Merge: 0, tier2Keep: 0, passthrough: mentions.length, error: "gate script failed" }
+    }
+
+    const decisions = JSON.parse(await nodeReadFile(outPath, "utf-8"))
+    const overrides: Record<string, { target: string; tier: number; cosine: number }> = decisions.overrides ?? {}
+    const metrics = decisions.metrics ?? {}
+
+    const lines = analysis.split("\n")
+    for (const mention of mentions) {
+      const override = overrides[mention.proposedSlug]
+      if (!override) continue
+      lines[mention.lineIndex] =
+        `${mention.linePrefix}SLUG DECISION: existing slug \`${override.target}\` ` +
+        `(write-time gate tier ${override.tier} override, cosine ${override.cosine}; was: ${mention.decisionText})`
+    }
+
+    return {
+      analysis: lines.join("\n"),
+      tier1: metrics.tier1_hard ?? 0,
+      tier2Merge: metrics.tier2_llm_merge ?? 0,
+      tier2Keep: metrics.tier2_llm_keep ?? 0,
+      passthrough: metrics.tier3_passthrough ?? 0,
+    }
+  } catch (err) {
+    return {
+      analysis, tier1: 0, tier2Merge: 0, tier2Keep: 0, passthrough: mentions.length,
+      error: err instanceof Error ? err.message : String(err),
+    }
+  } finally {
+    await nodeRm(mentionsPath, { force: true }).catch(() => {})
+    await nodeRm(outPath, { force: true }).catch(() => {})
+  }
+}
+
 async function autoIngestImpl(
   projectPath: string,
   sourcePath: string,
@@ -1067,6 +1360,22 @@ async function autoIngestImpl(
   const analysisActivity = useActivityStore.getState().items.find((i) => i.id === activityId)
   if (analysisActivity?.status === "error") {
     throw new Error(analysisActivity.detail || "Analysis stream failed")
+  }
+
+  // ARCH-034 write-time gate: catch GENUINELY NEW slug decisions that are
+  // near-duplicates of an existing page before generation writes them.
+  // --no-gate / MIKAI_NO_GATE=1 disables (mirrors MIKAI_NO_SLUG_DISCIPLINE).
+  if (process.env.MIKAI_GATE_DEBUG_DUMP) {
+    await nodeWriteFile(process.env.MIKAI_GATE_DEBUG_DUMP, analysis, "utf-8").catch(() => {})
+  }
+  if (process.env.MIKAI_NO_GATE !== "1") {
+    const gateResult = await runWriteTimeGate(pp, sourceIdentity, analysis)
+    analysis = gateResult.analysis
+    console.log(
+      `[gate] ${sourceIdentity}: tier1=${gateResult.tier1} tier2_merge=${gateResult.tier2Merge} ` +
+      `tier2_keep=${gateResult.tier2Keep} passthrough=${gateResult.passthrough}` +
+      (gateResult.error ? ` (degraded: ${gateResult.error})` : ""),
+    )
   }
 
   // ── Step 2: Generation ────────────────────────────────────────
@@ -2180,6 +2489,12 @@ export function buildAnalysisPrompt(
   return [
     "You are an expert research analyst. Read the source document and produce a structured analysis.",
     "Do not output chain-of-thought, hidden reasoning, or a thinking transcript. Reason internally and write only the concise final analysis.",
+    "",
+    // HARD ENGLISH ENFORCEMENT (2026-09-12) — overrides languageRule's per-source
+    // heuristics. The write-time gate (ARCH-034) parses SLUG DECISION lines and
+    // ## Key Entities / ## Key Concepts section headers by literal English text.
+    // Auto-translated German/French/Korean output silently breaks the gate.
+    "**RESPONSE LANGUAGE**: Output your entire analysis in ENGLISH regardless of the source's language. Section headers, bullet labels, and 'SLUG DECISION:' lines MUST be verbatim English. Content BODIES may quote foreign-language passages when directly relevant, but the STRUCTURE stays English.",
     "",
     languageRule(sourceContent),
     "",

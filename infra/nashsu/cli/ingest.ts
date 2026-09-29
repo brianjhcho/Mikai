@@ -29,6 +29,99 @@ import { autoIngest } from "@/lib/ingest"
 // reuses their slugs instead of coining synonyms (Heaps' law node side).
 
 const PRE_TOPK_SCRIPT = "/Users/briancho/.superset/worktrees/MIKAI/pear-seashore/infra/nashsu/bridge/pre_extract_topk.py"
+const CANONICALIZE_SCRIPT = "/Users/briancho/.superset/worktrees/MIKAI/pear-seashore/infra/nashsu/bridge/canonicalize.py"
+
+// ── Canonicalization hook (Phase 2 of Wikipedia-redirect model) ──────
+// After each source's autoIngest returns, iterate newly-written knowledge
+// pages and route each through the three-tier resolution pipeline in
+// bridge/canonicalize.py (alias-table → embedding kNN → LLM adjudication).
+// The pipeline may downgrade a proposed page to a retire stub (merging
+// its body into an existing canonical) — same semantics as R5 dedup, but
+// executed at ingest time so no post-hoc pass is needed. Kill switch
+// MIKAI_CANONICALIZE=0 (read by canonicalize.py) or --no-canonicalize
+// (skips the entire loop) disables it. See docs/CONSOLIDATION_ARCHITECTURE.md §5a.
+
+interface CanonicalizeVerdict {
+  applied?: string
+  verdict?: { action?: string; canonical?: string; reasoning?: string }
+  tier?: number
+  error?: string
+}
+
+interface CanonicalizeTally {
+  mint: number
+  merge: number
+  error: number
+  tiers: Record<number, number>
+}
+
+const KNOWLEDGE_KIND_RE = /\/wiki\/(concepts|entities|wisdom)\/[^/]+\.md$/
+
+async function runCanonicalize(
+  projectPath: string,
+  pageRel: string,
+): Promise<CanonicalizeVerdict> {
+  return new Promise((resolve) => {
+    const proc = spawn(
+      "python3",
+      [
+        CANONICALIZE_SCRIPT,
+        "--project", projectPath,
+        "--page", pageRel,
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    )
+    let stdout = ""
+    let stderr = ""
+    proc.stdout.on("data", (b: Buffer) => { stdout += b.toString() })
+    proc.stderr.on("data", (b: Buffer) => { stderr += b.toString() })
+    proc.on("close", (code) => {
+      if (code !== 0) {
+        resolve({ error: stderr.split("\n").slice(0, 3).join(" | ") || `exit ${code}` })
+        return
+      }
+      try {
+        resolve(JSON.parse(stdout) as CanonicalizeVerdict)
+      } catch (e) {
+        resolve({ error: `parse: ${e instanceof Error ? e.message : String(e)}` })
+      }
+    })
+    proc.on("error", (err) => resolve({ error: err.message }))
+  })
+}
+
+async function canonicalizeWritten(
+  projectPath: string,
+  written: string[],
+  sourceStart: number,
+): Promise<CanonicalizeTally> {
+  const tally: CanonicalizeTally = { mint: 0, merge: 0, error: 0, tiers: {} }
+  // Only pages actually written during THIS source's ingest — the
+  // stale-skip guard from R7 (mtime < sourceStart) prevents wasted calls
+  // on cache-hit files. Same cutoff pattern as the enrichment loop.
+  const cutoff = sourceStart - 5000
+  for (const relPath of written) {
+    if (!KNOWLEDGE_KIND_RE.test("/" + relPath)) continue
+    const absPath = path.join(projectPath, relPath)
+    try {
+      const stat = await fs.stat(absPath)
+      if (stat.mtimeMs < cutoff) continue
+    } catch {
+      continue
+    }
+    const verdict = await runCanonicalize(projectPath, relPath)
+    if (verdict.error) {
+      tally.error++
+      continue
+    }
+    const action = verdict.applied ?? verdict.verdict?.action ?? "mint"
+    if (action.startsWith("merge")) tally.merge++
+    else tally.mint++
+    const tier = verdict.tier ?? 0
+    tally.tiers[tier] = (tally.tiers[tier] ?? 0) + 1
+  }
+  return tally
+}
 
 async function runPreExtractTopK(
   projectPath: string,
@@ -82,6 +175,9 @@ interface Args {
   noTopk: boolean            // skip runPreExtractTopK → no Mechanism B
   noIndex: boolean           // skip refreshCanonicalDirectory → LLM sees only rolling 200 entries
   noSlugDiscipline: boolean  // sets MIKAI_NO_SLUG_DISCIPLINE=1 → vendor prompt drops SLUG DISCIPLINE blocks
+  noGate: boolean            // sets MIKAI_NO_GATE=1 → vendor skips ARCH-034 write-time semantic gate
+  noCanonicalize: boolean    // skip canonicalizeWritten → new pages stay as minted, no alias resolution
+  timeoutMin: number         // per-source wall-clock cap; abort + record ERR on breach
 }
 
 function parseArgs(argv: string[]): Args {
@@ -93,6 +189,9 @@ function parseArgs(argv: string[]): Args {
     noTopk: false,
     noIndex: false,
     noSlugDiscipline: false,
+    noGate: false,
+    noCanonicalize: false,
+    timeoutMin: 20,
   }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
@@ -108,6 +207,12 @@ function parseArgs(argv: string[]): Args {
       out.noIndex = true
     } else if (a === "--no-slug-discipline") {
       out.noSlugDiscipline = true
+    } else if (a === "--no-gate") {
+      out.noGate = true
+    } else if (a === "--no-canonicalize") {
+      out.noCanonicalize = true
+    } else if (a === "--timeout-min") {
+      out.timeoutMin = parseInt(argv[++i], 10) || 20
     } else if (a.startsWith("--")) {
       throw new Error(`unknown flag: ${a}`)
     } else {
@@ -354,6 +459,12 @@ async function main(): Promise<void> {
   if (args.noSlugDiscipline) {
     process.env.MIKAI_NO_SLUG_DISCIPLINE = "1"
   }
+  // ARCH-034: --no-gate propagates via env var so the vendor autoIngestImpl
+  // can skip the write-time semantic gate between analysis and generation.
+  // Vendor reads process.env.MIKAI_NO_GATE.
+  if (args.noGate) {
+    process.env.MIKAI_NO_GATE = "1"
+  }
 
   const t0 = Date.now()
   let done = 0
@@ -364,6 +475,8 @@ async function main(): Promise<void> {
     args.noTopk ? "no-topk" : "",
     args.noIndex ? "no-index" : "",
     args.noSlugDiscipline ? "no-slug-discipline" : "",
+    args.noGate ? "no-gate" : "",
+    args.noCanonicalize ? "no-canonicalize" : "",
   ].filter(Boolean).join(",") || "none"
   console.log(`[nashsu-cli] project=${projectPath}`)
   console.log(`[nashsu-cli] workers=${args.workers} model=${args.model} ablation=${ablationNote}`)
@@ -406,17 +519,49 @@ async function main(): Promise<void> {
               `[nashsu-cli] pre-topk WARN ${relSource}: ${topKResult.error} (${topKResult.ms}ms)`,
             )
           }
-          const written = await autoIngest(
-            projectPath,
-            path.join("raw", "sources", relSource),
-            llmConfig,
-          )
+          // Per-source wall-clock guard. Nashsu's transport already
+          // honors AbortSignal → SIGTERM on the claude subprocess (see
+          // claude-cli-transport.ts abortHandler), so an aborted signal
+          // cleanly tears down the LLM call and rejects autoIngest.
+          // The 3h-9min outlier on 2026-09-03/04 was silently blocking the
+          // whole workers=1 queue; a timeout of 2× p90 catches pathological
+          // stalls without affecting normal sources.
+          const abortCtl = new AbortController()
+          const timeoutMs = args.timeoutMin * 60_000
+          const timeoutHandle = setTimeout(() => abortCtl.abort(), timeoutMs)
+          let written: string[]
+          try {
+            written = await autoIngest(
+              projectPath,
+              path.join("raw", "sources", relSource),
+              llmConfig,
+              abortCtl.signal,
+            )
+          } finally {
+            clearTimeout(timeoutHandle)
+          }
+          if (abortCtl.signal.aborted) {
+            throw new Error(`per-source timeout: ${args.timeoutMin} min wall-clock exceeded`)
+          }
           // Per-page enrichWithWikilinks removed 2026-09-02 per Fable audit:
           // it fires one extra `claude -p` per written page doing what SLUG
           // DISCIPLINE in buildGenerationPrompt already asks for, and was the
           // dominant cost/fragility multiplier of the R7 stack. If page-level
           // link density needs a boost later, run a batched offline sweep
           // instead of per-ingest.
+
+          // Canonicalization pass (CONSOLIDATION_ARCHITECTURE.md §5a). Runs
+          // per newly-minted knowledge page. Costs one `claude -p` call only
+          // when tier 1 (alias) misses AND tier 2 (kNN) returns candidates
+          // above the cosine floor. Empty by default on the fresh vault
+          // path: tier-1 hits are cheap, tier-3 fires only for genuine
+          // near-neighbors so budget is bounded.
+          let canonNote = ""
+          if (!args.noCanonicalize) {
+            const canon = await canonicalizeWritten(projectPath, written, start)
+            canonNote = ` (canon: ${canon.merge} merge, ${canon.mint} mint${canon.error ? `, ${canon.error} err` : ""})`
+          }
+
           const dt = ((Date.now() - start) / 1000).toFixed(1)
           done++
           results.push({ source: relSource, written })
@@ -424,7 +569,7 @@ async function main(): Promise<void> {
             ? ` (topk: OFF)`
             : (topKResult.ok ? ` (topk: ${topKResult.ms}ms)` : ` (topk: FAIL)`)
           console.log(
-            `[nashsu-cli] OK  [${done}/${sources.length}] ${relSource}  ${dt}s → ${written.length} files${topKNote}`,
+            `[nashsu-cli] OK  [${done}/${sources.length}] ${relSource}  ${dt}s → ${written.length} files${topKNote}${canonNote}`,
           )
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err)
