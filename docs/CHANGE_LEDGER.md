@@ -135,6 +135,39 @@
 
 ---
 
+## CHANGE-013: Write-time semantic gate (ARCH-034) — BUILT, NOT WIRED
+**Date:** 2026-09-11 (built), NOT APPLIED · **Files:** `infra/nashsu/bridge/write_time_gate.py`, `infra/nashsu/bridge/test_write_time_gate.py`
+**Plain-English:** Two-tier gate that intercepts nashsu's stage-1 GENUINELY-NEW mentions before stage-2 writes them. Tier 1 (cosine ≥ 0.95) hard-redirects deterministically, no LLM. Tier 2 (0.85-0.95) calls `claude -p` to adjudicate MERGE-into-existing vs KEEP-as-new. Tier 3 (<0.85) passthrough. Report-only against the vault; produces a decisions JSON that the ingest.ts caller would rewrite the analysis text with. Never wired into ingest.
+**Why:** ARCH-034 answers O-050 (mention-level compression) with a two-tier design that avoids the ~30% false-positive rate the single-threshold probe had. Was built to validate the approach; validation-only chunk 2 test never fired.
+**Blast radius:** Zero at rest (report-only, not called from ingest.ts). If wired: adds one Ollama embed per proposed mention + one `claude -p` per tier-2 candidate. Degrades to Tier 3 passthrough if Ollama unreachable — never blocks ingest.
+**Approver said:** N/A — built during the O-050 investigation, not landed as a mechanism.
+**Revert:** N/A (never applied). If wired later: kill switch via `MIKAI_GATE_TIER2_LLM=0` disables tier-2 LLM; removing the wiring in `ingest.ts` disables the whole gate.
+**Watch for:** Tier-2 false-positives (LLM says MERGE when concepts are related-but-distinct — the 28.9% hit-rate at cosine ≥ 0.85 was 30% false-positive on the initial probe). **Unpark contract:** validate on chunk 2 (91 Claude threads) with success bar <15 new HIGH-cosine pairs post-ingest; if passed, wire into ingest.ts + add CHANGE-013b entry on activation.
+
+---
+
+## CHANGE-014: Post-hoc dedup apply tool (apply_dedup.py) — DOWNGRADED per D-068
+**Date:** 2026-09-14 (built) · **Files:** `infra/nashsu/bridge/apply_dedup.py`
+**Plain-English:** Two-phase R5 dedup applier. Phase `judge`: read-only, asks `claude -p` MERGE/KEEP/HUB per HIGH-cosine pair from a prior dedup report, writes incremental verdicts JSON (safe to re-run). Phase `apply`: destructive, backs up vault as tarball, LLM-merges MERGE-pair bodies into canonical, writes retire stub for loser with `retired_to:` frontmatter. Never deletes — retire stubs are the reversibility record.
+**Why:** Was the primary compression mechanism before canonicalization (CANON-2) landed. D-068 downgrades it: post-hoc dedup is now a safety net that runs periodically, not the primary path. Canonicalization at write time catches ~12% of proposed pages before they mint duplicates; apply_dedup handles the residual.
+**Blast radius:** Modifies vault state on `--phase apply` (only when explicitly invoked). Vault-tarball backup written before any change. Inbound wikilinks still point at retired slugs — needs `rewrite-retire-stubs.ts` follow-up (documented in the script's `--help`).
+**Approver said:** Built during R5 pass; approved implicitly ("do all the tasks"). D-068 downgrade approved via "canonicalization is now the primary mechanism."
+**Revert:** Restore vault from the tarball written at apply-time. Per-verdict undo not implemented (unlike `canonicalize_undo.py`).
+**Watch for:** LLM-authored merged body diverges from the two source bodies in ways that neither reviewer notices. Run against a subset first; spot-check merge quality. **Unpark contract:** if canonicalization catch rate drops below 8% or corpus grows past 3000 pages, re-evaluate whether apply_dedup should run as a scheduled safety-net cron (currently manual).
+
+---
+
+## CHANGE-015: Dream pass — periodic cluster consolidation (dream_pass.py) — BUILT, NO CRON
+**Date:** 2026-09-15 (built) · **Files:** `infra/nashsu/bridge/dream_pass.py`, `infra/nashsu/bridge/dream_pass_sample.py`
+**Plain-English:** ARCH-035 production dream pass. Louvain community detection over the wikilink graph, then per-community LLM adjudication (`claude -p`) proposing consolidation moves. Handles oversized "blob" communities (50+ pages) via recursive Louvain sub-clustering + embedding k-means fallback. Report-only: emits a markdown report + verdicts JSON with an inert `apply_plan`. No apply-phase written.
+**Why:** ARCH-035 crystallization principle needs a periodic pass that catches concepts which SHOULD be one canonical but weren't caught at write time (canonicalization gets slug-similar pairs; dream pass gets structurally-clustered pairs the ingest LLM missed). Sample script (`dream_pass_sample.py`) was the proof-of-concept for one Louvain level; `dream_pass.py` adds the recursion needed for real-scale communities.
+**Blast radius:** Zero at rest (report-only, never called on a schedule). If run manually: one Louvain pass + N `claude -p` calls per community (bounded by --max-clusters). Never writes to the vault.
+**Approver said:** N/A — built during the ARCH-035 design pass, not landed as a scheduled mechanism.
+**Revert:** N/A (report-only, no state to reverse).
+**Watch for:** Recursive Louvain on very-dense communities can loop or produce degenerate partitions — the max-recursion + k-means fallback are the guards. LLM adjudication quality on 15-page communities is untested at scale. **Unpark contract:** run against the current vault, inspect the report, decide whether apply-phase is worth building. If yes: (a) build `dream_pass_apply.py` mirroring `canonicalize.py`'s archive+log pattern, (b) schedule as weekly cron, (c) add CHANGE-015b on activation.
+
+---
+
 ## CHANGE-012: mikai-wiki-v1 search — live-embed on cache miss (fix)
 **Date:** 2026-09-28 · **Files:** `infra/mikai-mcp/src/search.ts`, `infra/mikai-mcp/dist/src/search.js` (rebuilt)
 **Plain-English:** Replaces the silent `continue` on cache-miss in `semanticSearch()` with a `loadOrEmbed()` call — same helper already used for the query itself and mirroring `dedup_embed.py`'s convention. If a page's cached embedding is missing (because its body was modified after the last embed pass), the search now embeds the current body via Ollama, caches it, and includes the page in scoring instead of skipping it.

@@ -41,6 +41,10 @@ Always start with `docs/STATUS.md` for the volatile "what's actually on main rig
 | Harness architecture (subagent orchestration, loops, .omc) | `docs/HARNESS_ARCHITECTURE.md` |
 | Named-concepts registry / glossary lookup | `docs/GLOSSARY.md` |
 | Cockpit design / L4 surfacing UX | `docs/COCKPIT_*.md`, `docs/CONCEPT_NAVIGATION_DEFERRED.md` |
+| Cockpit content strategy (Aug 2026 Fable pass — what primary views show) | `docs/COCKPIT_CONTENT_STRATEGY.md` |
+| Cockpit input path / ask feature (query surface, context composer) | `docs/COCKPIT_INPUT_FEATURE.md` |
+| Cockpit organization — function-view vs topic-view tradeoff | `docs/COCKPIT_ORGANIZATION_TRADEOFF.md` |
+| Cockpit structure research — Second Brain HTML ecosystem survey | `docs/COCKPIT_STRUCTURE_RESEARCH.md` |
 | Salience score formula S(c,t) — concrete implementation | `docs/SALIENCE_FORMULA.md` |
 | Salience iteration history (v001..v00N) | `docs/SALIENCE_VERSION_HISTORY.md` |
 | Retrieval stack — what runs at query time | `docs/RETRIEVAL_STACK.md` |

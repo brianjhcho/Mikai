@@ -50,6 +50,9 @@ Read the full text in `docs/DECISIONS.md`. Currently load-bearing:
 - **Do not commit to git without approval.** Especially: no force-pushes, no rewriting history.
 - **Do not build new mechanisms on top of what's parked.** CANON-5 (accretion) and any similar density-enrichment work waits until corpus-testing measurement demands it.
 - **Do not confuse "close to karpathy/nashsu" with "no MIKAI additions."** The constitution (§5a canonicalization + §5b salience) IS MIKAI-specific — it's the branch's stated architecture, not divergence.
+- **Do not build parked mechanisms without an unpark contract.** A parked mechanism (built-but-not-applied) MUST name in its CHANGE_LEDGER entry the *specific measurement that would unpark it* — a threshold, a corpus size, a failure mode of the current system. Building a mechanism with no unpark contract is treated as a divergence and needs approval. Rationale: parked code without an unpark trigger becomes zombie code — nobody remembers what evidence would make it real, and it sits on disk as unstated intent.
+- **Do not use silent skips in retrieval or resolution paths.** Any code path that would silently drop a candidate (stale-cache skip, unreachable-service skip, malformed-input skip) MUST either produce a result via a documented fallback OR log the skip with enough context to reproduce it. CHANGE-012 was a silent-skip bug that biased search AGAINST the most-worked-on pages — the class is dangerous because it degrades quality invisibly.
+- **Do not approve mechanisms without a drafted CHANGE_LEDGER entry.** Approval flow: proposal → I draft the ledger entry → you approve the ledger entry → mechanism lands. Retrofitting ledger entries after mechanisms land (as we did for CANON-1..12 on 2026-09-27) is compensating for missed discipline, not the discipline itself.
 
 ## Active files (2026-09-22)
 
