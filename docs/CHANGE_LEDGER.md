@@ -179,6 +179,42 @@
 
 ---
 
+## CHANGE-013: Write-time semantic gate (ARCH-034) — PARKED
+**Date:** 2026-09-11 (built + tested), NOT WIRED · **Files:** `infra/nashsu/bridge/write_time_gate.py`, `infra/nashsu/bridge/test_write_time_gate.py`
+**Plain-English:** Standalone pre-write gate. For each GENUINELY NEW mention nashsu's stage-1 analysis proposes, embeds the mention and cosines it against existing title+first-paragraph embeddings. Tier 1 (≥0.95) hard-redirects with no LLM call. Tier 2 (0.85-0.95) asks `claude -p` MERGE-or-KEEP. Tier 3 (<0.85) passes through unchanged. Tested standalone at cosine ≥0.85: 28.9% hit rate on 20 known-synonym-coining sources.
+**Why:** Complements CANON-2 (post-write canonicalization) with pre-write mention-level detection. §5a called for mention-level, not just page-level. Landed as ARCH-034 design.
+**Blast radius (if wired):** One extra embed per proposed mention. Tier 2 adds one `claude -p` per ambiguous mention (~180s timeout). Wired via env `MIKAI_GATE=1` — not set by default.
+**Approver said:** Approved BUILD ("Do all the tasks"), then implicit PARK by 2026-09-17 "don't diverge from stated architecture without measurement."
+**Unpark contract:** Chunk 2 (91 Claude threads) ingest with two-tier gate active. Success = <15 new HIGH-cosine pairs generated (baseline: current post-hoc dedup catches ~30 HIGH pairs per 91-thread chunk). Failure mode observed: ~30% false-positives at 0.85 threshold (enfj↔entj, hilton↔hyatt). Need Tier 2 to reject those before unpark.
+**Revert:** N/A (never wired into ingest CLI). If wired: `git revert <SHA>` + unset `MIKAI_GATE`.
+**Watch for:** False-positive rate at Tier 1 threshold — 0.95 is calibrated for title+first-paragraph proxy, may need retuning for body-embedding.
+
+---
+
+## CHANGE-014: Post-hoc dedup (apply_dedup.py) — DOWNGRADED per D-068
+**Date:** 2026-08 (built), 2026-09 (downgraded) · **Files:** `infra/nashsu/bridge/apply_dedup.py`
+**Plain-English:** Two-phase LLM-adjudicated dedup pass over an R5 dedup report. Phase `judge` (read-only): asks `claude -p` MERGE/KEEP/HUB per HIGH-cosine pair, writes verdicts incrementally. Phase `apply` (destructive): backs up vault, LLM-merges bodies for MERGE verdicts, writes canonical + retire stub. Never deletes.
+**Why:** Was the primary dedup mechanism before ARCH-036 landed. Now the SAFETY NET — canonicalization at write-time (CANON-2) prevents most duplicates before they land; apply_dedup catches whatever slips through. Kept on disk because periodic runs are still useful.
+**Blast radius:** Destructive in `apply` phase — vault backup mandatory. `judge` phase is safe to re-run.
+**Approver said:** Original approval predates ledger. Downgrade approved by 2026-09-22 branch manifest ("Session-5's post-ingest dedup as standard — confidence DOWNGRADED" → D-068).
+**Unpark contract:** Not parked — kept as safety-net. Run after every N=100 new sources OR when consolidation-completeness measurement shows partition correctness <85%.
+**Revert:** `rm infra/nashsu/bridge/apply_dedup.py` — no state. Vault backups (from `apply` phase) restore the pre-run state.
+**Watch for:** LLM merge quality on adjacent-but-distinct pairs. `judge` phase verdicts are auditable; spot-check MERGE decisions before running `apply`.
+
+---
+
+## CHANGE-015: Dream pass (dream_pass.py + dream_pass_sample.py) — PARKED
+**Date:** 2026-09 (built), NOT SCHEDULED · **Files:** `infra/nashsu/bridge/dream_pass.py`, `infra/nashsu/bridge/dream_pass_sample.py`
+**Plain-English:** ARCH-035 periodic offline consolidation. Louvain community detection over the wikilink graph → LLM adjudication per community for merge/split/keep verdicts. `dream_pass_sample.py` is the 3-15-page proof-of-concept; `dream_pass.py` adds recursive sub-clustering for large "blob" communities (50+ pages) with k-means fallback when Louvain can't decompose further.
+**Why:** Karpathy crystallization principle (ARCH-035) — the wiki should crystallize into dense canonical pages over time. Canonicalization prevents new duplicates at write-time; dream pass consolidates what's already scattered across near-identical pages.
+**Blast radius (if scheduled):** One `claude -p` call per Louvain community (~15-30 communities per run). Recursive sub-clustering can multiply this if the graph has large blobs. Fully reversible via same archive+log pattern as CANON-2.
+**Approver said:** Approved BUILD (ARCH-035 in DECISIONS.md). No scheduling approval — awaiting corpus measurement.
+**Unpark contract:** Consolidation-completeness measurement (weekly cron per next-branch plan) shows density-median-words plateauing OR partition correctness declining. Then schedule dream_pass as weekly cron. Ecosystem evidence (OpenAI Dreaming V3: 67.9% → 82.8% factual recall; Letta sleep-time compute) supports this direction.
+**Revert:** N/A (never scheduled). If scheduled via cron: `crontab -r` or remove the specific line; existing pages retain their pre-dream state via canonicalization archive.
+**Watch for:** LLM adjudication cost per community — recursive sub-clustering on blob communities can spike. Cap `--max-recursion` conservatively. Community boundaries may cross concept boundaries; spot-check merge verdicts before landing.
+
+---
+
 ## Template for future entries
 
 ```

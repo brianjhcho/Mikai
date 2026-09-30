@@ -41,6 +41,10 @@ Always start with `docs/STATUS.md` for the volatile "what's actually on main rig
 | Harness architecture (subagent orchestration, loops, .omc) | `docs/HARNESS_ARCHITECTURE.md` |
 | Named-concepts registry / glossary lookup | `docs/GLOSSARY.md` |
 | Cockpit design / L4 surfacing UX | `docs/COCKPIT_*.md`, `docs/CONCEPT_NAVIGATION_DEFERRED.md` |
+| Cockpit — ecosystem survey (Obsidian graph, Tana, Andy Matuschak, LYT) | `docs/COCKPIT_STRUCTURE_RESEARCH.md` |
+| Cockpit — function-vs-topic view tradeoff | `docs/COCKPIT_ORGANIZATION_TRADEOFF.md` |
+| Cockpit — content strategy + tool survey (Sunsama, Motion, Reclaim, Superhuman, etc.) | `docs/COCKPIT_CONTENT_STRATEGY.md` |
+| Cockpit — ask/input feature design | `docs/COCKPIT_INPUT_FEATURE.md` |
 | Cockpit content strategy (Aug 2026 Fable pass — what primary views show) | `docs/COCKPIT_CONTENT_STRATEGY.md` |
 | Cockpit input path / ask feature (query surface, context composer) | `docs/COCKPIT_INPUT_FEATURE.md` |
 | Cockpit organization — function-view vs topic-view tradeoff | `docs/COCKPIT_ORGANIZATION_TRADEOFF.md` |

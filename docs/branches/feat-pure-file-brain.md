@@ -50,6 +50,22 @@ Read the full text in `docs/DECISIONS.md`. Currently load-bearing:
 - **Do not commit to git without approval.** Especially: no force-pushes, no rewriting history.
 - **Do not build new mechanisms on top of what's parked.** CANON-5 (accretion) and any similar density-enrichment work waits until corpus-testing measurement demands it.
 - **Do not confuse "close to karpathy/nashsu" with "no MIKAI additions."** The constitution (§5a canonicalization + §5b salience) IS MIKAI-specific — it's the branch's stated architecture, not divergence.
+
+## Unpark contract (added 2026-09-29)
+
+Every PARKED mechanism (see `docs/CHANGE_LEDGER.md` entries marked PARKED) MUST carry an **Unpark contract** field in its ledger entry naming the specific measurement that would justify unparking. Building a parked mechanism without an unpark contract is treated as a divergence and needs approval. The unpark contract answers "what number, on what benchmark, at what threshold, would make this mechanism worth its cost?" — not "when it feels ready."
+
+Currently parked mechanisms and their unpark contracts:
+
+| Mechanism | Ledger entry | Unpark contract |
+|---|---|---|
+| Accretion (CANON-5) | CHANGE-005 | Consolidation-completeness density-median-words plateaus AND canonicalization alone can't move it |
+| Write-time gate (ARCH-034) | CHANGE-013 | Chunk 2 (91 threads) generates <15 new HIGH-cosine pairs with gate active |
+| Dream pass (ARCH-035) | CHANGE-015 | Weekly consolidation-completeness shows density-median-words plateau OR partition correctness decline |
+
+## Silent-failure convention (added 2026-09-29)
+
+In retrieval and search code paths, **silent skips are always wrong**. Any code path that filters candidates out of a result set MUST either produce a scored result OR fall back to a documented degraded mode (e.g., lexical fallback when Ollama unreachable). Never `continue` on unexpected state without a comment naming exactly what failure this represents and why it's safe to drop. CHANGE-012 was a silent-skip bug that biased search against the most-worked-on pages for weeks; the regression test at `infra/mikai-mcp/test/cache-staleness.test.mjs` blocks its recurrence.
 - **Do not build parked mechanisms without an unpark contract.** A parked mechanism (built-but-not-applied) MUST name in its CHANGE_LEDGER entry the *specific measurement that would unpark it* — a threshold, a corpus size, a failure mode of the current system. Building a mechanism with no unpark contract is treated as a divergence and needs approval. Rationale: parked code without an unpark trigger becomes zombie code — nobody remembers what evidence would make it real, and it sits on disk as unstated intent.
 - **Do not use silent skips in retrieval or resolution paths.** Any code path that would silently drop a candidate (stale-cache skip, unreachable-service skip, malformed-input skip) MUST either produce a result via a documented fallback OR log the skip with enough context to reproduce it. CHANGE-012 was a silent-skip bug that biased search AGAINST the most-worked-on pages — the class is dangerous because it degrades quality invisibly.
 - **Do not approve mechanisms without a drafted CHANGE_LEDGER entry.** Approval flow: proposal → I draft the ledger entry → you approve the ledger entry → mechanism lands. Retrofitting ledger entries after mechanisms land (as we did for CANON-1..12 on 2026-09-27) is compensating for missed discipline, not the discipline itself.
