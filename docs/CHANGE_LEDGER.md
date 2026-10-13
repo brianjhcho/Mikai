@@ -218,6 +218,50 @@
 ## Template for future entries
 
 ```
+## CHANGE-016: Surface Engine reads files instead of Neo4j
+**Date:** 2026-10-13 · **Branch:** `feat/brain-hands-hermes` · **Files:** `infra/decider/mikai_decide.py` (188+/676−), new `infra/decider/brain_context.py`, new `infra/decider/tests/test_brain_context.py`
+**Plain-English:** The notification decider no longer queries the deprecated Graphiti/Neo4j graph. Each tick it reads thread files (`~/.mikai/brain/threads/*.md`: state, quiet days, next step), the priority docs (BRAIN.md, GOALS.md, USER_MODEL.md) and the wiki pages those threads name, plus the existing iMessage/Calendar/Gmail adapters and needs registry, then asks `claude -p` whether to interrupt. Dispatch (ntfy), cooldown, logging and the tap/dismiss loop are unchanged.
+**Why:** The engine went dormant on 2026-08-07 after the graph was deprecated; its August output was the product. Files are the active substrate.
+**Blast radius:** Read-only on all MIKAI files. Writes only to `~/.mikai/notification_log.db` (as before). When scheduled, sends real push notifications to Brian's phone. Other modules that import from `mikai_decide` (calendar planner, tap endpoint, dismissal inference, daily brief, CLI) still import cleanly; 53/53 decider tests pass.
+**Approver said:** "In parallel do the six tasks that you defined" (build). Landing approval: "Commit now" (2026-10-13). Not switched on; scheduled job still unloaded.
+**Revert:** `git revert <commit>`. Scheduled job stays off until `launchctl load ~/Library/LaunchAgents/com.mikai.figs-decide.plist`; unload with `launchctl unload` of the same path.
+**Watch for:** Threads go stale (current files show 69–70 days quiet because nobody updated them), which makes everything look "stalled". Only 1 wiki page enriches the prompt because threads rarely name entities. iMessage excerpts (60 items) go into the `claude -p` prompt.
+
+---
+
+## CHANGE-017: MCP task-state + feedback tools
+**Date:** 2026-10-13 · **Files:** `infra/mikai-mcp/src/index.ts`, `src/vault.ts`, new `src/threads.ts`, new `src/feedback.ts`, new `test/task-state.test.mjs`
+**Plain-English:** `mikai-wiki-v1` gains four tools: `mikai_threads_list`, `mikai_thread_get`, `mikai_get_stalled_threads` (read thread files) and `mikai_record_feedback` (records ACTED / DISMISSED / SNOOZED / NOT_RELEVANT for a surfaced item). Any MCP client — Claude Code, Hermes — can read task-state and log explicit replies.
+**Why:** Step 2 of the Oct 11 brief (task-state over MCP) and the explicit-label half of the dismiss-rate loop.
+**Blast radius:** The three read tools are read-only. `mikai_record_feedback` is the first write path in the MCP server: it inserts rows into a new additive `notification_feedback` table in `~/.mikai/notification_log.db`; existing tables are untouched. 8/8 tests pass.
+**Approver said:** "In parallel do the six tasks that you defined" (build). Landing approval: "Commit now" (2026-10-13).
+**Revert:** `git revert <commit>`; the extra table can stay (nothing reads it except the dismiss-rate script) or be dropped with `DROP TABLE notification_feedback`.
+**Watch for:** A chatty agent recording feedback it inferred rather than what Brian said — feedback rows record a `source`; the dismiss-rate report should count only explicit user replies.
+
+---
+
+## CHANGE-018: Hermes Agent installed and wired to MIKAI over MCP (outside the repo)
+**Date:** 2026-10-13 · **Files:** outside the repo: `~/.hermes/` (Hermes v0.21.7, own uv/Python), `~/.hermes/config.yaml` (backup `config.yaml.bak-pre-mikai`), `~/.local/bin/hermes`, PATH line in `~/.zprofile`. In repo: `infra/hermes/README.md` (reproduction notes).
+**Plain-English:** Hermes runs on Brian's Claude subscription via the official `claude-subscription-directsdk` plugin (no API key) and connects to `mikai-wiki-v1` as an MCP server (10 tools discovered, one live tool call verified). No gateway, no background service, no messages sent. iMessage (BlueBubbles) is not connected — needs Brian's identity decision and permissions.
+**Why:** "MIKAI brain, Hermes hands" dogfood loop.
+**Blast radius:** Each Hermes turn draws on the same subscription pool as interactive Claude use (~62K tokens for a trivial turn, mostly Hermes's own system prompt). Nothing runs unattended.
+**Approver said:** "In parallel do the six tasks that you defined".
+**Revert:** `rm -rf ~/.hermes ~/.local/bin/hermes` and remove the PATH line from `~/.zprofile`; `git revert` for the README.
+**Watch for:** Token cost per turn before any schedule is added (trim skills/toolsets). Anthropic policy on third-party harnesses is contested — personal use only. When BlueBubbles is added, restrict to Brian's own handle.
+
+---
+
+## CHANGE-019: Dismiss-rate measurement (measurement only)
+**Date:** 2026-10-13 · **Files:** new `eval/dismiss_rate.py`, `eval/test_dismiss_rate.py`, `eval/reports/dismiss-rate-2026-10-13.md` (draft, not published)
+**Plain-English:** Reads `notification_log.db` read-only and computes the dismiss rate with explicit and inferred labels reported separately, plus failure counts. Today: 100% from 3 inferred data points — the report says this means almost nothing yet.
+**Why:** Step 4/5 of the brief: start the log and publish one honest benchmark.
+**Blast radius:** Zero (read-only). 12/12 tests pass.
+**Approver said:** "In parallel do the six tasks that you defined". Publishing externally needs separate approval.
+**Revert:** delete the three files.
+**Watch for:** Publishing before ≥20 explicitly rated items.
+
+---
+
 ## CHANGE-NNN: <name>
 **Date:** YYYY-MM-DD · **Files:** paths touched
 **Plain-English:** what this actually does when it fires (2-3 sentences)

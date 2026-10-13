@@ -72,7 +72,9 @@ This is not memory. This is *awareness*.
 | **Next-step inference** | **Nobody** |
 | **Intention-behavior gap detection** | **Nobody** |
 
-The top four are memory infrastructure — commodity, replicable, converging. The bottom four are MIKAI's product. Every memory vendor can add typed edges or tension detection in a migration. None of them has the multi-source data pipeline or the reasoning-stage model required for noonchi.
+The top four are memory infrastructure — commodity, replicable, converging. The bottom four are MIKAI's product. Every memory vendor can add typed edges or tension detection in a migration.
+
+> **Correction (2026-10-13, per the Oct 11 market position brief):** an earlier version of this section said no competitor has a multi-source data pipeline. That is no longer true. Instinct reads and answers texts and email and books travel through the user's own accounts; Meta's Muse connects to banking and card statements; OpenAI's Dots works across ChatGPT, Slack and Teams. **The narrower claim that still holds:** nobody tracks per-thread task-state (where each of a person's threads stands — exploring, decided, acting, stalled, completed), and nobody measures or publishes interruption quality (how often proactive messages are acted on vs. dismissed). See `docs/COMPARISON.md` for the sourced landscape.
 
 ### The reasoning-state model
 
@@ -93,12 +95,13 @@ State transitions are detected from cross-source signals — not from the user t
 
 This is the honest, load-bearing correction to earlier positioning: **epistemic edges and tension surfacing are features, not moats.** Any competitor can add `supports`/`contradicts` edge types in a schema migration and add one query to surface tensions. Those capabilities are replicable in 1–2 weeks of engineering.
 
-The moat is four layers of depth *above* the edges:
+The moat is five layers of depth *above* the edges:
 
-1. **Cross-app task-state tracking.** Requires ingestion from 4+ source types + thread detection + state classification. Nobody has the multi-source data pipeline.
+1. **Cross-app task-state tracking.** Requires ingestion from 4+ source types + thread detection + state classification. Multi-source ingestion alone is no longer rare — personal agents like Instinct and Muse ingest several sources. What nobody ships is the step after ingestion: per-thread state classification with a stall view.
 2. **Reasoning-stage classification.** Novel problem. No existing benchmark. No existing solution. First-mover defines the category.
 3. **Next-step inference.** Requires task-state + trajectory + context. Depends on having thread-state tracking working first.
-4. **Intention-behavior gap detection.** Requires cross-referencing authored content (what you said) vs. behavioral traces (what you did). Nobody else has both data sources.
+4. **Intention-behavior gap detection.** Requires cross-referencing authored content (what you said) vs. behavioral traces (what you did). Executors like Instinct and Muse read behavioral traces (inbox, calendar, bank feeds — what you did); MIKAI reads authored content (notes, Claude threads — what you meant). The gap is detectable only by a system that reads both, so this capability is defensible only if MIKAI reads both.
+5. **Measured interruption quality.** Every launch measures task completion; none publishes how often its proactive messages were acted on versus dismissed. MIKAI's dismiss-rate gate (<30% after 20 surfaced items) is a benchmark no competitor quotes today.
 
 > **Unresolved (O-035):** The current extraction prompt was tuned on Brian's reflective, framework-heavy writing style. The edge vocabulary (see FOUNDATIONS.md §2) was built against the same corpus. NOONCHI_STRATEGIC_ANALYSIS argues the vocabulary may have drifted toward philosophy rather than utility, and that the extraction prompt may need to shift toward thread/task-state signals rather than epistemic relationships. EPISTEMIC_EDGE_VOCABULARY treats the vocabulary as a settled spec. These two stances disagree. The L3 edge vocabulary is still the L3 schema, but whether it is load-bearing for L4 task-state detection — or whether L4 needs a different, activity-oriented extraction pass — is an open question. Don't treat the edge vocabulary as a durable L4 moat until O-035 resolves.
 
@@ -116,7 +119,7 @@ These are different training signals. Over time, they produce fundamentally diff
 
 Per D-033, this is the primary positioning. Not "second brain" (dead category signal). Not "follows you everywhere" (infrastructure language that triggers Mem.ai / Rewind pattern-matching). Not "intent prediction engine" (Series C narrative, not the seed pitch).
 
-"The AI that knows what you're stuck on" describes a user-felt experience, not a technical capability. It is something no product in the competitive landscape (Mem0, Mem.ai, Rewind, Granola, Howie) can honestly claim today.
+"The AI that knows what you're stuck on" describes a user-felt experience, not a technical capability. It is something no product in the competitive landscape (Mem0, Mem.ai, Rewind, Granola, Howie) can honestly claim today. The closest is Instinct, which follows up on conversations a user has dropped — but on the action side (inbox, texts), without per-thread state, and its heavy users report they cannot tell "the 'status' of each thing" in its single chat thread (see `docs/COMPARISON.md`).
 
 ---
 

@@ -6,6 +6,7 @@
 >
 > Initial version: 2026-07-17 · After the OpenClaw vs Hermes comparison and
 > Brian's decision to keep MIKAI as a consumer-product bet.
+> Last updated: 2026-10-13 (personal-agent launches + Hermes refresh).
 
 ## The question this doc answers
 
@@ -32,16 +33,31 @@ it is **packaging**.
 
 ## What MIKAI does not try to build (adjacent tools cover it)
 
-### Hermes Agent covers
+### Hermes Agent covers (refreshed 2026-10-13)
 
 - Cross-session memory with autonomous skill creation (`MEMORY.md`, `USER.md`)
-- CLI agent surface + always-on daemon (`hermes gateway`)
-- Messaging integrations: Telegram, Discord, Slack, WhatsApp, Signal, Email
-- File R/W and terminal shell execution
-- Multi-LLM routing (300+ backends via Nous Portal / OpenRouter / Anthropic /
-  OpenAI / custom)
-- Honcho dialectic user modeling
+- **Memory-provider plugins**: one external provider active at a time alongside
+  built-in memory (Honcho, Mem0, Supermemory, Hindsight, RetainDB, ByteRover,
+  OpenViking, Holographic). Hooks: inject provider context into the system
+  prompt, prefetch before each turn, sync turns after each response, extract
+  memories at session end. ([docs](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory-providers))
+- **MCP client**: any MCP server over stdio or HTTP, per-server tool filtering,
+  sampling support. ([docs](https://hermes-agent.nousresearch.com/docs/user-guide/features/overview))
+- **Multi-platform gateway, 20+ platforms**: Telegram, Discord, Slack,
+  WhatsApp, iMessage, Signal, Matrix, Teams, Email and more
+- Terminal, native desktop app, IDE surfaces; six terminal backends; isolated
+  profiles; cron scheduling with multi-platform delivery
+- Multi-LLM routing (Nous Portal / OpenRouter / Anthropic / OpenAI / custom)
+- **`claude-subscription-directsdk` plugin** (added 2026-09-20, updated
+  2026-10-13): runs Hermes through the official `claude` CLI so turns bill
+  against the Claude subscription's Agent SDK allowance, no API key.
+  ([docs](https://hermes-agent.nousresearch.com/docs/plugins/claude-subscription-directsdk))
+  Policy status is contested — see "Anthropic subscription constraint" below.
 - FTS5 session search + LLM summarization
+
+**What Hermes does not do:** track where each of a user's threads stands, or
+judge whether an interruption is worth sending. Same empty band as the
+commercial personal agents below.
 
 ### OpenClaw covers
 
@@ -56,6 +72,76 @@ it is **packaging**.
 **MIKAI should consume these tools' capabilities (via MCP, event bridges, or
 ingestion adapters) rather than duplicate them.** Duplicating them was the
 mistake in earlier builds.
+
+### Commercial personal agents (launched Aug–Sep 2026)
+
+All three execute tasks. None tracks where each of a person's threads stands
+or publishes how often its proactive messages are acted on vs. dismissed.
+
+| | **Instinct** (Spear Street Technology) | **Muse** (Meta) | **Dots** (OpenAI) |
+|---|---|---|---|
+| Focus | Personal logistics: travel, groceries, appointments, cancelling subscriptions | Everyday personal errands | Professional work: research, proposals, fixing software |
+| Interface | Text (iMessage / WhatsApp), phone calls, Mac app, web workspace | Own app + WhatsApp | Inside ChatGPT; Slack, Teams |
+| How it acts | Signs into the user's own accounts with their credentials; books with the user's airline end to end; has its own agent email addresses | Per-user cloud VM; asks approval for critical actions | Professional delegation in OpenAI's tools |
+| Proactivity | High: checks in to flights, reminds about cancellations, follows up dropped conversations | Some | Some |
+| Data stance | Training on by default (opt-out); indexed data kept after disconnect unless deletion requested | Memory downloadable by the user | Personal accounts opt-in training |
+| Access | Invite-only beta, no public pricing; $350M raised | Free tier, Meta distribution | Paid ChatGPT tiers |
+
+**Instinct's documented gaps** (the openings MIKAI targets — full contrast in
+`docs/TRUST_POSITIONING.md`):
+
+- **No per-task status.** A heavy user: "my chat has a bunch of diff, unrelated
+  stuff, and it's hard for me to quickly figure out the 'status' of each
+  thing." ([eesel](https://www.eesel.ai/blog/instinct-ai-review)) Note: it also
+  has a Mac app and web workspace, so this is a reported pain point, not
+  proof that no status view exists.
+- **Silent failure.** On 2026-09-22 it stopped replying mid-task, messages
+  showing as read, no status page, no statement.
+  ([Yahoo Finance](https://finance.yahoo.com/technology/ai/articles/hello-frozen-users-viral-ai-161755806.html))
+- **Data trust.** Data retained after disconnect, inbox stored in plain text,
+  followed a planted prompt injection.
+  ([TechCrunch](https://techcrunch.com/2026/08/24/instincts-powerful-ai-assistant-is-raising-privacy-and-security-concerns/))
+- **Interruption quality.** Unrequested shopping suggestions.
+  ([BigGo](https://finance.biggo.com/news/4bb6e195-cb18-455f-baef-9914f298018e))
+
+Sources for the table: [Kilo](https://blog.kilo.ai/p/dots-instinct-and-muse-the-same-category),
+[Notis](https://www.notis.ai/compare/instinct-vs-meta-muse-vs-openai-dots/),
+[Skift](https://skift.com/2026/09/04/a-viral-ai-bot-just-showed-travel-what-frictionless-actually-means/),
+[TechCrunch on Instinct email](https://techcrunch.com/2026/09/09/viral-ai-assistant-instinct-now-has-its-own-email-address/).
+
+## Positioning: MIKAI is the brain, the assistant is the hands
+
+Per the Oct 11 market position brief (Option C): MIKAI does not compete as a
+general assistant. It owns task-state (where each thread stands) and salience
+(whether surfacing it is worth an interruption), and plugs into executors that
+already exist.
+
+| Phase | Hands (execution + channel) | Brain (MIKAI) |
+|---|---|---|
+| Dogfood (Brian) | Hermes Agent: iMessage conversation, cron | MIKAI over MCP (`mikai-wiki-v1`) + Surface Engine deciding interruptions, ntfy push kept for salience surfacing |
+| First users | The user's own Claude app (Desktop / Code) | MIKAI as an MCP server exposing task-state tools |
+| Power users | Hermes with the user's own keys | A MIKAI memory-provider plugin or MCP server |
+
+**Borrowed from Instinct:** texting as the interface, proactive follow-up on
+dropped threads, a separate agent identity (own email) instead of the user's
+credentials. **Not borrowed:** acting through the user's saved passwords.
+
+### Anthropic subscription constraint
+
+- **Personal use:** `claude -p` and the Agent SDK still bill against the
+  user's subscription. Anthropic announced a separate agentic credit for
+  2026-06-15, then paused it on 2026-06-16; nothing changed.
+  ([Digital Applied](https://www.digitalapplied.com/blog/anthropic-claude-credit-overhaul-june-15-2026))
+- **Products:** Anthropic does not permit third-party developers to "offer
+  Claude.ai login or to route requests through Free, Pro, or Max plan
+  credentials on behalf of their users." Some guides treat even personal use
+  of Hermes's subscription plugin as disallowed.
+  ([vincentvandeth.nl](https://vincentvandeth.nl/blog/hermes-agent-claude-subscription-oauth),
+  [OpenClaw Launch](https://openclawlaunch.com/guides/hermes-claude-subscription))
+- **Consequence:** the legitimate distribution route is MCP inside the user's
+  own Claude app — their subscription pays for inference through Anthropic's
+  own client. MIKAI must not sell "powered by your Claude subscription"
+  through a third-party harness.
 
 ## What MIKAI uniquely builds
 
@@ -99,27 +185,32 @@ tools give you, but:
 
 ## Feature matrix
 
-| Capability | Hermes Agent | OpenClaw | Claude Code | **MIKAI (target)** |
-|---|---|---|---|---|
-| Cross-session memory | Yes | No | No | Yes (via life-tier + wiki) |
-| Declarative ontology | No | No | No | **Yes** |
-| Skill creation | Yes | Via plugins | Via skills | Consumed via Hermes |
-| Messaging integrations | 6 platforms | 100+ | No | **Consumed via OpenClaw** |
-| Browser control | Read (Firecrawl) | Act (native) | No | **Consumed via OpenClaw** |
-| File operations | Shell only | Yes (rich) | Yes | **Consumed via OpenClaw** |
-| Terminal / CLI | Yes | Yes | Yes | No — consumer GUI only |
-| Intervention-timing gate | No | No | No | **Yes (Sumimasen)** |
-| Approval loop per mutation | No | No | No | **Yes (D-055)** |
-| Consumer packaging | No | No | No | **Yes** |
-| Self-hosted OSS | Yes | Yes | No | Cloud + optional local |
-| Wiring required | Yes | Yes | Yes | **No — packaged** |
+Updated 2026-10-13. "Partial" means a related capability without the full
+thing (e.g. following up dropped conversations without per-thread state).
+
+| Capability | Hermes Agent | OpenClaw | Instinct | Muse | Dots | Claude Code | **MIKAI (target)** |
+|---|---|---|---|---|---|---|---|
+| Cross-session memory | Yes (+ plug-in providers) | No | Yes | Yes (downloadable) | Yes | Via CLAUDE.md / memory | Yes (wiki + thread files) |
+| Declarative ontology | No | No | No | No | No | No | **Yes** |
+| Messaging integrations | 20+ platforms incl. iMessage | 100+ app integrations | iMessage, WhatsApp, phone | Own app, WhatsApp | ChatGPT, Slack, Teams | No | **Consumed via Hermes** |
+| Acts on the user's accounts | Via tools | Yes (browser) | Yes (user credentials) | Yes (cloud VM, approvals) | Yes (work tools) | Files / shell | **No — by design** |
+| Per-thread task-state | No | No | Partial (follow-ups, no state view) | No | No | No | **Yes** |
+| Interruption gate (salience) | No | No | No (unsolicited suggestions reported) | Approval gate only | No | No | **Yes (Sumimasen)** |
+| Published dismiss rate | No | No | No | No | No | No | **Planned** |
+| Approval loop per mutation | No | No | No | For critical actions | Partial | Permission prompts | **Yes (D-055)** |
+| Self-hosted OSS | Yes | Yes | No | No | No | No | Local files; optional cloud |
+| Runs on a Claude subscription | Contested plugin | Blocked | No (own models) | No | No | Yes (first-party) | **Via MCP in the user's Claude** |
 
 ## Positioning claim in one sentence
 
-MIKAI is what you get when you take Hermes's memory model, OpenClaw's
-actuation reach, and JITAI's intervention-timing science — and wrap them in a
-consumer product that non-technical users can install, trust, and use without
-ever seeing an API key.
+MIKAI is the brain other assistants lack: it knows where each of your threads
+stands and only interrupts when it matters — and it plugs into the hands you
+already use (Hermes, your Claude app) instead of holding your passwords.
+
+*(Previous version, 2026-07-17: "MIKAI is what you get when you take Hermes's
+memory model, OpenClaw's actuation reach, and JITAI's intervention-timing
+science — and wrap them in a consumer product…" Superseded by the Oct 11
+Option C decision: MIKAI no longer aims to package actuation itself.)*
 
 ## What this means for the build
 
@@ -146,6 +237,12 @@ ever seeing an API key.
 
 ## Revision history
 
+- **2026-10-13** — Added Instinct, Muse and Dots; refreshed Hermes (20+
+  platforms incl. iMessage, memory-provider plugins, MCP client,
+  `claude-subscription-directsdk`); rewrote the feature matrix; added the
+  "MIKAI brain / assistant hands" positioning from the Oct 11 market brief
+  (Option C) and the Anthropic subscription constraint. Trust contrast moved
+  to `docs/TRUST_POSITIONING.md`.
 - **2026-07-17** — Initial version. Following the OpenClaw vs Hermes
   comparison and Brian's decision to keep MIKAI as a consumer-product bet, not
   a rebuild of infrastructure Hermes and OpenClaw already ship. The insight:

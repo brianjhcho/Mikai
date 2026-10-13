@@ -26,6 +26,7 @@ Always start with `docs/STATUS.md` for the volatile "what's actually on main rig
 | Current state of main / what's live | `docs/STATUS.md` |
 | Product vision / noonchi / positioning / moat | `docs/VISION.md` |
 | Scope boundaries vs Hermes / OpenClaw / adjacent tools · consumer-product bet | `docs/COMPARISON.md` |
+| Trust positioning vs Instinct — claims true today vs target (check before any pitch) | `docs/TRUST_POSITIONING.md` |
 | Architecture / port-adapter / Graphiti patch / current stack | `docs/ARCHITECTURE.md` |
 | L3 port/adapter design | `docs/ARCHITECTURE.md`, `docs/DECISIONS.md` → ARCH-024, ARCH-025 |
 | Ingestion (filesystem, MCP client, drop folder) | `docs/ARCHITECTURE.md`, `docs/DECISIONS.md` → ARCH-023 |
@@ -77,6 +78,7 @@ Every session, run `git branch --show-current` early. If it's a non-main branch 
 |---|---|---|
 | `main` | (no manifest; use `docs/STATUS.md`) | `docs/VISION.md` §0 + `docs/ARCHITECTURE.md` |
 | `feat/pure-file-brain` | `docs/branches/feat-pure-file-brain.md` | `docs/CONSOLIDATION_ARCHITECTURE.md` §5a/§5b |
+| `feat/brain-hands-hermes` | `docs/branches/feat-brain-hands-hermes.md` | `docs/VISION.md` §0 + Oct 11 positioning (Option C) |
 | `feat/ingestion-mcp-client` | (TBD — add when active) | `docs/ARCHITECTURE.md` + ARCH-023 |
 | `feat/phase-b-local-expand` | (TBD — add when active) | `docs/ARCHITECTURE.md` + ARCH-023 |
 | `feat/l4-testing` | (TBD — add when active) | `docs/FOUNDATIONS.md` + D-041 |
