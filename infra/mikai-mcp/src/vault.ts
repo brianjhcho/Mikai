@@ -25,7 +25,7 @@ export interface PageContent extends PageMetadata {
 const KINDS = ["concepts", "entities", "wisdom", "sources"] as const
 type Kind = typeof KINDS[number]
 
-function parseFrontmatter(text: string): { fields: Record<string, string | string[]>, end: number } {
+export function parseFrontmatter(text: string): { fields: Record<string, string | string[]>, end: number } {
   const m = text.match(FRONTMATTER_RE)
   if (!m) return { fields: {}, end: 0 }
   const fields: Record<string, string | string[]> = {}
@@ -47,7 +47,7 @@ function parseFrontmatter(text: string): { fields: Record<string, string | strin
   return { fields, end: m[0].length }
 }
 
-function stringList(v: string | string[] | undefined): string[] {
+export function stringList(v: string | string[] | undefined): string[] {
   if (!v) return []
   return Array.isArray(v) ? v : [v]
 }

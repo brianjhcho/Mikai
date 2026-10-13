@@ -14,6 +14,8 @@ import {
 import { Vault } from "./vault.js"
 import { semanticSearch } from "./search.js"
 import { chat } from "./chat.js"
+import { brainRootFromEnv, getThread, listThreads, stalledThreads } from "./threads.js"
+import { FEEDBACK_LABELS, notificationDbFromEnv, recordFeedback } from "./feedback.js"
 
 const VERSION = "1.0.0"
 let vault: Vault
@@ -106,6 +108,52 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         additionalProperties: false,
       },
     },
+    {
+      name: "mikai_threads_list",
+      description: "List the user's tracked threads (task-state) with state, last activity, next step and days quiet. Optionally filter by state (exploring, evaluating, decided, acting, stalled, completed).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          state: { type: "string", description: "Only return threads in this state." },
+        },
+        additionalProperties: false,
+      },
+    },
+    {
+      name: "mikai_thread_get",
+      description: "Read one tracked thread by slug: its task-state fields plus the full body (context, history, notes).",
+      inputSchema: {
+        type: "object",
+        properties: { slug: { type: "string", description: "Thread slug (filename without .md)." } },
+        required: ["slug"],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: "mikai_get_stalled_threads",
+      description: "Threads that have gone quiet: not completed and no activity for at least `days` days (default 14), plus any explicitly in state 'stalled'. Sorted by days quiet, most stalled first; includes each thread's next step.",
+      inputSchema: {
+        type: "object",
+        properties: { days: { type: "number", description: "Quiet-days threshold (default 14)." } },
+        additionalProperties: false,
+      },
+    },
+    {
+      name: "mikai_record_feedback",
+      description: "Record the user's reply to something MIKAI surfaced (e.g. an iMessage reply: done, dismiss, snooze, not relevant). Writes one row to the local notification feedback log; never edits threads or the vault. Provide notif_id when replying to a specific notification, otherwise thread_slug.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          notif_id: { type: "string", description: "The surfaced notification's id, if known." },
+          thread_slug: { type: "string", description: "The thread the reply is about, if no notif_id." },
+          label: { type: "string", enum: [...FEEDBACK_LABELS], description: "ACTED = did it / done; DISMISSED = not now, no; SNOOZED = remind later; NOT_RELEVANT = wrong or unwanted surface." },
+          note: { type: "string", description: "Optional free-text from the user's reply." },
+          source: { type: "string", description: "Where the reply came from, e.g. 'hermes-imessage' (default 'mcp')." },
+        },
+        required: ["label"],
+        additionalProperties: false,
+      },
+    },
   ],
 }))
 
@@ -175,6 +223,37 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           kinds: Array.isArray(args.kinds) ? args.kinds as string[] : undefined,
         })
         return textResult(result)
+      }
+      case "mikai_threads_list": {
+        const threads = await listThreads(brainRootFromEnv(), {
+          state: typeof args.state === "string" && args.state ? args.state : undefined,
+        })
+        return textResult({ count: threads.length, threads })
+      }
+      case "mikai_thread_get": {
+        const thread = await getThread(brainRootFromEnv(), String(args.slug ?? ""))
+        if (!thread) throw new McpError(ErrorCode.InvalidRequest, `Thread not found: ${args.slug}`)
+        return textResult(thread)
+      }
+      case "mikai_get_stalled_threads": {
+        const days = typeof args.days === "number" ? args.days : 14
+        const threads = await stalledThreads(brainRootFromEnv(), { days })
+        return textResult({ days_threshold: days, count: threads.length, threads })
+      }
+      case "mikai_record_feedback": {
+        let record
+        try {
+          record = await recordFeedback(notificationDbFromEnv(), {
+            notifId: typeof args.notif_id === "string" ? args.notif_id : undefined,
+            threadSlug: typeof args.thread_slug === "string" ? args.thread_slug : undefined,
+            label: String(args.label ?? ""),
+            note: typeof args.note === "string" ? args.note : undefined,
+            source: typeof args.source === "string" ? args.source : undefined,
+          })
+        } catch (e) {
+          throw new McpError(ErrorCode.InvalidParams, (e as Error).message)
+        }
+        return textResult({ recorded: record })
       }
       default:
         throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`)
