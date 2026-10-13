@@ -5,17 +5,19 @@ mikai_decide.py — LLM-only notification decider for MIKAI.
 Compatible with Python 3.8+.
 
 Per tick:
-  1. Pulls recent state from Graphiti at localhost:8100 (/search + /stats).
+  1. Reads task-state thread files (~/.mikai/brain/threads, override
+     MIKAI_BRAIN_ROOT), BRAIN/GOALS/USER_MODEL docs, and the wiki pages those
+     threads name (MIKAI_WIKI_ROOT, read-only). See brain_context.py.
   2. Reads last N decisions from the local SQLite log.
   3. Asks Claude (via `claude -p`, Max-legitimate first-party OAuth) for a
-     JSON decision: send-or-stay-silent.
-  4. Validates the decision (evidence UUIDs exist, length bounds).
+     JSON decision: default silence, or 1-3 notifications.
+  4. Validates the decision (cited slugs exist on disk, length bounds).
   5. If send: dispatches via ntfy.sh.
   6. Logs everything to ~/.mikai/notification_log.db.
 
 Run modes:
   --init        Initialize the SQLite schema and exit
-  --test-ntfy   Send a static test notification to ntfy. Verifies path. No Graphiti, no Claude.
+  --test-ntfy   Send a static test notification to ntfy. Verifies path. No context read, no Claude.
   --dry-run     Build prompt, get decision, validate. Do NOT dispatch, do NOT log.
   --force       Ignore cooldown.
   (no flag)     Real tick. Cooldown enforced. Logs to SQLite.
@@ -50,7 +52,7 @@ from urllib import request as urlreq
 # Make sibling `adapters/` importable regardless of CWD
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from adapters import imessage, calendar as cal_adapter, gmail  # noqa: E402
-import wiki_parser  # noqa: E402
+import brain_context  # noqa: E402
 import needs_lens  # noqa: E402
 import dispatch_calendar  # noqa: E402
 
@@ -59,22 +61,10 @@ import dispatch_calendar  # noqa: E402
 # route candidates into meaningful surfacing rather than flat-density rank.
 DIMENSIONS_PATH = Path(__file__).resolve().parent.parent.parent / "docs" / "DIMENSIONS.md"
 
-# Full-corpus ontology wiki (produced by full_corpus_dream.py on feat-dream-echoes).
-# Persistent, LLM-synthesized narrative organized by DIMENSIONS.md schema.
-# Overrides the incremental last-7d wiki as PRIMARY lens for FIGS candidates.
-ONTOLOGY_WIKI_PATH = Path.home() / ".mikai" / "wiki" / "wiki-ontology-v1.md"
-
-
 def load_dimensions() -> str:
     if not DIMENSIONS_PATH.exists():
         return "(DIMENSIONS.md not found — falling back to flat needs+wiki ranking)"
     return DIMENSIONS_PATH.read_text()
-
-
-def load_ontology_wiki() -> str:
-    if not ONTOLOGY_WIKI_PATH.exists():
-        return "(ontology wiki not yet generated — run full_corpus_dream.py to seed it)"
-    return ONTOLOGY_WIKI_PATH.read_text()
 
 
 # Life-tier config (~/.mikai/life-tier.json). Declares Brian's current top-4
@@ -98,10 +88,10 @@ def load_life_tier() -> str:
     lines: list[str] = []
     lines.append(
         "Brian has declared the following as his TOP-TIER life themes for the "
-        "current period. Every FIGS tick MUST include at least one item from "
-        "each theme when signal is available; when it isn't, name the theme "
-        "and note it as stalled. These outrank the 9-dim ontology's raw "
-        "ordering — dimensions are the classifier, top-tier is the ranker."
+        "current period. When an item clears the interruption bar, prefer "
+        "items from these themes; they outrank the 9-dim ontology's raw "
+        "ordering — dimensions are the classifier, top-tier is the ranker. "
+        "A theme with nothing worth an interruption stays silent."
     )
     lines.append("")
     lines.append(f"Life-tier config version {cfg.get('version', '?')} "
@@ -156,17 +146,6 @@ def load_life_tier() -> str:
 
 # ── Config ─────────────────────────────────────────────────────────────
 
-GRAPHITI_URL = os.environ.get("MIKAI_GRAPHITI_URL", "http://localhost:8100")
-SIDECAR_TIMEOUT_S = 30
-
-# Neo4j HTTP API — used for time-based queries the /search endpoint doesn't support.
-# /search uses semantic similarity (no time awareness). Embeddings can't encode
-# "what's new since yesterday" — that requires direct Cypher.
-NEO4J_HTTP_URL = os.environ.get("MIKAI_NEO4J_HTTP", "http://localhost:7474")
-NEO4J_USER = os.environ.get("MIKAI_NEO4J_USER", "neo4j")
-NEO4J_PASSWORD = os.environ.get("MIKAI_NEO4J_PASSWORD", "mikai-local-dev")
-NEO4J_TIMEOUT_S = 10
-
 NTFY_BASE_URL = os.environ.get("MIKAI_NTFY_BASE", "https://ntfy.sh")
 NTFY_TOPIC = os.environ.get("MIKAI_NTFY_TOPIC", "")
 
@@ -196,9 +175,7 @@ def resolve_tap_base_url() -> str:
             pass
     return ""
 
-CLAUDE_TIMEOUT_S = 360  # bumped from 180 — full ontology wiki + graph context
-                        # pushes the prompt to ~70K chars, which needs longer
-                        # to process on the Claude Max / claude -p path
+CLAUDE_TIMEOUT_S = 360
 
 # ── DB ─────────────────────────────────────────────────────────────────
 
@@ -283,6 +260,8 @@ EXTRA_COLUMNS = [
     ("next_step_url", "TEXT"),
     ("action_type", "TEXT"),
     ("notif_id", "TEXT"),
+    ("candidate_source", "TEXT"),
+    ("candidate_slug", "TEXT"),
 ]
 
 
@@ -304,348 +283,14 @@ def db_connect() -> sqlite3.Connection:
     return conn
 
 
-# ── Graphiti context ────────────────────────────────────────────────────
-
-def graphiti_search(query: str, num_results: int = 10) -> list[dict]:
-    payload = json.dumps({"query": query, "num_results": num_results}).encode()
-    req = urlreq.Request(
-        f"{GRAPHITI_URL}/search",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urlreq.urlopen(req, timeout=SIDECAR_TIMEOUT_S) as resp:
-            return json.loads(resp.read().decode())
-    except Exception as e:
-        print(f"WARN: Graphiti search failed for '{query}': {e}", file=sys.stderr)
-        return []
-
-
-def graphiti_stats() -> dict:
-    try:
-        with urlreq.urlopen(f"{GRAPHITI_URL}/stats", timeout=5) as resp:
-            return json.loads(resp.read().decode())
-    except Exception as e:
-        print(f"WARN: Graphiti stats failed: {e}", file=sys.stderr)
-        return {}
-
-
-def neo4j_query(cypher: str, params: dict | None = None) -> list[dict]:
-    """Run a Cypher statement against Neo4j's HTTP transaction endpoint.
-
-    Returns a list of {col: value, ...} dicts, one per row. On any error
-    returns [] and logs to stderr — never raises.
-    """
-    payload = json.dumps({
-        "statements": [{"statement": cypher, "parameters": params or {}}],
-    }).encode()
-    auth = base64.b64encode(f"{NEO4J_USER}:{NEO4J_PASSWORD}".encode()).decode()
-    req = urlreq.Request(
-        f"{NEO4J_HTTP_URL}/db/neo4j/tx/commit",
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Basic {auth}",
-        },
-        method="POST",
-    )
-    try:
-        with urlreq.urlopen(req, timeout=NEO4J_TIMEOUT_S) as resp:
-            data = json.loads(resp.read().decode())
-    except Exception as e:
-        print(f"WARN: Neo4j query failed: {e}", file=sys.stderr)
-        return []
-
-    if data.get("errors"):
-        print(f"WARN: Neo4j errors: {data['errors']}", file=sys.stderr)
-        return []
-
-    results = data.get("results", [])
-    if not results:
-        return []
-    cols = results[0].get("columns", [])
-    rows = results[0].get("data", [])
-    return [dict(zip(cols, r["row"])) for r in rows]
-
-
-# ── Multi-window candidate ranking ─────────────────────────────────────
-#
-# FIGS pulls candidates from layered time windows (24h / 7d / 30d) and
-# ranks them by `recency × importance`. The wider windows give un-acted-on
-# items (like a proposal-spot research thread started 5 days ago) a chance
-# to surface alongside fresh content.
-#
-# Today: importance is a stub returning 1.0 — ranking is dominated by
-# recency. This is the fix for the "24h window misses load-bearing
-# older threads" problem.
-#
-# Tomorrow (O-049, wiki/dreaming consolidation): `importance_signal()`
-# becomes a real function sourced from the consolidated user wiki and
-# dreaming-curated memory. An edge connecting concepts the user has
-# acted on, written about repeatedly, or that show up as wiki pages
-# gets a high score. An edge between noise entities gets a low score.
-# Fixed time windows go away — FIGS asks for "top-K candidates ranked
-# by importance" and the curator decides what fits.
-#
-# When that lands, the swap point is `importance_signal()` and the
-# weights in `_combined_score()`. Nothing else in FIGS changes.
-
-RECENCY_WINDOWS = [
-    # (label, lower_h, upper_h, limit) — DELTA ranges so each window
-    # contributes distinct candidates. Without delta ranges, last_7d
-    # would entirely overlap last_24h's top-N and add nothing after dedup.
-    ("last_24h",  0,  24, 20),    # 0-24h ago: what just happened
-    ("last_7d",   24, 168, 20),   # 1-7d ago: in flight, may be stalled
-    ("last_30d",  168, 720, 10),  # 7-30d ago: still relevant background
-]
-
-
-def importance_signal(edge: dict) -> float:
-    """STUB. Today returns 1.0 for everything.
-
-    Future (O-049): reads from consolidated wiki / dreaming-curated
-    memory. Returns 0.0–1.0 reflecting how load-bearing this edge is
-    in the user's life. See module-level comment block above for the
-    full migration plan.
-    """
-    return 1.0
-
-
-def _recency_score(created_at_iso: str, now: datetime) -> float:
-    """Logarithmic decay: 1h ago ≈ 1.0, 24h ≈ 0.65, 7d ≈ 0.30, 30d ≈ 0.0."""
-    try:
-        created = datetime.fromisoformat(created_at_iso.replace("Z", "+00:00"))
-    except (ValueError, AttributeError, TypeError):
-        return 0.0
-    if created.tzinfo is None:
-        created = created.replace(tzinfo=timezone.utc)
-
-    age_hours = max(1.0, (now - created).total_seconds() / 3600.0)
-    # log10(720) ≈ 2.857; anything older than 30d clamps to 0
-    decay = math.log10(age_hours) / math.log10(720.0)
-    return max(0.0, min(1.0, 1.0 - decay))
-
-
-def _combined_score(edge: dict, now: datetime) -> float:
-    """Combine recency + importance.
-
-    Today's weights (recency-dominant because importance is a stub):
-        score = 0.7 × recency + 0.3 × importance
-
-    When `importance_signal()` returns real values, these weights
-    rebalance — possibly inverting so older-but-important beats
-    newer-but-trivial. The weights are tuneable here, not deep in
-    the LLM prompt logic.
-    """
-    recency = _recency_score(edge.get("created_at", ""), now)
-    importance = importance_signal(edge)
-    return 0.7 * recency + 0.3 * importance
-
-
-def graphiti_ranked_candidates(total_limit: int = 30) -> list[dict]:
-    """Return ranked candidates from layered time windows.
-
-    For each window: query Neo4j for edges created within that span,
-    take top-N by created_at, dedupe by uuid across windows (a candidate
-    that appears in last_24h also appears in last_7d — keep one copy
-    with the closer window label).
-
-    Then score every candidate by `_combined_score()` and sort. Return
-    the top `total_limit`.
-
-    This replaces the old single-window `graphiti_recent_edges(hours=24)`
-    that buried older-but-still-relevant threads (proposal-spots research
-    from 5 days ago, for example).
-    """
-    all_edges: dict[str, dict] = {}
-
-    for window_label, lower_h, upper_h, limit in RECENCY_WINDOWS:
-        cypher = """
-            MATCH ()-[r:RELATES_TO]->()
-            WHERE r.created_at >  datetime() - duration({hours: $upper})
-              AND r.created_at <= datetime() - duration({hours: $lower})
-            RETURN r.uuid AS uuid,
-                   r.fact AS fact,
-                   toString(r.created_at) AS created_at,
-                   toString(r.valid_at) AS valid_at
-            ORDER BY r.created_at DESC
-            LIMIT $limit
-        """
-        rows = neo4j_query(cypher, {"lower": lower_h, "upper": upper_h, "limit": limit})
-        for r in rows:
-            uuid = r.get("uuid")
-            if not uuid or uuid in all_edges:
-                continue  # dedupe — should not happen with delta ranges, defensive
-            all_edges[uuid] = {
-                "uuid": uuid,
-                "fact": r.get("fact") or "",
-                "created_at": r.get("created_at") or "",
-                "valid_at": r.get("valid_at") or r.get("created_at") or "",
-                "_window": window_label,
-            }
-
-    now = datetime.now(timezone.utc)
-    scored = []
-    for edge in all_edges.values():
-        edge["_score"] = _combined_score(edge, now)
-        scored.append(edge)
-
-    scored.sort(key=lambda e: e.get("_score", 0.0), reverse=True)
-    return scored[:total_limit]
-
-
-PERSONAL_LIFE_KEYWORDS = [
-    # Engagement / proposal / wedding
-    "proposal spot", "propose to", "engagement ring", "ring shopping",
-    "wedding venue", "married", "marry her", "marry him",
-    # Travel
-    "flight to", "flight from", "trip to", "hotel in", "book a flight",
-    "vacation", "travel to",
-    # Health
-    "doctor appointment", "surgery", "diagnosis", "specialist",
-    # Major life decisions
-    "job offer", "deadline", "interview at",
-    # Specific places that anchor personal threads
-    "denver", "red rocks",
-]
-
-
-# Exclude phrases — drop any candidate whose fact text contains any of these
-# (case-insensitive). Catches MIKAI-internal noise that survives the keyword
-# filter (e.g. "decision IDs ARCH-026", "FIGS depends on MIKAI").
-PERSONAL_LIFE_EXCLUDES = [
-    "mikai", "figs", "graphiti", "claude.ai", "claude-thread", "ingest",
-    "decision id", "arch-", "d-05", "o-05", "o-04",
-    "branch", "main's decisions", "node_operations", "neo4j",
-    "uses decision", "memory architecture", "consolidation",
-]
-
-
-def graphiti_personal_life_edges(days: int = 30, limit: int = 15) -> list[dict]:
-    """Pull edges containing personal-life keywords from the last N days.
-
-    This is a TARGETED retrieval lens. The recency lens treats all edges equally,
-    so dense recent conversation noise (architecture discussions, meta-edges)
-    can crowd out a 44h-old proposal edge. This lens specifically searches for
-    personal-life signal regardless of recency-window crowding.
-
-    When wiki/dreaming (O-049) lands, this becomes redundant — the importance
-    signal will surface these naturally. Until then, an explicit keyword filter
-    keeps the high-value personal threads in front of the LLM.
-    """
-    # Build a Cypher OR clause over all keywords. Case-insensitive.
-    keyword_clauses = " OR ".join([
-        f"toLower(r.fact) CONTAINS '{kw}'"
-        for kw in PERSONAL_LIFE_KEYWORDS
-    ])
-    # Cypher does pre-filtering; Python does final exclude pass + ranking.
-    cypher = f"""
-        MATCH ()-[r:RELATES_TO]->()
-        WHERE r.created_at > datetime() - duration({{days: $days}})
-          AND ({keyword_clauses})
-        RETURN r.uuid AS uuid,
-               r.fact AS fact,
-               toString(r.created_at) AS created_at,
-               toString(r.valid_at) AS valid_at
-        ORDER BY r.created_at DESC
-        LIMIT 200
-    """
-    rows = neo4j_query(cypher, {"days": days})
-
-    # Apply exclude filter
-    filtered = []
-    for r in rows:
-        fact_lower = (r.get("fact") or "").lower()
-        if any(exc in fact_lower for exc in PERSONAL_LIFE_EXCLUDES):
-            continue
-        filtered.append(r)
-
-    # Rank by score-of-the-evidence: dense personal-content edges first
-    # rather than newest-first. The 44h-old "Denver has places suitable for
-    # proposals" should outrank a 2h-old "user is considering a maroon
-    # Alocasia stalk" because the former is anchor-event-like.
-    PRIORITY_PHRASES = [
-        "denver", "red rocks", "proposal spot", "propose",
-        "engagement ring", "wedding venue",
-        "flight to", "trip to", "hotel in",
-    ]
-
-    def _rank_key(r):
-        fact_lower = (r.get("fact") or "").lower()
-        # Higher priority match -> earlier in list
-        for i, phrase in enumerate(PRIORITY_PHRASES):
-            if phrase in fact_lower:
-                return (0, i, r.get("created_at") or "")
-        return (1, 0, r.get("created_at") or "")
-
-    filtered.sort(key=_rank_key)
-
-    return [
-        {
-            "uuid": r.get("uuid") or "",
-            "fact": r.get("fact") or "",
-            "valid_at": r.get("valid_at") or r.get("created_at") or "",
-        }
-        for r in filtered[:limit]
-    ]
-
+# ── File context ───────────────────────────────────────────────────────
 
 def gather_context() -> dict:
-    stats = graphiti_stats()
-    # Diverse retrieval lenses. The graph contains a lot of MIKAI-internal
-    # architecture discussion, so MIKAI-meta queries crowd out life content.
-    # These five queries hit different facets of the graph so high-signal
-    # personal threads don't get buried.
-    threads = graphiti_search(
-        "active in-flight decisions personal projects work commitments",
-        num_results=10,
-    )
-    contradictions = graphiti_search(
-        "contradiction unresolved tension belief change reversed",
-        num_results=5,
-    )
-    recurring = graphiti_search(
-        "recurring pattern across multiple sources weeks months",
-        num_results=5,
-    )
-    urgent = graphiti_search(
-        "urgent deadline upcoming booking time-sensitive decision needed soon",
-        num_results=10,
-    )
-    personal = graphiti_search(
-        "personal life relationship family travel proposal engagement event milestone",
-        num_results=10,
-    )
-    # Time-based ranked lens — pulls candidates from layered windows
-    # (24h / 7d / 30d) and ranks by recency × importance. Today importance
-    # is a stub so recency wins; when wiki/dreaming consolidation lands
-    # (O-049), this lens automatically surfaces older-but-still-load-bearing
-    # threads without any FIGS code change. See `graphiti_ranked_candidates`
-    # docstring.
-    fresh = graphiti_ranked_candidates(total_limit=30)
-    # Targeted personal-life lens — kept for fallback when wiki is unavailable.
-    personal_life = graphiti_personal_life_edges(days=30, limit=15)
-    # PRIMARY ranking surface: parse the nightly Dream-generated wiki.
-    # This is the formal user-identity synthesis (dream.py output). When
-    # available, FIGS ranks wiki threads (not raw graph edges) and asks
-    # Claude to choose among those structured candidates. Soft supersession:
-    # if the wiki contradicts a raw edge, the wiki wins because it's the
-    # most recent synthesis.
-    wiki = wiki_parser.parse_wiki()
-    wiki_threads_ranked: list[dict] = []
-    if wiki.available:
-        scored = [(wiki_parser.score_thread(t, wiki), t) for t in wiki.threads]
-        scored.sort(key=lambda x: x[0], reverse=True)
-        for score, t in scored:
-            wiki_threads_ranked.append({
-                "slug": t.slug,
-                "title": t.title,
-                "state": t.state,
-                "score": score,
-                "tension_membership": t.tension_membership,
-                "detail": t.detail,
-            })
+    # PRIMARY: thread files (task-state) + priority docs + the wiki pages
+    # those threads name. All read-only, all on disk.
+    threads = brain_context.rank_threads(brain_context.load_threads())
+    brain_docs = brain_context.load_brain_docs()
+    wiki_snippets = brain_context.load_wiki_snippets(threads)
 
     # PRIORITY NEEDS — Brian-curated registry. Highest-priority lens.
     needs_registry = needs_lens.parse_registry()
@@ -682,17 +327,10 @@ def gather_context() -> dict:
         realtime.append({"source": "gmail", "error": f"adapter exception: {e}"})
 
     return {
-        "stats": stats,
         "threads": threads,
-        "contradictions": contradictions,
-        "recurring": recurring,
-        "urgent": urgent,
-        "personal": personal,
-        "personal_life": personal_life,
-        "fresh": fresh,
+        "brain_docs": brain_docs,
+        "wiki_snippets": wiki_snippets,
         "realtime": realtime,
-        "wiki": wiki,
-        "wiki_threads_ranked": wiki_threads_ranked,
         "needs_registry": needs_registry,
         "needs_ranked": needs_ranked,
     }
@@ -731,96 +369,46 @@ def in_cooldown(conn: sqlite3.Connection, hours: float = COOLDOWN_HOURS) -> bool
 # ── Prompt build ───────────────────────────────────────────────────────
 
 DECIDE_PROMPT = """\
-You are MIKAI, Brian's notification decider. Your job this tick: surface 2 to 5 distinct notifications, each picking up a real thread of Brian's life at the exact decision point he last paused on. NOT 0, NOT 1, NOT 6. If you can only justify 1, pick a second-best from the needs registry — Brian curated it; every item there is worth a nudge.
+You are MIKAI, Brian's notification decider. Your job this tick: decide whether anything in Brian's life is worth interrupting him about RIGHT NOW. Default is SILENCE. An interruption costs Brian attention; send only when a nudge would change what he does today. When you do send, send 1 to {slate_max} distinct notifications, each picking up a real thread at the exact decision point he last paused on.
 
 CURRENT TIME: {now} (UTC), {weekday}, hour {hour} UTC
 
 == TOP-TIER — Brian's declared life-tier themes (OUTRANKS ontology ordering) ==
 {life_tier_content}
 
-== FRAME — Brian's life-dimensions ontology (highest level) ==
-Below is Brian's personal ontology: 9 dimensions of his life, each with concrete
-goals and evidence concepts. Use this as the ROUTING SCHEMA when ranking
-candidates. Two hard rules:
-
-  RULE A — Spectrum coverage. Your 2-5-item slate MUST span at least 3
-  distinct dimensions. Do NOT stack the whole slate under one dimension.
-
-  RULE B — Noise filter. The concepts listed under Dimension 1 (AI Career /
-  MIKAI Build) are mostly framework/tooling noise — MIKAI, Claude Code,
-  Perplexity, Neo4j, Assistant, sidecar, launchd, etc. DO NOT surface these
-  as notifications unless a CONCRETE decision point in Dimension 1 crystallizes
-  (founder-vs-employee commitment, ship milestone, funding move). Otherwise
-  they are background context Brian sees every day; a notification about them
-  is signal-poor.
+== FRAME — Brian's life-dimensions ontology ==
+Below is Brian's personal ontology: 9 dimensions of his life. Use it to classify
+each candidate (the `dimension` field) and to keep a multi-item slate from
+stacking under one dimension. Dimension 1 (AI Career / MIKAI Build) is mostly
+tooling noise: do NOT surface MIKAI/Claude Code/infra items unless a CONCRETE
+decision point crystallizes (founder-vs-employee commitment, ship milestone,
+funding move).
 
 {dimensions_content}
 
-== PRIMARY LENS — Full-corpus ontology wiki (LLM synthesis over entire corpus) ==
-Below is Brian's PRIMARY narrative representation of himself, synthesized from
-the whole corpus (~6,700 episodes, 21M chars, spanning 2013→today) organized
-against the DIMENSIONS ontology. This is the RICHEST source of surfaceable
-candidates you have — it contains named goals, dated pickup points, cross-time
-patterns, and stalled decisions that the last-7d incremental wiki misses
-entirely. TREAT THIS AS THE PRIMARY LENS for candidate selection. Pull
-surfacing candidates from this wiki's per-dimension sections; each dimension's
-listed goals with state/pickup are directly notification-eligible.
+== PRIMARY LENS — Brian's threads (task-state files, ~/.mikai/brain/threads) ==
+Each thread is something Brian is actively carrying, with its current state
+(exploring → evaluating → decided → acting → stalled → completed), when that
+state began, when it last moved, and its next step. Ordered quietest-first.
+These are the canonical surfacing candidates. Cite them by slug.
 
-{ontology_wiki_content}
+{threads_summary}
 
-== HIGHEST PRIORITY — Brian-curated PRIORITY NEEDS ==
-The NEEDS REGISTRY below was hand-curated by Brian. These are load-bearing life needs that may not surface in his conversations (financial admin, health admin, career decisions). FIGS should treat these as the FIRST candidates for surfacing, ranked by their score. The wiki and graph evidence below are SUPPORTING context — if a need's `next_step` aligns with recent fresh activity, surface that need.
+== PRIORITIES — BRAIN.md / GOALS.md / USER_MODEL.md (hand-maintained) ==
+{brain_docs_summary}
+
+== WIKI CONTEXT — knowledge pages linked from the threads (read-only) ==
+Supporting detail only. Cite a page by the slug in brackets, e.g. [entities/germaine].
+{wiki_snippets_summary}
+
+== Brian-curated PRIORITY NEEDS ==
+Hand-curated load-bearing needs (financial admin, health admin, career decisions)
+that may not show up in his conversations. Eligible alongside threads.
 
 NEEDS REGISTRY (ranked by state × urgency × tension × detail):
 {needs_summary}
 
-== PRIMARY SYNTHESIS ==
-The WIKI below was synthesized last night by MIKAI's `dream.py` from the previous 7 days of Brian's activity. It is the most current and authoritative model of what Brian is actually doing, deciding, and conflicted about. Trust it over individual raw graph edges; raw edges may be stale or superseded by what the wiki now says. The needs registry above OUTRANKS the wiki because Brian curated it explicitly.
-
-WIKI ## Who (stable self-model):
-{wiki_who}
-
-WIKI ## Now (active threads, ranked by surface_priority — state × tension_pressure × detail_quality):
-{wiki_threads_summary}
-
-WIKI ## Tensions (held contradictions — these are MIKAI's priority-0 signal):
-{wiki_tensions_summary}
-
-WIKI ## Wants (inferred goals, certainty in words):
-{wiki_wants_summary}
-
-WIKI last_dream_at: {wiki_last_dream}
-
-== SUPPORTING SUBSTRATE (raw graph edges + live sources) ==
-
-GRAPH STATE:
-- Entities: {entity_count}
-- Edges: {edge_count}
-- Episodes: {episode_count}
-
-ACTIVE THREADS (from edge search, most relevant first):
-{threads_summary}
-
-CONTRADICTIONS / TENSIONS (currently active):
-{contradictions_summary}
-
-RECURRING PATTERNS (multi-source signal):
-{recurring_summary}
-
-URGENT / TIME-SENSITIVE (deadlines, bookings, upcoming things):
-{urgent_summary}
-
-PERSONAL LIFE (relationships, family, travel, milestones):
-{personal_summary}
-
-RANKED CANDIDATES from MIKAI graph (layered windows: last_24h / last_7d / last_30d, scored by recency × importance):
-NOTE: The ranking is recency-dominant today because the importance signal is a stub. Older items (last_7d, last_30d windows) can still appear here if they have a high score — they are NOT noise; they are threads MIKAI thinks may still need attention. Treat them as "you may have started this and never followed through."
-{fresh_summary}
-
-PINNED PERSONAL-LIFE CANDIDATES (keyword-targeted, last 30 days, excluding MIKAI-internal architecture noise — these are high-signal personal threads Brian started recently. Evaluate each as a candidate for the "stalled personal-life thread" pattern in rule 2):
-{personal_life_summary}
-
-LIVE EVENTS FROM SOURCES (iMessage / Calendar / Gmail, last 24-72h):
+== LIVE EVENTS FROM SOURCES (iMessage / Calendar / Gmail, last 24-72h) ==
 {realtime_summary}
 
 BRIAN'S RECENT NOTIFICATIONS AND HIS RESPONSES (newest first):
@@ -828,130 +416,94 @@ BRIAN'S RECENT NOTIFICATIONS AND HIS RESPONSES (newest first):
 
 RULES YOU MUST FOLLOW:
 
-0. **AT LEAST 1 ITEM MUST COME FROM THE ONTOLOGY WIKI, NOT THE NEEDS REGISTRY.** The needs registry has only 5 curated items. The ontology wiki covers Brian's ENTIRE 13-year corpus across all 9 dimensions — surfacing only from the registry means missing everything Brian hasn't hand-curated (International Village real estate, ocean farming, Kenya coffee, Recurring Themes, city-choice, Monstera project, dry-eye/smoking, etc.). Any dimension's goals + evidence in the ontology wiki are notification-eligible. Explicitly force yourself to promote AT LEAST ONE non-registry candidate this tick.
+1. **Default to silence.** Return zero notifications unless an item clears the bar in rule 2. Newsletters, marketing email, auto-receipts, system messages and meta-references to MIKAI itself are never worth an interruption. Silence is a correct, common answer.
 
-1. **Rank the NEEDS REGISTRY items alongside ontology-wiki candidates.** Every entry in the Brian-curated needs registry is eligible AND every dimension-scoped goal in the ontology wiki is eligible. A need or wiki-goal that aligns with fresh raw activity (calendar event, message, email, graph edge) has high delivery_value. An item with no recent movement AND no contradicting evidence is a stalled-thread candidate (the canonical MIKAI use case). Give registry items a priority boost but DO NOT let it exclude wiki-only items.
+2. **The 4-factor bar.** surface_priority = thread_state × staleness × delivery_value × delivery_cost⁻¹
+   - thread_state: stalled > acting with a due next_step > evaluating > exploring. Completed threads are never surfaced.
+   - staleness: a thread quiet for days with an unresolved next_step is the canonical MIKAI case ("you started this and never followed through").
+   - delivery_value: would surfacing this CHANGE what Brian does today? An acting thread with fresh momentum = low value (he's on it).
+   - delivery_cost⁻¹: time of day (workday = higher bar) and recent responses (never repeat a topic he ignored or dismissed recently).
 
-2. **The 4-factor metric.** surface_priority = thread_state × tension_pressure × delivery_value × delivery_cost⁻¹
-   - thread_state: acting > stalled > decided > exploring
-   - tension_pressure: threads listed in ## Tensions get a boost (priority-0 signal per MIKAI's design)
-   - delivery_value: would surfacing this CHANGE what Brian does today? A stalled thread where a nudge could unblock action = high. An acting thread with active momentum = low (he doesn't need a reminder; he's on it).
-   - delivery_cost⁻¹: time-of-day (workday = higher bar), recent dismiss patterns (don't repeat dismissed topics)
+3. **Thread files are the source of truth.** If a live event or wiki page disagrees with a thread file's state or next_step, trust the thread file.
 
-3. **Wiki supersedes raw edges (SOFT GATE).** If a raw graph edge says "X" but the wiki ## Who or ## Now says "Y" (different detail, different state, different location/decision), trust the wiki. Example: a raw edge says "Denver proposal spots" but the wiki says "planning a proposal trip with Germaine — Atacama or Ladakh are leading candidates" — DO NOT surface Denver; that's stale. The proposal thread isn't even in ## Now (it's at the ## Who level), suggesting it's background, not currently-being-acted-on.
-
-4. **Default to silence FOR NOISE.** Newsletters, marketing emails, parking auto-receipts, meta-references about MIKAI itself, system messages — silent (i.e., don't include them in the output array). But the FLOOR for the output array is 2: if you're tempted to silence everything, you're misreading the needs registry — re-rank.
-
-5. **Pick up the conversation. Don't open a new one.** This is the single most important rule for body content. For every notification, you must:
-   (a) identify the **decision point** Brian last paused at on this thread — the unresolved question, the half-made choice, the blocker he hit, the next concrete move he was weighing;
+4. **Pick up the conversation. Don't open a new one.** For every notification:
+   (a) identify the decision point Brian last paused at (the thread's next_step and state are your ground truth);
    (b) write the body so it RESUMES from that point, not from the topic in general.
-   - BAD: "Denver proposal spots — still open?" (vague, reopens a closed thread, no pickup)
-   - BAD: "Have you thought about your MSP?" (no decision point, no movement)
-   - GOOD: "MSP doc hunt: BC residence proof is the blocker. Pull BC license + utility bill tonight, slot the ServiceBC visit." (states the exact unresolved beat + the smallest next move)
-   - GOOD: "Atacama vs Ladakh — last beat: cost vs altitude. Atacama is 15h on a plane; Ladakh needs Oct timing. Pick one this week so we can book the venue." (resumes from the actual last decision-fork, not the topic)
-   The needs registry's `next_step` and `last_movement` fields are your ground truth for the decision point. The wiki ## Now thread state (acting/stalled/decided) tells you what kind of pickup is needed. If you can't identify a concrete decision point for an item, you do NOT have enough signal to surface it — skip it.
+   - BAD: "Proposal planning — still open?" (vague, no pickup)
+   - GOOD: "Venue shortlist never started. Pick 2-3 candidates tonight and check her availability for each." (exact unresolved beat + smallest next move)
+   If you can't name a concrete decision point, skip the item.
 
-6. **Diversify the slate.** The 2-5 items must come from at least 2 different domains (e.g., not 3 finance items in a row). Mix: needs registry items + 1 wiki thread + at most 1 live event from iMessage/Calendar/Gmail if highly relevant. Hard-cap: at most 1 notification per `wiki_thread_slug` and at most 1 per needs `slug` per tick.
+5. **Diversify a multi-item slate.** At most 1 notification per thread_slug and per needs_slug, and no more than 2 items from the same dimension.
 
-7. **High-value send pattern.** A wiki ## Now thread in state "acting" with high tension_pressure AND a recent raw-event signal (calendar event tomorrow, message about it, deadline-language) = clear send candidate.
+6. **Time of day matters.** UTC hour {hour}; Brian is typically Pacific. Late night = only time-sensitive items. Morning = the best window for at most {slate_max}.
 
-8. **Time-of-day matters.** UTC hour {hour}; Brian is typically Pacific. Late night = quieter (still send 2, never 5). Morning brief = up to 5. Workday tick = 2-3.
+7. **Voice:** brief, Brian-voiced, second-person, present-tense. NOT: "There is an outstanding response required for the Kenya thread."
 
-9. **Voice:** brief, Brian-voiced, second-person, present-tense. Example: "Crypto scammer's pushing the test transfer move. Same playbook as last time." NOT: "There is an outstanding response required for the Kenya thread."
+8. **Citation:** every notification must cite at least one thread slug, wiki slug or needs slug in `evidence`, exactly as shown above. Never invent a slug; uncited or unknown slugs fail validation.
 
-10. **Citation:** if you cite specific raw edge UUIDs, they MUST be visible in the candidates section. You may also cite wiki thread slugs (the [slug] before the title in ## Now) or needs registry slugs — those are always valid because they came from the curated lists above.
-
-11. **Classify then route.** For every notification, first name the `action_type` explicitly, then choose `next_step_url` based on that type. The destination IS the action — do not attach a distracting URL to a pickup that's really a decision or a physical task.
+9. **Classify then route.** For every notification, name the `action_type`, then choose `next_step_url` for that type.
 
 Action types (pick exactly one per notification):
-
-- `transaction` — do it inside a specific portal (MSP portal, Scotia banking, IBKR)
+- `transaction` — do it inside a specific portal
 - `communication` — send a message to a specific person (email draft, iMessage draft)
-- `search` — the pickup is "look up more info" or "research this"
-- `capture` — fill in a form / add a calendar event / log a decision (Notes, Calendar, Reminders)
-- `decision` — the action is *thinking*, not doing. The right destination is a time-block on the calendar with the full context bundle embedded so cognitive state can be resurrected when the block fires.
-- `physical` — offline action (pull docs from drawer, in-person conversation, make a call)
-- `user_response` — Brian's own meta-action on a prior notification (snooze/mark done). Not a first-step; handled by future action buttons.
+- `search` — the pickup is "look up more info"
+- `capture` — add a calendar event / log a decision
+- `decision` — the action is thinking; the destination is a calendar time-block carrying the context bundle
+- `physical` — offline action
+- `user_response` — Brian's own meta-action on a prior notification
 
 Routing by action_type:
+(a) `transaction` → a deep-link portal URL from DIMENSIONS.md's Per-Dimension Destination Templates.
+(b) `communication` → `googlegmail://co?to=<addr>&subject=<url-encoded>&body=<url-encoded>` draft. For iMessage: `sms:<phone>&body=<url-encoded>`.
+(c) `search` → `https://www.perplexity.ai/search?q=<url-encoded query>`.
+(d) `capture` → Google Calendar quick-add URL with `text=`, `dates=` (30-min block in the next 3-5 days) and a brief `details=`.
+(e) `decision` → Google Calendar quick-add URL whose `details=` is the full context bundle: the thread's state and next_step, up to 5 prior beats, and 3-5 research URLs.
+(f) `physical` → `next_step_url: null` (or `tel:+1...` for a call).
+(g) `user_response` → `next_step_url: null`.
+Never invent URLs — use only DIMENSIONS.md templates or well-known schemes.
 
-(a) `transaction` → a specific deep-link portal URL from DIMENSIONS.md's Per-Dimension Destination Templates.
-(b) `communication` → `googlegmail://co?to=<addr>&subject=<url-encoded>&body=<url-encoded>` draft (PREFERRED over mailto:). For iMessage: `sms:<phone>&body=<url-encoded>`.
-(c) `search` → `https://www.perplexity.ai/search?q=<url-encoded query>` (or Google Flights, Zonaprop, etc. from DIMENSIONS.md).
-(d) `capture` → Google Calendar quick-add URL. Pre-fill `text=` (event title) and `dates=` (30-min block in the next 3-5 days). Include a brief description in `details=`.
-(e) `decision` → Google Calendar quick-add URL. Same as capture, BUT the `details=` parameter MUST be a full context bundle so the calendar event carries the resurrection substrate. The bundle should contain, in url-encoded form:
-    - A 2-3 line wiki excerpt naming the dimension's goal and current state
-    - A "Prior beats:" list of dated decisions/beats from the corpus (up to 5)
-    - A "Research to load:" list of 3-5 URLs (Perplexity, LinkedIn, Notes, specific research the user has already done)
-    When the block fires 3 days later, this description IS what re-lights the cognitive state. Do not set null for decision — the block IS the destination.
-(f) `physical` → `next_step_url: null`. Explain in `reasoning` that this is an offline action. Optionally: if the action is calling someone, use `tel:+1...`.
-(g) `user_response` → `next_step_url: null` (action-button mechanism is deferred to a later iteration).
-
-For `capture` and `decision`, choose a reasonable block time relative to CURRENT TIME (see prompt header). Weekday work items → weekday morning. Personal decisions → weekend morning. Never invent URLs — use only the templates in DIMENSIONS.md or well-known schemes.
-
-OUTPUT FORMAT: Return STRICTLY valid JSON, no markdown code fence, no commentary, no preamble. Just the JSON object.
-
-Shape (notifications is an array of 2-5 items, OR 0 only if everything is genuine noise/dismissed-cooldown):
+OUTPUT FORMAT: Return STRICTLY valid JSON, no markdown code fence, no commentary. Just the JSON object:
 
 {{
   "notifications": [
     {{
       "title": "<<= 55 chars; topic + state, not a question>",
-      "body": "<<= 220 chars; (a) last beat in 4-10 words, then (b) concrete pickup move in 8-20 words. Read rule 5.>",
+      "body": "<<= 220 chars; last beat in 4-10 words, then the concrete pickup move in 8-20 words>",
       "priority": "passive|active|timeSensitive",
-      "decision_point": "<one sentence stating the EXACT unresolved question or choice Brian last paused at. Required.>",
-      "evidence_edge_uuids": ["<uuid or 8-char short form or wiki slug or needs slug>", ...],
-      "wiki_thread_slug": "<slug from ## Now if applicable, else null>",
-      "needs_slug": "<slug from needs registry if applicable, else null>",
-      "action_type": "<one of: transaction | communication | search | capture | decision | physical | user_response — see RULE 11>",
-      "next_step_url": "<URL routed by action_type per RULE 11; for `decision`, a Google Calendar quick-add URL with the full context bundle in details=; null only for physical/user_response>",
-      "dimension": "<dim_1 | dim_2 | ... | dim_9 — the life-dimension slug this item belongs to (from the FRAME section above); required so the feedback loop can score tap-rate by dimension>",
+      "decision_point": "<one sentence: the EXACT unresolved question or choice Brian last paused at>",
+      "evidence": ["<thread slug | wiki slug like entities/germaine | needs slug>", ...],
+      "thread_slug": "<thread slug from PRIMARY LENS if applicable, else null>",
+      "needs_slug": "<needs registry slug if applicable, else null>",
+      "action_type": "<transaction | communication | search | capture | decision | physical | user_response>",
+      "next_step_url": "<URL routed by action_type; null only for physical/user_response>",
+      "dimension": "<dim_1 .. dim_9>",
       "reasoning": "<one sentence: why this item, why now, naming the 4 factors>"
-    }},
-    ...
+    }}
   ],
-  "silent_reason": null,
+  "silent_reason": "<required when notifications is empty: one sentence on why silence is right>",
   "considered": [
-    {{"slug": "...", "rank": 1, "source": "needs|wiki|graph", "selected": true|false, "note": "..."}},
-    ...
+    {{"slug": "...", "rank": 1, "source": "thread|needs|wiki|live", "selected": true, "note": "..."}}
   ]
 }}
 
-If — and ONLY if — every candidate is genuine noise/cooldown and you cannot find 2 items worth surfacing (this should be extremely rare given the curated needs registry), return:
-
-{{"notifications": [], "silent_reason": "<one-sentence why all-silent is justified>", "considered": [ ... ]}}
-
-REQUIRED: the "considered" field lists ALL needs registry slugs AND wiki ## Now thread slugs you ranked (selected or not), in priority order, with a 1-line note on each. This shows your work and is how FIGS audits coverage.
+REQUIRED: "considered" lists every thread slug and needs slug you ranked, selected or not, in priority order with a 1-line note each. This is how the Surface Engine audits coverage.
 """
 
 
 def build_prompt(context: dict, recent_decisions: list[dict]) -> str:
     now = datetime.now(timezone.utc)
-    wiki = context.get("wiki")
     return DECIDE_PROMPT.format(
         now=now.isoformat(timespec="minutes"),
         weekday=now.strftime("%A"),
         hour=now.hour,
-        entity_count=context["stats"].get("entity_count", "?"),
-        edge_count=context["stats"].get("edge_count", "?"),
-        episode_count=context["stats"].get("episode_count", "?"),
-        threads_summary=format_edges(context["threads"]),
-        contradictions_summary=format_edges(context["contradictions"]),
-        recurring_summary=format_edges(context["recurring"]),
-        urgent_summary=format_edges(context.get("urgent", [])),
-        personal_summary=format_edges(context.get("personal", [])),
-        personal_life_summary=format_edges(context.get("personal_life", [])),
-        fresh_summary=format_edges(context.get("fresh", [])),
+        slate_max=SLATE_MAX,
+        threads_summary=format_threads(context.get("threads", [])),
+        brain_docs_summary=format_brain_docs(context.get("brain_docs", {})),
+        wiki_snippets_summary=format_wiki_snippets(context.get("wiki_snippets", [])),
         realtime_summary=format_realtime(context.get("realtime", [])),
         recent_decisions_summary=format_decisions(recent_decisions),
-        wiki_who=format_wiki_who(wiki),
-        wiki_threads_summary=format_wiki_threads(context.get("wiki_threads_ranked", []), wiki),
-        wiki_tensions_summary=format_wiki_tensions(wiki),
-        wiki_wants_summary=format_wiki_wants(wiki),
-        wiki_last_dream=(wiki.last_dream_at if wiki and wiki.available else "WIKI UNAVAILABLE"),
         needs_summary=format_needs(context.get("needs_ranked", []), context.get("needs_registry")),
         dimensions_content=load_dimensions(),
-        ontology_wiki_content=load_ontology_wiki(),
         life_tier_content=load_life_tier(),
     )
 
@@ -977,50 +529,40 @@ def format_needs(ranked: list[dict], registry) -> str:
     return "\n".join(lines)
 
 
-def format_wiki_who(wiki) -> str:
-    if not wiki or not wiki.available:
-        return "(wiki not yet generated — fall back to raw graph evidence)"
-    who = wiki.who.strip()
-    return who[:1200] if who else "(empty)"
-
-
-def format_wiki_threads(ranked: list[dict], wiki) -> str:
-    if not wiki or not wiki.available or not ranked:
-        return "(wiki has no threads — fall back to raw graph evidence)"
+def format_threads(threads: list) -> str:
+    if not threads:
+        return "(no thread files found — check MIKAI_BRAIN_ROOT/threads)"
     lines = []
-    for t in ranked:
-        tension_tag = f" ⚠tensions={t['tension_membership']}" if t.get("tension_membership") else ""
+    for t in threads:
+        quiet = t.days_quiet()
+        quiet_tag = f"quiet {quiet}d" if quiet is not None else "last activity unknown"
         lines.append(
-            f"- [{t['slug']}] state={t['state']} score={t['score']:.2f}{tension_tag}: {t['title']}"
+            f"- [{t.slug}] state={t.state} since={t.state_since or '?'} "
+            f"({quiet_tag}) dept={t.department or '?'}: {t.title}"
         )
-        detail = (t.get("detail") or "").strip()
-        # Show the body after the title prefix, trimmed.
-        body = detail
-        # Strip leading "**Title** — State." chunk so we only see the meaningful content
-        body = re.sub(r"^\*\*[^*]+\*\*\s*[—\-–]\s*\w+\.?\s*", "", body)
-        body_short = (body or "")[:280].strip()
-        if body_short:
-            lines.append(f"     {body_short}")
+        if t.next_step:
+            lines.append(f"     next_step: {t.next_step[:240]}")
+        if t.entities:
+            lines.append(f"     entities: {', '.join(t.entities)}")
+        body = " ".join((t.body or "").split())
+        if body:
+            lines.append(f"     context: {body[:400]}")
     return "\n".join(lines)
 
 
-def format_wiki_tensions(wiki) -> str:
-    if not wiki or not wiki.available or not wiki.tensions:
-        return "(none)"
-    lines = []
-    for tension in wiki.tensions:
-        related = f" [related: {','.join(tension.related_thread_slugs)}]" if tension.related_thread_slugs else ""
-        lines.append(f"  #{tension.index}: {tension.title}{related}")
-    return "\n".join(lines)
+def format_brain_docs(docs: dict) -> str:
+    if not docs:
+        return "(no BRAIN.md / GOALS.md / USER_MODEL.md found)"
+    return "\n\n".join(f"--- {name} ---\n{text.strip()}" for name, text in docs.items())
 
 
-def format_wiki_wants(wiki) -> str:
-    if not wiki or not wiki.available or not wiki.wants:
-        return "(none)"
-    lines = []
-    for w in wiki.wants[:8]:
-        lines.append(f"  - ({w.certainty}) {w.text[:200]}")
-    return "\n".join(lines)
+def format_wiki_snippets(snippets: list) -> str:
+    if not snippets:
+        return "(no wiki pages linked from current threads)"
+    return "\n".join(
+        f"- [{w['slug']}] (thread {w['thread']}) {w['title']}: {w['snippet']}"
+        for w in snippets
+    )
 
 
 def format_realtime(events: list[dict]) -> str:
@@ -1066,26 +608,6 @@ def format_realtime(events: list[dict]) -> str:
         if len(good) > 12:
             out.append(f"    ... and {len(good) - 12} more")
     return "\n".join(out) if out else "(empty)"
-
-
-def format_edges(edges: list[dict]) -> str:
-    if not edges:
-        return "(none)"
-    lines = []
-    for e in edges[:15]:
-        fact = (e.get("fact") or "").strip()
-        uuid = e.get("uuid") or ""
-        uuid_short = uuid[:8] if uuid else "????????"
-        # Ranked candidates carry _window + _score; render them; fall back
-        # to valid_at for plain edges.
-        window = e.get("_window")
-        score = e.get("_score")
-        if window is not None and score is not None:
-            tag = f"{window} s={score:.2f}"
-        else:
-            tag = f"valid_at={e.get('valid_at') or ''}"
-        lines.append(f"- [{uuid_short}] {fact} ({tag})")
-    return "\n".join(lines) if lines else "(empty after format)"
 
 
 def format_decisions(decisions: list[dict]) -> str:
@@ -1164,8 +686,7 @@ def parse_decision(raw: str) -> dict | None:
 
 VALID_PRIORITIES = {"passive", "active", "timeSensitive", "critical"}
 
-SLATE_MIN = 2
-SLATE_MAX = 5
+SLATE_MAX = 3
 
 
 def normalize_decision(decision: dict | None) -> dict | None:
@@ -1187,8 +708,8 @@ def normalize_decision(decision: dict | None) -> dict | None:
     if decision.get("send") is True:
         single = {k: decision.get(k) for k in (
             "title", "body", "priority", "decision_point",
-            "evidence_edge_uuids", "wiki_thread_slug", "needs_slug",
-            "next_step_url", "action_type", "reasoning",
+            "evidence", "evidence_edge_uuids", "thread_slug", "wiki_thread_slug",
+            "needs_slug", "next_step_url", "action_type", "reasoning",
         )}
         return {
             "notifications": [single],
@@ -1204,40 +725,25 @@ def normalize_decision(decision: dict | None) -> dict | None:
     return None
 
 
-def _evidence_pool(context: dict) -> set:
-    seen = set()
-    for key in ("threads", "contradictions", "recurring",
-                "urgent", "personal", "personal_life", "fresh"):
-        for edge in context.get(key, []):
-            uuid = edge.get("uuid")
-            if uuid:
-                seen.add(uuid)
-                seen.add(uuid[:8])
-    for t in context.get("wiki_threads_ranked", []) or []:
-        if t.get("slug"):
-            seen.add(t["slug"])
-    for n in context.get("needs_ranked", []) or []:
-        if n.get("slug"):
-            seen.add(n["slug"])
-    # Ontology-wiki citations. The wiki content is always in-context (via the
-    # PRIMARY LENS section), so any 'wiki-dimension-*' or 'wiki-goal-*' citation
-    # is provably grounded. Rather than enumerate every possible dimension slug,
-    # we accept the prefix-based patterns and validate downstream via the
-    # sentinel token.
-    seen.add("__WIKI_ONTOLOGY__")  # sentinel — see _is_ontology_citation
-    return seen
+def notif_evidence(n: dict) -> list:
+    """Citations for a notification. `evidence` is current; the older
+    `evidence_edge_uuids` name is still accepted from cached/legacy output."""
+    cites = n.get("evidence")
+    if cites is None:
+        cites = n.get("evidence_edge_uuids")
+    if isinstance(cites, str):
+        cites = [cites]
+    return [str(c) for c in (cites or []) if str(c).strip()]
 
 
-_ONTOLOGY_PREFIXES = (
-    "wiki-dimension-", "wiki-goal-", "wiki-theme-",
-    "dimension-", "dim-", "dim_",
-    "ontology-", "ontology_",
-)
+def notif_thread_slug(n: dict) -> str | None:
+    return n.get("thread_slug") or n.get("wiki_thread_slug") or None
 
 
-def _is_ontology_citation(cite: str) -> bool:
-    c = (cite or "").lower()
-    return any(c.startswith(p) for p in _ONTOLOGY_PREFIXES)
+def _known_slugs(context: dict) -> set:
+    """Slugs that were in the prompt but don't live on disk as thread/wiki
+    files (the needs registry is a doc, not per-slug files)."""
+    return {n["slug"] for n in (context.get("needs_ranked") or []) if n.get("slug")}
 
 
 def validate_decision(decision: dict | None, context: dict) -> tuple[bool, str]:
@@ -1257,8 +763,8 @@ def validate_decision(decision: dict | None, context: dict) -> tuple[bool, str]:
     if len(notifs) > SLATE_MAX:
         return False, f"too many notifications ({len(notifs)} > {SLATE_MAX})"
 
-    pool = _evidence_pool(context)
-    wiki_slugs = set()
+    known = _known_slugs(context)
+    thread_slugs = set()
     needs_slugs = set()
 
     for i, n in enumerate(notifs):
@@ -1274,25 +780,29 @@ def validate_decision(decision: dict | None, context: dict) -> tuple[bool, str]:
         if len(n["body"]) > 300:
             return False, f"notification[{i}] body too long ({len(n['body'])} > 300)"
 
-        # Dedup: at most one per wiki_thread_slug, at most one per needs_slug.
-        ws = n.get("wiki_thread_slug")
-        if ws:
-            if ws in wiki_slugs:
-                return False, f"notification[{i}] duplicate wiki_thread_slug '{ws}'"
-            wiki_slugs.add(ws)
+        ts = notif_thread_slug(n)
+        if ts:
+            if ts in thread_slugs:
+                return False, f"notification[{i}] duplicate thread_slug '{ts}'"
+            if not brain_context.citation_exists(ts):
+                return False, f"notification[{i}] thread_slug '{ts}' has no thread file"
+            thread_slugs.add(ts)
         ns = n.get("needs_slug")
         if ns:
             if ns in needs_slugs:
                 return False, f"notification[{i}] duplicate needs_slug '{ns}'"
+            if ns not in known:
+                return False, f"notification[{i}] needs_slug '{ns}' not in registry"
             needs_slugs.add(ns)
 
-        # Citation check — accept graph UUIDs (full or 8-char), wiki-thread slugs,
-        # needs slugs (from _evidence_pool), OR ontology-wiki citations
-        # (wiki-dimension-*, dim_*, ontology-*), since the ontology wiki is
-        # always present in-context as a prompt section.
-        for c in (n.get("evidence_edge_uuids", []) or []):
-            if c not in pool and c[:8] not in pool and not _is_ontology_citation(c):
-                return False, f"notification[{i}] cited evidence '{c}' not in context"
+        # Citations must resolve to a thread file or wiki page on disk, or a
+        # needs-registry slug that was in the prompt. No citation = no send.
+        cites = notif_evidence(n)
+        if not cites:
+            return False, f"notification[{i}] cites no evidence"
+        for c in cites:
+            if c not in known and not brain_context.citation_exists(c):
+                return False, f"notification[{i}] cited evidence '{c}' not found on disk"
 
     return True, "ok"
 
@@ -1365,7 +875,7 @@ def log_sent_event(
             datetime.now(timezone.utc).isoformat(timespec="seconds"),
             infer_dimension(notif),
             notif.get("action_type"),
-            json.dumps(notif.get("evidence_edge_uuids", []) or []),
+            json.dumps(notif_evidence(notif)),
             real_url,
         ),
     )
@@ -1462,8 +972,9 @@ def log_sent(conn: sqlite3.Connection, tick_ts: str, prompt: str,
         INSERT INTO notification_log
             (tick_ts, prompt_hash, decision_json, sent, title, body, priority,
              evidence_edge_uuids, reasoning, decision_point,
-             slate_index, slate_size, next_step_url, action_type, notif_id)
-        VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             slate_index, slate_size, next_step_url, action_type, notif_id,
+             candidate_source, candidate_slug)
+        VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             tick_ts,
@@ -1472,7 +983,7 @@ def log_sent(conn: sqlite3.Connection, tick_ts: str, prompt: str,
             notif["title"],
             notif["body"],
             notif["priority"],
-            json.dumps(notif.get("evidence_edge_uuids", []) or []),
+            json.dumps(notif_evidence(notif)),
             notif.get("reasoning", ""),
             notif.get("decision_point", ""),
             slate_index,
@@ -1480,6 +991,8 @@ def log_sent(conn: sqlite3.Connection, tick_ts: str, prompt: str,
             notif.get("next_step_url"),
             notif.get("action_type"),
             notif_id,
+            "thread" if notif_thread_slug(notif) else ("needs" if notif.get("needs_slug") else None),
+            notif_thread_slug(notif) or notif.get("needs_slug"),
         ),
     )
     conn.commit()
@@ -1547,18 +1060,20 @@ def main() -> int:
         print(f"  (date: {datetime.now(timezone.utc).isoformat(timespec='minutes')})")
         print()
         context = gather_context()
-        print(f"Graph: {context['stats'].get('entity_count','?')} entities, "
-              f"{context['stats'].get('episode_count','?')} episodes")
+        print(f"--- Threads ({len(context['threads'])}) ---")
+        for t in context["threads"]:
+            quiet = t.days_quiet()
+            print(f"  [{t.state:<10}] quiet {quiet if quiet is not None else '?'}d  {t.title}")
+            if t.next_step:
+                print(f"        next: {t.next_step[:120]}")
         print()
         print(f"--- Needs Registry ({len(context.get('needs_ranked', []))}) ---")
         for n in context.get("needs_ranked", []):
             print(f"  {n['score']:.2f} [{n['state']:<10}/{n['urgency']:<8}] {n['title']}")
-            if n.get("next_step"):
-                print(f"        next: {n['next_step'][:120]}")
         print()
-        print(f"--- Wiki Threads ({len(context.get('wiki_threads_ranked', []))}) ---")
-        for t in context.get("wiki_threads_ranked", []):
-            print(f"  {t['score']:.2f} [{t['state']:<10}] {t['title']}")
+        print(f"--- Wiki pages linked from threads ({len(context['wiki_snippets'])}) ---")
+        for w in context["wiki_snippets"]:
+            print(f"  [{w['slug']}] for {w['thread']}: {w['title']}")
         print()
         print(f"--- Live events (iMessage/Calendar/Gmail): {len(context.get('realtime', []))} items ---")
         for src in ("imessage", "calendar", "gmail"):
@@ -1585,13 +1100,15 @@ def main() -> int:
                 "source": "need",
             })
         if len(top3) < 3:
-            for t in context.get("wiki_threads_ranked", []):
+            for t in context.get("threads", []):
                 if len(top3) >= 3:
                     break
+                if t.state in brain_context.CLOSED_STATES:
+                    continue
                 top3.append({
-                    "title": t["title"],
-                    "next_step": (t.get("detail") or "")[:200],
-                    "source": "wiki",
+                    "title": t.title,
+                    "next_step": t.next_step[:200],
+                    "source": "thread",
                 })
         if not top3:
             print("(no candidates to brief)")
@@ -1614,11 +1131,11 @@ def main() -> int:
         return 0
 
     # Context
-    print("Pulling context from Graphiti…")
+    print("Reading context from thread files + wiki…")
     context = gather_context()
-    if context["stats"]:
-        print(f"  graph: {context['stats'].get('entity_count')} entities, "
-              f"{context['stats'].get('episode_count')} episodes")
+    print(f"  threads: {len(context['threads'])} "
+          f"(brain root {brain_context.brain_root()}), "
+          f"wiki pages: {len(context['wiki_snippets'])}")
     recent = gather_recent_decisions(conn)
     print(f"  log: {len(recent)} prior decisions")
 
@@ -1670,16 +1187,11 @@ def main() -> int:
         print(f"SILENT (all): {decision.get('silent_reason', '(no reason)')}")
         return 0
 
-    if len(notifs) < SLATE_MIN:
-        # Soft floor — the prompt asks for 2-5. If the LLM came back with 1,
-        # we send it but log a warning so we can grade it later.
-        print(f"WARN: slate undersized ({len(notifs)} < {SLATE_MIN}); proceeding",
-              file=sys.stderr)
-
     if args.dry_run:
         for i, n in enumerate(notifs):
             print(f"DRY-RUN [{i+1}/{len(notifs)}]: title='{n['title']}', "
                   f"body='{n['body']}', priority={n['priority']}")
+            print(f"                evidence: {notif_evidence(n)}")
             print(f"                action_type: {n.get('action_type', '?')}")
             print(f"                decision_point: {n.get('decision_point', '')}")
             print(f"                next_step_url: {n.get('next_step_url')}")
