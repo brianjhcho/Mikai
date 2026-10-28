@@ -87,6 +87,22 @@ class DismissRateTest(unittest.TestCase):
         self.assertEqual(r["explicit"]["labels"], {"ACTED": 1})
         self.assertEqual(r["inferred"]["labels"], {})
 
+    def test_replies_in_feedback_table_count_as_explicit(self):
+        self.conn.execute(
+            "CREATE TABLE notification_feedback (id INTEGER PRIMARY KEY AUTOINCREMENT, notif_id TEXT,"
+            " thread_slug TEXT, label TEXT NOT NULL, note TEXT, source TEXT NOT NULL, event_ts TEXT NOT NULL)")
+        self.log("2026-10-24", 1, "a")
+        self.log("2026-10-24", 1, "b")
+        self.event("a", "DISMISSED_INFERRED", "2026-10-25")
+        for nid, label in (("a", "ACTED"), ("b", "NOT_RELEVANT"), (None, "SNOOZED")):
+            self.conn.execute(
+                "INSERT INTO notification_feedback (notif_id, thread_slug, label, source, event_ts)"
+                " VALUES (?, ?, ?, 'hermes-imessage', '2026-10-24T12:00')", (nid, "x" if nid is None else None, label))
+        r = self.run_compute()
+        self.assertEqual(r["outcomes"]["positive"], 1)
+        self.assertEqual(r["outcomes"]["negative"], 1)
+        self.assertEqual(r["explicit"]["labels"], {"ACTED": 1, "NOT_RELEVANT": 1})
+
     def test_tap_beats_inferred_dismissal(self):
         self.log("2026-08-01", 1, "a")
         self.event("a", "TAPPED", "2026-08-01T05:00")

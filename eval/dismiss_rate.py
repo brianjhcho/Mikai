@@ -122,6 +122,17 @@ def compute(db_path: str, since: str | None = None, until: str | None = None) ->
                     continue
                 if notif_id in items and etype in SIGNAL_EVENTS:
                     items[notif_id]["events"].append((etype, event_ts))
+
+        # Explicit replies (Hermes/iMessage via mikai_record_feedback) live in their
+        # own table because notification_events' CHECK constraint rejects new labels.
+        if "notification_feedback" in tables:
+            rows = conn.execute(
+                "SELECT notif_id, label, event_ts FROM notification_feedback "
+                "WHERE notif_id IS NOT NULL ORDER BY event_ts, id")
+            for notif_id, label, event_ts in rows:
+                etype = (label or "").upper()
+                if notif_id in items and etype in SIGNAL_EVENTS:
+                    items[notif_id]["events"].append((etype, event_ts))
     finally:
         conn.close()
 
