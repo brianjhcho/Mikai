@@ -99,6 +99,105 @@ export async function getThread(root: string, slug: string, now: Date = new Date
   }
 }
 
+export const THREAD_STATES = ["exploring", "evaluating", "decided", "acting", "stalled", "completed"] as const
+
+export interface ThreadUpsertInput {
+  slug?: string
+  title?: string
+  state?: string
+  next_step?: string
+  department?: string
+  note?: string
+  source?: string
+}
+
+export interface ThreadUpsertResult {
+  slug: string
+  created: boolean
+  backup: string | null
+  thread: ThreadSummary
+}
+
+function slugify(title: string): string {
+  return title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60).replace(/-+$/, "")
+}
+
+function setField(front: string, key: string, value: string): string {
+  const line = `${key}: ${JSON.stringify(value)}`
+  const re = new RegExp(`^${key}:.*$`, "m")
+  return re.test(front) ? front.replace(re, line) : `${front}\n${line}`
+}
+
+// The one write path into L4 thread files. Never touches the wiki. Every
+// modification of an existing thread first copies it to threads/.history/.
+export async function upsertThread(
+  root: string,
+  input: ThreadUpsertInput,
+  now: Date = new Date(),
+): Promise<ThreadUpsertResult> {
+  const slug = input.slug?.trim() || (input.title ? slugify(input.title) : "")
+  if (!SLUG_RE.test(slug)) throw new Error("a valid slug or title is required (lowercase letters, digits, hyphens)")
+  const state = input.state?.trim().toLowerCase()
+  if (state && !(THREAD_STATES as readonly string[]).includes(state)) {
+    throw new Error(`state must be one of ${THREAD_STATES.join(", ")}`)
+  }
+  // Local calendar date: thread dates are read by a human in their own timezone.
+  const today = new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 10)
+  const dir = path.join(root, "threads")
+  const file = path.join(dir, `${slug}.md`)
+  await fs.mkdir(dir, { recursive: true })
+
+  let existing: string | null = null
+  try {
+    existing = await fs.readFile(file, "utf-8")
+  } catch {
+    existing = null
+  }
+  const logLine = input.note?.trim() ? `- ${today} (${input.source?.trim() || "mcp"}): ${input.note.trim()}` : null
+
+  if (existing === null) {
+    if (!input.title?.trim()) throw new Error("title is required to create a new thread")
+    const fields: Array<[string, string]> = [
+      ["slug", slug],
+      ["title", input.title.trim()],
+      ["state", state ?? "exploring"],
+      ["state_since", today],
+      ["last_activity", today],
+      ["next_step", input.next_step?.trim() ?? ""],
+      ["department", input.department?.trim() ?? ""],
+      ["source", input.source?.trim() || "mcp"],
+    ]
+    const front = fields.filter(([, v]) => v !== "").map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join("\n")
+    const body = `## Context\n\nCreated from a conversation on ${today}.\n\n## Log\n\n${logLine ?? `- ${today}: thread created`}\n`
+    await fs.writeFile(file, `---\n${front}\n---\n\n${body}`, "utf-8")
+    return { slug, created: true, backup: null, thread: summary(toThread(slug, await fs.readFile(file, "utf-8"), now)) }
+  }
+
+  const historyDir = path.join(dir, ".history")
+  await fs.mkdir(historyDir, { recursive: true })
+  const backup = path.join(historyDir, `${slug}-${now.toISOString().replace(/[:.]/g, "-")}.md`)
+  await fs.writeFile(backup, existing, "utf-8")
+
+  const m = existing.match(/^---\n([\s\S]*?)\n---\n?/)
+  if (!m) throw new Error(`thread ${slug} has no frontmatter; not modifying it`)
+  let front = m[1]
+  let body = existing.slice(m[0].length)
+  const current = toThread(slug, existing, now)
+  if (input.title?.trim()) front = setField(front, "title", input.title.trim())
+  if (state && state !== current.state) {
+    front = setField(front, "state", state)
+    front = setField(front, "state_since", today)
+  }
+  if (input.next_step?.trim()) front = setField(front, "next_step", input.next_step.trim())
+  if (input.department?.trim()) front = setField(front, "department", input.department.trim())
+  front = setField(front, "last_activity", today)
+  if (logLine) {
+    body = /^## Log\s*$/m.test(body) ? body.replace(/^## Log\s*$/m, `## Log\n\n${logLine}`) : `${body.trimEnd()}\n\n## Log\n\n${logLine}\n`
+  }
+  await fs.writeFile(file, `---\n${front}\n---\n${body}`, "utf-8")
+  return { slug, created: false, backup, thread: summary(toThread(slug, await fs.readFile(file, "utf-8"), now)) }
+}
+
 export async function stalledThreads(
   root: string,
   options: { days?: number; now?: Date } = {},
