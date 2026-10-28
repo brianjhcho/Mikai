@@ -22,7 +22,13 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-CALENDAR_DB = Path.home() / "Library" / "Calendars" / "Calendar.sqlitedb"
+# Newer macOS moved the store into the calendar group container; keep the old
+# path as a fallback for older systems.
+_CALENDAR_DB_CANDIDATES = [
+    Path.home() / "Library" / "Group Containers" / "group.com.apple.calendar" / "Calendar.sqlitedb",
+    Path.home() / "Library" / "Calendars" / "Calendar.sqlitedb",
+]
+CALENDAR_DB = next((p for p in _CALENDAR_DB_CANDIDATES if p.exists()), _CALENDAR_DB_CANDIDATES[0])
 COCOA_EPOCH_OFFSET = 978307200
 
 # entity_type in CalendarItem: 1 = Reminder, 2 = Event. We want events only.
@@ -38,26 +44,29 @@ def _try_sqlite(hours: int = 72, limit: int = 50) -> list[dict] | None:
     future_apple = now_apple + hours * 3600
 
     try:
-        conn = sqlite3.connect(f"file:{CALENDAR_DB}?mode=ro&immutable=1", uri=True)
+        # mode=ro (not immutable) so recent edits in the WAL are visible;
+        # OccurrenceCache expands recurring events (occurrence_date = start).
+        conn = sqlite3.connect(f"file:{CALENDAR_DB}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
         cur = conn.execute(
             """
             SELECT
                 ci.summary,
-                ci.start_date,
-                ci.end_date,
+                COALESCE(oc.occurrence_start_date, oc.occurrence_date) AS start_date,
+                oc.occurrence_end_date AS end_date,
                 ci.all_day,
                 ci.has_attendees,
                 c.title AS calendar_name
-            FROM CalendarItem ci
+            FROM OccurrenceCache oc
+            JOIN CalendarItem ci ON ci.ROWID = oc.event_id
             LEFT JOIN Calendar c ON ci.calendar_id = c.ROWID
-            WHERE ci.start_date > ?
-              AND ci.start_date < ?
+            WHERE COALESCE(oc.occurrence_start_date, oc.occurrence_date) > ?
+              AND COALESCE(oc.occurrence_start_date, oc.occurrence_date) < ?
               AND ci.summary IS NOT NULL
               AND COALESCE(ci.junk_status, 0) = 0
               AND COALESCE(ci.hidden, 0) = 0
               AND ci.entity_type = ?
-            ORDER BY ci.start_date ASC
+            ORDER BY start_date ASC
             LIMIT ?
             """,
             (now_apple, future_apple, ENTITY_TYPE_EVENT, limit),

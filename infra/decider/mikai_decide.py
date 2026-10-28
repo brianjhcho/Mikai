@@ -55,6 +55,7 @@ from adapters import imessage, calendar as cal_adapter, gmail  # noqa: E402
 import brain_context  # noqa: E402
 import needs_lens  # noqa: E402
 import dispatch_calendar  # noqa: E402
+import imessage_dispatch  # noqa: E402
 
 # Life-dimensions ontology (see docs/DIMENSIONS.md). Loaded verbatim into the
 # prompt as the top-level frame — dimensions are the schema FIGS uses to
@@ -262,6 +263,7 @@ EXTRA_COLUMNS = [
     ("notif_id", "TEXT"),
     ("candidate_source", "TEXT"),
     ("candidate_slug", "TEXT"),
+    ("imessage_status", "TEXT"),
 ]
 
 
@@ -943,6 +945,21 @@ def dispatch_via_ntfy(
         return False, f"ntfy_error: {e}"
 
 
+def send_imessage_copy(notif: dict, notif_id: str) -> tuple[bool, str]:
+    """Mirror a notification to iMessage via Hermes. Returns (ok, status);
+    status is "off" when MIKAI_IMESSAGE is unset. Never raises."""
+    if not imessage_dispatch.imessage_enabled():
+        return False, "off"
+    text = imessage_dispatch.format_message(notif["title"], notif["body"], notif_id)
+    ok, status = imessage_dispatch.send(text)
+    if ok:
+        try:
+            imessage_dispatch.record_outbox(DB_PATH, notif_id, text)
+        except Exception as e:
+            print(f"WARN: imessage sent but outbox write failed for {notif_id}: {e}", file=sys.stderr)
+    return ok, status
+
+
 # ── Logging helpers ────────────────────────────────────────────────────
 
 def log_silent(conn: sqlite3.Connection, tick_ts: str, prompt: str,
@@ -966,15 +983,16 @@ def log_silent(conn: sqlite3.Connection, tick_ts: str, prompt: str,
 
 def log_sent(conn: sqlite3.Connection, tick_ts: str, prompt: str,
              notif: dict, slate_index: int, slate_size: int,
-             notif_id: str | None = None) -> None:
+             notif_id: str | None = None,
+             imessage_status: str | None = None) -> None:
     conn.execute(
         """
         INSERT INTO notification_log
             (tick_ts, prompt_hash, decision_json, sent, title, body, priority,
              evidence_edge_uuids, reasoning, decision_point,
              slate_index, slate_size, next_step_url, action_type, notif_id,
-             candidate_source, candidate_slug)
-        VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             candidate_source, candidate_slug, imessage_status)
+        VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             tick_ts,
@@ -993,6 +1011,7 @@ def log_sent(conn: sqlite3.Connection, tick_ts: str, prompt: str,
             notif_id,
             "thread" if notif_thread_slug(notif) else ("needs" if notif.get("needs_slug") else None),
             notif_thread_slug(notif) or notif.get("needs_slug"),
+            imessage_status,
         ),
     )
     conn.commit()
@@ -1220,13 +1239,23 @@ def main() -> int:
             n["title"], n["body"], n["priority"],
             next_step_url=dispatch_url,
         )
-        if sent_ok:
+        imessage_ok, imessage_status = send_imessage_copy(n, notif_id)
+        if not imessage_ok and imessage_status != "off":
+            print(f"  ✗ [{i+1}/{slate_size}] iMessage FAILED (notif_id={notif_id}): "
+                  f"{imessage_status}", file=sys.stderr)
+        if sent_ok or imessage_ok:
+            if not sent_ok:
+                imessage_status = f"{imessage_status} (ntfy failed: {dispatch_msg})"
+                print(f"  ⚠ [{i+1}/{slate_size}] ntfy FAILED, delivered by iMessage only: "
+                      f"{dispatch_msg}", file=sys.stderr)
             log_sent(conn, now_ts, prompt, n, slate_index=i,
-                     slate_size=slate_size, notif_id=notif_id)
+                     slate_size=slate_size, notif_id=notif_id,
+                     imessage_status=imessage_status)
             print(f"  ✓ [{i+1}/{slate_size}] SENT: {n['title']} "
-                  f"(notif_id={notif_id})")
+                  f"(notif_id={notif_id}, imessage={imessage_status})")
         else:
-            log_silent(conn, now_ts, prompt, n, f"dispatch_failed: {dispatch_msg}")
+            log_silent(conn, now_ts, prompt, n,
+                       f"dispatch_failed: {dispatch_msg}; imessage: {imessage_status}")
             print(f"  ✗ [{i+1}/{slate_size}] FAILED: {dispatch_msg}", file=sys.stderr)
             fail_count += 1
         # iOS bundles APNs alerts that arrive in the same window. A small gap
