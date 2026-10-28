@@ -1,0 +1,396 @@
+#!/usr/bin/env bash
+# mikai-setup — set up MIKAI (brain) + Hermes (hands) on this Mac.
+#
+#   infra/onboarding/mikai-setup --user-name "Alex" [--phone +16045551234]
+#
+# Safe to re-run: every step checks what's already done and skips it.
+#   --dry-run        print what would happen, change nothing
+#   --test           sandbox mode: real file/config steps, but never touches
+#                    launchd, never opens apps or System Settings, never runs
+#                    Photon login, never starts the gateway or sends messages
+#   --skip-notes     don't offer the Apple Notes import
+#   --notes-limit N  import at most N notes (default: all)
+#   --yes            answer yes to optional prompts (non-interactive)
+#   --hermes-bin P   use an existing Hermes binary (default ~/.local/bin/hermes)
+set -uo pipefail
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ONBOARD="$REPO/infra/onboarding"
+MCP_DIR="$REPO/infra/mikai-mcp"
+
+USER_NAME=""
+PHONE=""
+DRY_RUN=0
+TEST_MODE=0
+SKIP_NOTES=0
+NOTES_LIMIT=0
+ASSUME_YES=0
+HERMES_BIN="$HOME/.local/bin/hermes"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --user-name) USER_NAME="${2:-}"; shift 2 ;;
+    --phone) PHONE="${2:-}"; shift 2 ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --test) TEST_MODE=1; shift ;;
+    --skip-notes) SKIP_NOTES=1; shift ;;
+    --notes-limit) NOTES_LIMIT="${2:-0}"; shift 2 ;;
+    --yes) ASSUME_YES=1; shift ;;
+    --hermes-bin) HERMES_BIN="${2:-}"; shift 2 ;;
+    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+    *) echo "Unknown option: $1 (see --help)"; exit 2 ;;
+  esac
+done
+
+export HERMES_HOME="$HOME/.hermes"
+MIKAI_HOME="$HOME/.mikai"
+STATE_DIR="$MIKAI_HOME/onboarding"
+STATE_FILE="$STATE_DIR/state"
+CHROME_APP="/Applications/Google Chrome.app"
+CHROME_PLIST="$HOME/Library/LaunchAgents/com.mikai.chrome.plist"
+CDP_URL="http://127.0.0.1:9222"
+PROVIDER="claude-subscription-directsdk-experimental"
+PLUGIN="claude-subscription-directsdk"
+TRIM_TOOLSETS=(terminal file code_execution vision image_gen tts todo session_search connections delegation computer_use clarify skills memory)
+
+# ── output helpers ──────────────────────────────────────────────────────
+
+bold() { printf '\033[1m%s\033[0m\n' "$*"; }
+say()  { printf '  %s\n' "$*"; }
+ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
+warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
+die()  { printf '\n  \033[31m✗ %s\033[0m\n\n' "$*"; exit 1; }
+
+# Run a command, or print it in dry-run mode.
+act() {
+  if [[ $DRY_RUN -eq 1 ]]; then
+    printf '    [dry-run] %s\n' "$*" >&2
+    return 0
+  fi
+  "$@"
+}
+
+# Things that reach outside the sandbox (launchd, apps, network logins, messages).
+live() {
+  if [[ $DRY_RUN -eq 1 || $TEST_MODE -eq 1 ]]; then
+    printf '    [skipped: %s] %s\n' "$([[ $DRY_RUN -eq 1 ]] && echo dry-run || echo test mode)" "$*" >&2
+    return 0
+  fi
+  "$@"
+}
+
+confirm() {
+  [[ $ASSUME_YES -eq 1 ]] && return 0
+  [[ ! -t 0 ]] && return 1
+  local reply
+  read -r -p "  $1 [y/N] " reply
+  [[ "$reply" =~ ^[Yy] ]]
+}
+
+record() {  # remember what we added, for mikai-uninstall
+  [[ $DRY_RUN -eq 1 ]] && return 0
+  mkdir -p "$STATE_DIR"
+  grep -qxF "$1" "$STATE_FILE" 2>/dev/null || echo "$1" >> "$STATE_FILE"
+}
+
+hermes() { "$HERMES_BIN" "$@"; }
+
+slug() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-*//; s/-*$//'; }
+
+find_node() {  # Node ≥22 is needed for node:sqlite. Prefer Hermes's bundled Node.
+  local n
+  n="$(ls -d "$HERMES_HOME"/tools/node-*/bin/node 2>/dev/null | sort | tail -1)"
+  if [[ -n "$n" && -x "$n" ]]; then echo "$n"; return 0; fi
+  n="$(command -v node 2>/dev/null)"
+  if [[ -n "$n" ]] && [[ "$("$n" -p 'process.versions.node.split(".")[0]' 2>/dev/null)" -ge 22 ]]; then echo "$n"; return 0; fi
+  return 1
+}
+
+find_npm_dir() {
+  local d
+  d="$(ls -d "$HERMES_HOME"/tools/npm-*/bin 2>/dev/null | sort | tail -1)"
+  [[ -n "$d" ]] && { echo "$d"; return 0; }
+  command -v npm >/dev/null && dirname "$(command -v npm)"
+}
+
+# ── 1. preflight ────────────────────────────────────────────────────────
+
+step_preflight() {
+  bold "1/9  Checking this Mac"
+  [[ "$(uname -s)" == "Darwin" ]] || die "MIKAI's setup only runs on macOS."
+  local ver major
+  ver="$(sw_vers -productVersion)"; major="${ver%%.*}"
+  [[ "$major" -ge 13 ]] || die "macOS $ver is too old. MIKAI needs macOS 13 or newer."
+  ok "macOS $ver on $(uname -m | sed 's/arm64/Apple Silicon/; s/x86_64/Intel/')"
+
+  if [[ -z "$USER_NAME" && -f "$STATE_FILE" ]]; then
+    USER_NAME="$(sed -n 's/^user_name=//p' "$STATE_FILE" | head -1)"
+  fi
+  [[ -n "$USER_NAME" ]] || die "Tell me your first name: re-run with --user-name \"YourName\"."
+  ok "Setting up MIKAI for $USER_NAME"
+
+  [[ -d "$CHROME_APP" ]] || die "Google Chrome isn't installed. Install it from https://www.google.com/chrome/ and re-run. MIKAI gets its own separate Chrome profile; your normal one isn't touched."
+  ok "Google Chrome is installed"
+
+  [[ -d "$MCP_DIR/src" ]] || die "Can't find MIKAI's code at $MCP_DIR. Run this script from inside the MIKAI repository."
+  ok "MIKAI code found at $REPO"
+
+  if ! command -v claude >/dev/null 2>&1; then
+    die "Claude Code isn't installed. Install it (https://claude.com/claude-code), run 'claude' once and log in with your Claude account, then re-run."
+  fi
+  if claude auth status 2>/dev/null | grep -q '"loggedIn": *true'; then
+    ok "Claude is logged in ($(claude auth status 2>/dev/null | sed -n 's/.*"subscriptionType": *"\([^"]*\)".*/\1/p') plan). MIKAI uses this for its thinking."
+  elif [[ $TEST_MODE -eq 1 || $DRY_RUN -eq 1 ]]; then
+    warn "Claude isn't logged in here (fine for a test run)."
+  else
+    die "Claude isn't logged in. Run 'claude', log in with your Claude account, then re-run."
+  fi
+  [[ $DRY_RUN -eq 1 ]] || { mkdir -p "$STATE_DIR"; grep -q '^user_name=' "$STATE_FILE" 2>/dev/null || echo "user_name=$USER_NAME" >> "$STATE_FILE"; }
+}
+
+# ── 2. Hermes (the hands) ───────────────────────────────────────────────
+
+step_hermes() {
+  bold "2/9  Installing Hermes (MIKAI's hands: messaging, browser, scheduling)"
+  if [[ -x "$HERMES_BIN" ]]; then
+    ok "Hermes is already installed"
+    if [[ -f "$HERMES_HOME/config.yaml" && ! -f "$HERMES_HOME/config.yaml.bak-pre-mikai-onboarding" ]] && ! grep -q '^installed:hermes$' "$STATE_FILE" 2>/dev/null; then
+      act cp "$HERMES_HOME/config.yaml" "$HERMES_HOME/config.yaml.bak-pre-mikai-onboarding"
+      record "backup:$HERMES_HOME/config.yaml.bak-pre-mikai-onboarding"
+      ok "Backed up your existing Hermes settings (mikai-uninstall restores them)"
+    fi
+  else
+    say "Downloading Hermes from Nous Research (open source). This takes a few minutes."
+    local tmp; tmp="$(mktemp -t hermes-install).sh"
+    act curl -fsSL https://hermes-agent.nousresearch.com/install.sh -o "$tmp" || die "Couldn't download the Hermes installer."
+    act bash "$tmp" --non-interactive --skip-browser --skip-computer-use || die "The Hermes installer failed. Its output above says why."
+    [[ $DRY_RUN -eq 1 || -x "$HERMES_BIN" ]] || die "Hermes installed but $HERMES_BIN is missing."
+    record "installed:hermes"
+    ok "Hermes installed"
+  fi
+
+  if [[ -d "$HERMES_HOME/plugins/$PROVIDER" ]]; then
+    ok "Claude subscription plugin already installed"
+  else
+    say "Connecting Hermes to your Claude subscription (official plugin; no API key)."
+    act hermes plugins install "$PLUGIN" </dev/null || die "Couldn't install the $PLUGIN plugin."
+    record "installed:plugin:$PROVIDER"
+  fi
+  act hermes plugins enable "$PROVIDER" >/dev/null
+  act hermes config set model.provider "$PROVIDER" >/dev/null
+  act hermes config set model.default sonnet >/dev/null
+  ok "Hermes thinks with Claude (Sonnet) through your own subscription"
+}
+
+# ── 3. MIKAI's tool server (the brain) ──────────────────────────────────
+
+step_mcp() {
+  bold "3/9  Installing MIKAI's brain (threads, notes search, calendar, messages)"
+  local node npm_dir wiki_root
+  node="$(find_node)" || { [[ $DRY_RUN -eq 1 ]] && node="node"; } || die "Node 22+ not found. Hermes normally brings its own; re-run step 2."
+  npm_dir="$(find_npm_dir)" || npm_dir=""
+  wiki_root="$MIKAI_HOME/wiki-$(slug "$USER_NAME")"
+
+  local built="$MCP_DIR/dist/src/index.js"
+  if [[ -f "$built" && -z "$(find "$MCP_DIR/src" -newer "$built" -name '*.ts' 2>/dev/null)" ]]; then
+    ok "MIKAI's tool server is already built"
+  else
+    say "Building MIKAI's tool server."
+    (
+      cd "$MCP_DIR" || exit 1
+      export PATH="$(dirname "$node")${npm_dir:+:$npm_dir}:$PATH"
+      if [[ ! -d node_modules ]]; then
+        if [[ -f package-lock.json ]]; then act npm ci --no-audit --no-fund; else act npm install --no-audit --no-fund; fi
+      fi
+      act npm run build --silent
+    ) || die "Building MIKAI's tool server failed."
+    ok "Built"
+  fi
+
+  act mkdir -p "$MIKAI_HOME/brain/threads" "$wiki_root/wiki/concepts" "$wiki_root/wiki/entities" "$wiki_root/wiki/wisdom" "$wiki_root/wiki/sources"
+  ok "MIKAI's files live in $MIKAI_HOME (threads in brain/threads, notes in $(basename "$wiki_root"))"
+
+  if hermes mcp list 2>/dev/null | grep -qE '^\s*mikai\s'; then
+    ok "MIKAI is already connected to Hermes"
+  else
+    # `mcp add` asks "Enable all N tools? [Y/n/select]" and silently cancels on EOF.
+    if [[ $DRY_RUN -eq 1 ]]; then
+      act hermes mcp add mikai --command "$node" --env "MIKAI_WIKI_ROOT=$wiki_root" "MIKAI_BRAIN_ROOT=$MIKAI_HOME/brain" --args "$built"
+    else
+      printf 'Y\n' | hermes mcp add mikai --command "$node" \
+        --env "MIKAI_WIKI_ROOT=$wiki_root" "MIKAI_BRAIN_ROOT=$MIKAI_HOME/brain" "OLLAMA_HOST=http://localhost:11434" \
+        --args "$built" >/dev/null 2>&1
+      grep -qE '^\s+mikai:' "$HERMES_HOME/config.yaml" 2>/dev/null || die "Couldn't connect MIKAI to Hermes (no mikai entry in $HERMES_HOME/config.yaml). Try: $HERMES_BIN mcp add mikai --command $node --args $built"
+      record "added:mcp:mikai"
+    fi
+    ok "MIKAI connected to Hermes as its brain"
+  fi
+  [[ $DRY_RUN -eq 1 ]] || echo "node_bin=$node" >> "$STATE_FILE"
+}
+
+# ── 4. MIKAI's rules and Hermes trims ───────────────────────────────────
+
+step_rules() {
+  bold "4/9  Teaching Hermes how MIKAI behaves"
+  local soul="$HERMES_HOME/SOUL.md" rendered
+  rendered="$(sed "s/{{NAME}}/$USER_NAME/g" "$ONBOARD/templates/SOUL.md.tmpl")"
+  if [[ -f "$soul" ]] && [[ "$(cat "$soul")" == "$rendered" ]]; then
+    ok "MIKAI's rules are already in place"
+  else
+    if [[ -f "$soul" && ! -f "$soul.bak-pre-mikai-onboarding" ]]; then
+      act cp "$soul" "$soul.bak-pre-mikai-onboarding"
+      record "backup:$soul.bak-pre-mikai-onboarding"
+    fi
+    if [[ $DRY_RUN -eq 1 ]]; then
+      printf '    [dry-run] write %s from templates/SOUL.md.tmpl (name: %s)\n' "$soul" "$USER_NAME"
+    else
+      mkdir -p "$HERMES_HOME"; printf '%s\n' "$rendered" > "$soul"
+    fi
+    record "wrote:$soul"
+    ok "Rules written: do errands end to end, ask \"yes?\" before paying or messaging anyone, never handle passwords in chat, track every errand"
+  fi
+
+  act hermes config set memory.memory_enabled false >/dev/null
+  act hermes config set memory.user_profile_enabled false >/dev/null
+  act hermes config set memory.nudge_interval 0 >/dev/null
+  act hermes config set skills.creation_nudge_interval 0 >/dev/null
+  ok "Hermes's own memory is off, so MIKAI stays the single source of truth"
+
+  act hermes config set browser.cdp_url "$CDP_URL" >/dev/null
+  act hermes config set browser.restrict_evaluate true >/dev/null
+  ok "Hermes will browse with MIKAI's own Chrome, and web pages can't read its cookies or passwords"
+
+  act hermes tools disable --platform cli "${TRIM_TOOLSETS[@]}" >/dev/null
+  ok "Unneeded tools switched off (keeps each reply cheap on your Claude quota)"
+}
+
+# ── 5. MIKAI's own Chrome ───────────────────────────────────────────────
+
+step_chrome() {
+  bold "5/9  Giving MIKAI its own Chrome"
+  act mkdir -p "$MIKAI_HOME/browser-profile"
+  act chmod 700 "$MIKAI_HOME/browser-profile"
+  local rendered
+  rendered="$(sed "s#{{HOME}}#$HOME#g" "$ONBOARD/templates/com.mikai.chrome.plist.tmpl")"
+  if [[ -f "$CHROME_PLIST" && "$(cat "$CHROME_PLIST")" == "$rendered" ]]; then
+    ok "MIKAI's Chrome already starts at login"
+  else
+    if [[ $DRY_RUN -eq 1 ]]; then
+      printf '    [dry-run] write %s\n' "$CHROME_PLIST"
+    else
+      mkdir -p "$(dirname "$CHROME_PLIST")"; printf '%s\n' "$rendered" > "$CHROME_PLIST"
+    fi
+    record "wrote:$CHROME_PLIST"
+    ok "MIKAI's Chrome will start at every login"
+  fi
+  if curl -s --max-time 2 "$CDP_URL/json/version" >/dev/null 2>&1; then
+    ok "MIKAI's Chrome is running"
+  else
+    live launchctl bootstrap "gui/$(id -u)" "$CHROME_PLIST" 2>/dev/null || live launchctl kickstart "gui/$(id -u)/com.mikai.chrome"
+    say "A separate Chrome window opens: that's MIKAI's. Your normal Chrome isn't touched."
+  fi
+  say "In MIKAI's Chrome, sign in to the sites you want MIKAI to use: Gmail, Google Calendar,"
+  say "and places you buy from (tickets, restaurants, airlines). Save a card on sites you buy from."
+  say "MIKAI can only reach sites you sign in to there."
+}
+
+# ── 6. iMessage ─────────────────────────────────────────────────────────
+
+step_imessage() {
+  bold "6/9  Giving MIKAI an iMessage number"
+  local assigned
+  assigned="$(hermes photon status 2>/dev/null | sed -n 's/.*assigned number *: *\(+[0-9]*\).*/\1/p' | head -1)"
+  if [[ -n "$assigned" ]]; then
+    ok "MIKAI already has an iMessage number: $assigned"
+  else
+    if [[ -z "$PHONE" && -t 0 && $DRY_RUN -eq 0 && $TEST_MODE -eq 0 ]]; then
+      read -r -p "  Your mobile number, with country code (e.g. +16045551234): " PHONE
+    fi
+    [[ $DRY_RUN -eq 1 || $TEST_MODE -eq 1 || -n "$PHONE" ]] || die "I need your mobile number: re-run with --phone +1XXXXXXXXXX."
+    say "Photon provides the iMessage line (free tier). A sign-in page opens in your browser: approve it."
+    live hermes photon setup --phone "${PHONE:-+10000000000}" || die "Photon setup didn't finish. Re-run this script to try again."
+    [[ $TEST_MODE -eq 1 ]] || record "added:photon"
+    assigned="$(hermes photon status 2>/dev/null | sed -n 's/.*assigned number *: *\(+[0-9]*\).*/\1/p' | head -1)"
+    [[ -n "$assigned" ]] && ok "MIKAI's iMessage number: $assigned"
+  fi
+  act hermes tools disable --platform photon "${TRIM_TOOLSETS[@]}" >/dev/null
+  act hermes tools enable --platform photon browser web cronjob >/dev/null
+  ok "Over iMessage MIKAI can browse, search the web and set reminders"
+  [[ -n "$assigned" ]] && say "Save $assigned in your contacts as \"MIKAI\" and text it \"hi\" once (needed before it can message you first)."
+}
+
+# ── 7. permissions ──────────────────────────────────────────────────────
+
+step_permissions() {
+  bold "7/9  macOS permissions"
+  local node; node="$(sed -n 's/^node_bin=//p' "$STATE_FILE" 2>/dev/null | tail -1)"; node="${node:-$(find_node)}"
+  say "MIKAI reads your calendar and recent iMessages (read-only) so it knows your schedule and"
+  say "notices conversations you dropped. macOS requires Full Disk Access for that."
+  say "In System Settings → Privacy & Security → Full Disk Access, click +, press Cmd+Shift+G,"
+  say "paste the path below (it's on your clipboard), and turn it on:"
+  say "    $node"
+  if [[ $DRY_RUN -eq 0 && $TEST_MODE -eq 0 && -n "$node" ]]; then printf '%s' "$node" | pbcopy; fi
+  live open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
+  say "Skip this and MIKAI still works; it just won't see your calendar or texts."
+}
+
+# ── 8. Apple Notes (optional) ───────────────────────────────────────────
+
+step_notes() {
+  bold "8/9  Importing your Apple Notes (optional)"
+  local out; out="$MIKAI_HOME/wiki-$(slug "$USER_NAME")/wiki/sources"
+  if [[ $SKIP_NOTES -eq 1 ]]; then say "Skipped (--skip-notes)."; return 0; fi
+  if [[ $TEST_MODE -eq 1 || $DRY_RUN -eq 1 ]]; then
+    printf '    [skipped: %s] osascript -l JavaScript %s %s %s\n' "$([[ $DRY_RUN -eq 1 ]] && echo dry-run || echo test mode)" "$ONBOARD/export-apple-notes.js" "$out" "$NOTES_LIMIT"
+    return 0
+  fi
+  say "MIKAI can copy your notes (read-only) into its own files so it can search what you've written."
+  say "macOS will ask to let Terminal control Notes: click OK. Nothing in Notes is changed."
+  confirm "Import your Apple Notes now?" || { say "Skipped. Re-run the script any time to import."; return 0; }
+  mkdir -p "$out"
+  osascript -l JavaScript "$ONBOARD/export-apple-notes.js" "$out" "$NOTES_LIMIT" || warn "Notes import stopped early. Re-run to continue; already-imported notes are skipped."
+  record "imported:notes:$out"
+}
+
+# ── 9. start ────────────────────────────────────────────────────────────
+
+step_start() {
+  bold "9/9  Starting MIKAI"
+  if [[ $DRY_RUN -eq 1 || $TEST_MODE -eq 1 ]]; then
+    live hermes gateway install
+    live hermes send --to photon --quiet --file - "<<< Hi $USER_NAME, I'm MIKAI. Text me anything you need done."
+    return 0
+  fi
+  if hermes gateway status 2>/dev/null | grep -qi "running"; then
+    hermes gateway restart >/dev/null 2>&1 && ok "Restarted MIKAI so it picks up the setup"
+  else
+    hermes gateway install </dev/null || die "Couldn't start MIKAI's background service."
+    record "installed:gateway-service"
+  fi
+  say "Waiting for MIKAI to connect to iMessage..."
+  local i
+  for i in $(seq 1 45); do
+    tail -60 "$HERMES_HOME/logs/gateway.log" 2>/dev/null | grep -q "photon connected" && break
+    sleep 2
+  done
+  if tail -60 "$HERMES_HOME/logs/gateway.log" 2>/dev/null | grep -q "photon connected"; then
+    printf 'Hi %s, I'"'"'m MIKAI. Text me anything you need done: errands, bookings, reminders, or "what am I behind on?"\n' "$USER_NAME" \
+      | hermes send --to photon --quiet --file - && ok "Sent you a welcome message on iMessage"
+  else
+    warn "MIKAI hasn't connected to iMessage yet. Check: $HERMES_BIN gateway status"
+  fi
+  record "setup:complete"
+}
+
+bold "MIKAI setup$([[ $DRY_RUN -eq 1 ]] && echo ' (dry run: nothing will change)')$([[ $TEST_MODE -eq 1 ]] && echo ' (test mode)')"
+echo
+step_preflight; echo
+step_hermes; echo
+step_mcp; echo
+step_rules; echo
+step_chrome; echo
+step_imessage; echo
+step_permissions; echo
+step_notes; echo
+step_start; echo
+bold "Done. Text MIKAI something you need done."

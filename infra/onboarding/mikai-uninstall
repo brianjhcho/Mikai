@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# mikai-uninstall — remove what mikai-setup added, after backing it up.
+#
+#   infra/onboarding/mikai-uninstall [--dry-run] [--test] [--keep-data] [--yes]
+#
+#   --dry-run    print what would be removed, change nothing
+#   --test       sandbox mode: never touches launchd (the Chrome login item
+#                and the Hermes service share labels with real installs)
+#   --keep-data  keep MIKAI's threads and imported notes (~/.mikai/brain, wiki-*)
+#   --yes        don't ask for confirmation
+#   (env MIKAI_HERMES_BIN overrides the Hermes binary path, for testing)
+#
+# Uses ~/.mikai/onboarding/state to know what setup added. Hermes itself is
+# only removed if setup installed it. MIKAI's Chrome profile (its logins) is
+# deleted and NOT backed up, so removing MIKAI signs it out of every site.
+set -uo pipefail
+
+DRY_RUN=0
+TEST_MODE=0
+KEEP_DATA=0
+ASSUME_YES=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run) DRY_RUN=1; shift ;;
+    --test) TEST_MODE=1; shift ;;
+    --keep-data) KEEP_DATA=1; shift ;;
+    --yes) ASSUME_YES=1; shift ;;
+    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+    *) echo "Unknown option: $1"; exit 2 ;;
+  esac
+done
+
+export HERMES_HOME="$HOME/.hermes"
+MIKAI_HOME="$HOME/.mikai"
+STATE_FILE="$MIKAI_HOME/onboarding/state"
+HERMES_BIN="${MIKAI_HERMES_BIN:-$HOME/.local/bin/hermes}"
+CHROME_PLIST="$HOME/Library/LaunchAgents/com.mikai.chrome.plist"
+
+say() { printf '  %s\n' "$*"; }
+act() {
+  if [[ $DRY_RUN -eq 1 ]]; then printf '    [dry-run] %s\n' "$*" >&2; return 0; fi
+  "$@"
+}
+live() {
+  if [[ $DRY_RUN -eq 1 || $TEST_MODE -eq 1 ]]; then
+    printf '    [skipped: %s] %s\n' "$([[ $DRY_RUN -eq 1 ]] && echo dry-run || echo test mode)" "$*" >&2; return 0
+  fi
+  "$@"
+}
+has() { grep -qxF "$1" "$STATE_FILE" 2>/dev/null; }
+has_prefix() { grep -q "^$1" "$STATE_FILE" 2>/dev/null; }
+
+[[ -f "$STATE_FILE" ]] || { echo "Nothing to remove: $STATE_FILE not found (mikai-setup was never run here)."; exit 0; }
+USER_NAME="$(sed -n 's/^user_name=//p' "$STATE_FILE" | head -1)"
+
+echo "This removes MIKAI from this Mac${USER_NAME:+ for $USER_NAME}."
+[[ $KEEP_DATA -eq 1 ]] && echo "Your threads and imported notes are kept." || echo "Your threads and imported notes are removed (they're in the backup)."
+if [[ $ASSUME_YES -eq 0 && $DRY_RUN -eq 0 ]]; then
+  read -r -p "  Continue? [y/N] " reply; [[ "$reply" =~ ^[Yy] ]] || { echo "Cancelled."; exit 0; }
+fi
+
+# 1. Backup (never includes the browser profile: it holds live logins)
+backup="$HOME/mikai-uninstall-backup-$(date +%Y%m%d-%H%M%S).tar.gz"
+items=()
+for p in "$HERMES_HOME/config.yaml" "$HERMES_HOME/SOUL.md" "$HERMES_HOME/.env" "$MIKAI_HOME/onboarding" "$MIKAI_HOME/brain" "$CHROME_PLIST"; do
+  [[ -e "$p" ]] && items+=("${p#"$HOME"/}")
+done
+for p in "$MIKAI_HOME"/wiki-*; do [[ -e "$p" ]] && items+=("${p#"$HOME"/}"); done
+if [[ ${#items[@]} -gt 0 ]]; then
+  say "Backing up to $backup"
+  act tar -czf "$backup" -C "$HOME" "${items[@]}"
+  act chmod 600 "$backup"
+fi
+
+# 2. MIKAI's Chrome login item and profile
+if has "wrote:$CHROME_PLIST" || [[ -f "$CHROME_PLIST" ]]; then
+  say "Stopping MIKAI's Chrome and removing its login item"
+  live launchctl bootout "gui/$(id -u)/com.mikai.chrome" 2>/dev/null
+  act rm -f "$CHROME_PLIST"
+fi
+if [[ -d "$MIKAI_HOME/browser-profile" ]]; then
+  say "Deleting MIKAI's Chrome profile (signs MIKAI out of every site)"
+  act rm -rf "$MIKAI_HOME/browser-profile"
+fi
+
+# 3. Hermes background service
+if has "installed:gateway-service"; then
+  say "Stopping MIKAI's background service"
+  live "$HERMES_BIN" gateway stop
+  live "$HERMES_BIN" gateway uninstall
+fi
+
+# 4. MIKAI's tool server registration and rules
+if has "added:mcp:mikai" && [[ -x "$HERMES_BIN" ]]; then
+  say "Disconnecting MIKAI from Hermes"
+  if [[ $DRY_RUN -eq 1 ]]; then act "$HERMES_BIN" mcp remove mikai
+  else printf 'y\n' | "$HERMES_BIN" mcp remove mikai >/dev/null 2>&1; fi
+fi
+if [[ -f "$HERMES_HOME/SOUL.md.bak-pre-mikai-onboarding" ]]; then
+  say "Restoring your previous Hermes rules"
+  act mv "$HERMES_HOME/SOUL.md.bak-pre-mikai-onboarding" "$HERMES_HOME/SOUL.md"
+elif has "wrote:$HERMES_HOME/SOUL.md"; then
+  act rm -f "$HERMES_HOME/SOUL.md"
+fi
+if [[ -f "$HERMES_HOME/config.yaml.bak-pre-mikai-onboarding" ]]; then
+  say "Restoring your previous Hermes settings"
+  act mv "$HERMES_HOME/config.yaml.bak-pre-mikai-onboarding" "$HERMES_HOME/config.yaml"
+fi
+
+# 5. Hermes itself, only if setup installed it
+if has "installed:hermes"; then
+  say "Removing Hermes (setup installed it)"
+  act rm -rf "$HERMES_HOME" "$HERMES_BIN"
+fi
+
+# 6. MIKAI's data
+if [[ $KEEP_DATA -eq 0 ]]; then
+  say "Removing MIKAI's threads and imported notes"
+  act rm -rf "$MIKAI_HOME/brain"
+  for p in "$MIKAI_HOME"/wiki-*; do [[ -e "$p" ]] && act rm -rf "$p"; done
+fi
+act rm -rf "$MIKAI_HOME/onboarding"
+
+echo
+say "Done. Backup: $backup"
+if has "added:photon"; then
+  say "MIKAI's iMessage line is still registered with Photon. To release it, delete the"
+  say "'Hermes Agent' project at https://app.photon.codes/."
+fi
