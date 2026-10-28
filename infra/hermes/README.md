@@ -124,3 +124,38 @@ Docs: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/bluebubble
 - ntfy stays with the Surface Engine (`infra/decider/`); Hermes's ntfy platform
   is not enabled.
 - No Hermes memory-provider plugin yet. MIKAI is connected over MCP only.
+
+## Trim + MIKAI operating rules (2026-10-24)
+
+Backups: `~/.hermes/config.yaml.bak-pre-trim`, `~/.hermes/SOUL.md.bak-pre-mikai`.
+
+**Toolsets disabled** (both `photon` and `cli` platforms):
+```bash
+for P in photon cli; do
+  hermes tools disable --platform $P browser terminal file code_execution vision \
+    image_gen tts todo session_search connections delegation computer_use clarify skills memory
+done
+```
+Left enabled: `web` (Exa keyless free tier, no paid key), `cronjob`, and the `mikai` MCP server.
+Re-enable a toolset with `hermes tools enable --platform photon <name>`.
+
+**Hermes's own memory off** (MIKAI is the single source of truth), in `~/.hermes/config.yaml`:
+`memory.memory_enabled: false`, `memory.user_profile_enabled: false`, `memory.nudge_interval: 0`,
+`skills.creation_nudge_interval: 0` (no autonomous skill creation).
+
+**Operating rules:** `~/.hermes/SOUL.md` (identity slot, injected every turn). Copy: `infra/hermes/SOUL.md`.
+Covers: MIKAI tools as source of truth, reply logging (`ref:` line, else `mikai_recent_surfaced`) via `mikai_record_feedback`, task capture via `mikai_thread_upsert`,
+Level A action policy (research + links only; no payments, logins or orders; third-party actions need an explicit yes),
+and untrusted-content handling.
+
+**Measured** (`hermes -z ... --usage-file`):
+
+| Turn | Before | After |
+|---|---|---|
+| Trivial ("reply ok"), 1 call | 20,304 tokens | 4,887 tokens |
+| Stalled-threads question, 3 calls | — | 16,026 tokens (13,606 cached reads) |
+
+Offline check without spending quota: `hermes prompt-size --platform photon`
+(system prompt 16.2 KB → 9.1 KB; tool schemas 41.0 KB → 1.9 KB, MCP schemas not counted offline).
+
+The running gateway must be restarted to pick this up: `hermes gateway restart` (or stop/start the foreground run).
