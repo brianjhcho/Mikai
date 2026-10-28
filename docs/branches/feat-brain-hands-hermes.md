@@ -38,12 +38,32 @@ Branched from `feat/pure-file-brain` on 2026-10-13 (inherits `mikai-wiki-v1`).
 5. Trust positioning (`docs/TRUST_POSITIONING.md`).
 6. Docs corrected before any pitch (`docs/VISION.md` §2, `docs/COMPARISON.md`).
 
+## Current phase (2026-10-24)
+
+- **Built and committed (2026-10-13):** work streams 1–6 above, with
+  CHANGE-016..019.
+- **iMessage live:** Hermes talks over iMessage through Photon (managed lines;
+  MIKAI's number is in Brian's contacts, allowlisted to Brian only). Verified
+  2026-10-22: four messages answered, including a wiki lookup. The Photon
+  stream drops every 20–30 minutes and reconnects automatically. The gateway
+  still runs from a chat session, not as a service.
+- **Not yet operational:** Surface Engine schedule off; items aren't yet sent
+  over iMessage with IDs, so replies can't be logged against them; Hermes not
+  trimmed (~62K tokens per turn).
+- **Plans awaiting approval (no code yet):** `docs/ONBOARDING_PLAN.md`,
+  `docs/CLOUD_DEPLOYMENT_PLAN.md`, `docs/ACTIONS_AND_PURCHASES.md`. Purchases
+  stay at Level A (checkout links only) until Brian approves more; the
+  credential-based do-not rule below still applies.
+
 ## Do not (branch-scoped)
 
-- **Do not take credential-based actions.** No booking, buying or signing in to
-  the user's accounts with saved passwords. MIKAI reads and surfaces; the user
-  or an assistant acts. Any calendar or file write goes through the D-055
-  approval loop.
+- **Do not act outside the hands gate.** (Replaced 2026-10-27; Brian: "I want
+  it to work like Instinct.") MIKAI now runs errands end to end in its own
+  Chrome profile (`~/.mikai/browser-profile`), signed only into accounts Brian
+  chose. Every payment, order, booking, cancellation or message to another
+  person needs Brian's "yes" to one summary first. Pay only with methods already
+  saved on the site; never handle passwords or card numbers in chat; never use
+  Brian's everyday Chrome profile (`browser.use_real_profile` stays off).
 - **Do not add paid API keys.** Inference runs on Brian's Claude subscription
   (`claude -p`, the Hermes subscription plugin) or local models. Note:
   `.env.local` currently contains an `ANTHROPIC_API_KEY`; nothing on this

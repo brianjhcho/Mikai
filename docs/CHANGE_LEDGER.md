@@ -271,3 +271,69 @@
 **Revert:** the exact command(s) to undo
 **Watch for:** predicted failure modes + when to check them
 ```
+
+---
+
+## CHANGE-020: Surface Engine mirrors sent items to iMessage via Hermes
+**Date:** 2026-10-24 · **Branch:** `feat/brain-hands-hermes` · **Files:** new `infra/decider/imessage_dispatch.py`, new `infra/decider/tests/test_imessage_dispatch.py`, `infra/decider/mikai_decide.py` (+30/−7, new `imessage_status` log column); outside the repo: `~/Library/Application Support/mikai/launchd/figs-decide-runner.sh` (`export MIKAI_IMESSAGE=1`, backup `.bak-pre-imessage`)
+**Plain-English:** When the Surface Engine sends a notification over ntfy, it also texts the same item to Brian's iMessage through `hermes send` (Photon), ending with `ref: <notif_id>` and "Reply: done · snooze · not relevant". Off unless `MIKAI_IMESSAGE=1`. A failed text never blocks the ntfy push; its status is logged per decision.
+**Why:** Replies must be matched to the item they answer; the ref line is the link.
+**Blast radius:** Up to the Surface Engine's normal volume (3 runs/day, default silence, 2-hour cooldown) of iMessages to Brian only. Message text passes through Photon.
+**Approver said:** "continue with your tasks" (build). Landing approval: pending.
+**Revert:** remove `export MIKAI_IMESSAGE=1` from the runner (or restore `.bak-pre-imessage`); `git revert` the commit.
+**Watch for:** Photon stream drops (texts may fail while reconnecting; ntfy still delivers); duplicate noise if both channels feel redundant.
+
+---
+
+## CHANGE-021: Hermes trimmed + MIKAI operating rules + reply/task tools
+**Date:** 2026-10-24 · **Files:** outside the repo: `~/.hermes/config.yaml` (backup `.bak-pre-trim`), `~/.hermes/SOUL.md` (backup `.bak-pre-mikai`); in repo: `infra/hermes/SOUL.md` (copy), `infra/hermes/README.md`, `infra/mikai-mcp/src/index.ts`, `src/threads.ts` (+98), new `src/outbox.ts`, new `test/outbox-upsert.test.mjs`
+**Plain-English:** Hermes's toolsets cut to `web`, `cronjob` and the MIKAI MCP server; Hermes's own memory and autonomous skill creation turned off so MIKAI stays the single source of truth. `SOUL.md` tells Hermes to answer from MIKAI's tools, log Brian's replies with `mikai_record_feedback` (using the `ref:` line or the new `mikai_recent_surfaced`), capture tasks with the new `mikai_thread_upsert`, stay at Level A for purchases (links only; no payments, logins or orders), and treat email/web content as untrusted data. Trivial turn cost: 20,304 → 4,887 tokens.
+**Why:** The always-on listener makes every text a turn; the cost had to drop, and replies have to land in MIKAI.
+**Blast radius:** `mikai_thread_upsert` is a new WRITE path into `~/.mikai/brain/threads/` (not the wiki). A bad upsert could create or alter thread files.
+**Approver said:** "continue with your tasks" (build). Landing approval: pending.
+**Revert:** restore `config.yaml.bak-pre-trim` and `SOUL.md.bak-pre-mikai`, `hermes gateway restart`; `git revert` the commit.
+**Watch for:** Hermes needing a disabled toolset for a request; spurious thread creation from casual messages.
+
+---
+
+## CHANGE-022: Loop switched on — Hermes service + Surface Engine schedule
+**Date:** 2026-10-24 · **Files:** outside the repo: `~/Library/LaunchAgents/ai.hermes.gateway.plist` (installed by `hermes gateway install`), `com.mikai.figs-decide` LaunchAgent loaded (7:00, 12:00, 18:00)
+**Plain-English:** Hermes's iMessage listener runs as a background service (survives closing this chat; runs while the Mac is awake). The Surface Engine runs three times a day, pushes via ntfy and mirrors to iMessage.
+**Why:** Brian chose to switch the Surface Engine on once iMessage worked ("Wait for iMessage"); iMessage verified 2026-10-22 and 2026-10-24.
+**Blast radius:** Real notifications to Brian's phone up to 3×/day; `claude -p` usage from his subscription per run and per text.
+**Approver said:** "Wait for iMessage" (2026-10-13) + "continue with your tasks". Landing approval: pending.
+**Revert:** `launchctl bootout gui/$(id -u)/com.mikai.figs-decide`; `hermes gateway stop && hermes gateway uninstall`.
+**Watch for:** quota use; silent failure (no health alert yet — the Aug 2026 failure went unnoticed); the Mac sleeping.
+
+---
+
+## CHANGE-023: Hands — Hermes drives a dedicated MIKAI Chrome, Instinct-style errands with one confirmation gate
+**Date:** 2026-10-27 · **Branch:** `feat/brain-hands-hermes` · **Files:** outside the repo: `~/.hermes/config.yaml` (`browser.cdp_url: http://127.0.0.1:9222`, `browser.restrict_evaluate: true`, browser toolset enabled for the photon platform; backup `config.yaml.bak-pre-hands`), `~/.hermes/SOUL.md` ("Doing things" section replaces the links-only Level A policy; backup `SOUL.md.bak-pre-hands`), `~/.mikai/browser-profile/` (separate Chrome user-data dir, mode 700). In repo: `infra/hermes/SOUL.md` copy, branch manifest do-not rule rewritten.
+**Plain-English:** MIKAI can now use a web browser to finish errands (search, compare, fill forms, book, buy, check in) inside its own Chrome profile, which is signed only into the sites Brian chooses. Before anything that pays, orders, books, cancels or messages someone else, it texts Brian one summary and waits for "yes".
+**Why:** Brian: "I want it to work like Instinct." The market values agents that finish the job; MIKAI's prior links-only policy left out the hands.
+**Blast radius:** An agent with logged-in sessions can spend money or change bookings on the sites signed into the MIKAI profile. Bounded by: the confirmation gate (an instruction in SOUL.md, not code-enforced), payment only via methods saved on those sites, the separate profile (no access to Brian's everyday logins), restrict_evaluate blocking cookie/storage/form-value reads from page scripts. The control port listens on 127.0.0.1 only.
+**Approver said:** "I want it to work like Instinct" (2026-10-27).
+**Revert:** `cp ~/.hermes/config.yaml.bak-pre-hands ~/.hermes/config.yaml && cp ~/.hermes/SOUL.md.bak-pre-hands ~/.hermes/SOUL.md && launchctl kickstart -k gui/$(id -u)/ai.hermes.gateway`; quit the MIKAI Chrome; optionally delete `~/.mikai/browser-profile/` to sign out of everything.
+**Watch for:** Prompt injection from web pages steering a logged-in session (untrusted-content rule applies; no code-level enforcement yet). The gate being skipped because it is only an instruction — first test errands should be watched. MIKAI Chrome not running after a reboot (browser tool will fail; needs a launch-at-login job). Sites blocking automation (Amazon).
+
+---
+
+## CHANGE-024: Script onboarding for testers (`mikai-setup` / `mikai-uninstall`)
+**Date:** 2026-10-27 · **Files:** `infra/onboarding/{mikai-setup, mikai-uninstall, export-apple-notes.js, templates/SOUL.md.tmpl, templates/com.mikai.chrome.plist.tmpl}`, `docs/ONBOARDING_GUIDE.md`, router row, status note in `docs/ONBOARDING_PLAN.md`
+**Plain-English:** A tester runs one script on their own Mac. It installs Hermes on their own Claude login, connects MIKAI's tools, writes MIKAI's rules with their name, gives MIKAI its own Chrome, sets up their own iMessage line through Photon, walks them through Full Disk Access, and optionally imports their Apple Notes read-only. `mikai-uninstall` backs up and removes all of it.
+**Why:** Brian: "we should have two things finished by the end of the session. Instinct like actions, and user onboarding."
+**Blast radius:** Only the tester's `~/.hermes`, `~/.mikai` and LaunchAgents. Existing Hermes config and rules are backed up before changes. Nothing in the repo runs on its own. Tested with `--dry-run` and `--test` in sandbox homes; never run for real on Brian's Mac (it would point at `wiki-brian` and replace his rules).
+**Approver said:** "we should have two things finished by the end of the session. Instinct like actions, and user onboarding"
+**Revert:** run `infra/onboarding/mikai-uninstall` on the tester's Mac; `git rm -r infra/onboarding docs/ONBOARDING_GUIDE.md`.
+**Watch for:** Anthropic's third-party subscription rules (distributing a setup that runs each tester's own subscription through Hermes's plugin is a grey area). Hermes CLI prompts changing and silently cancelling steps (`mcp add` already did once; setup now verifies). Unpinned npm deps on fresh clones (`package-lock.json` is gitignored).
+
+---
+
+## CHANGE-025: Reply matching, thread writes, calendar + messages reading, proactive iMessage on
+**Date:** 2026-10-24 to 2026-10-27 · **Files:** `infra/mikai-mcp/src/{outbox.ts, apple.ts, threads.ts, index.ts}` + tests; `infra/decider/{imessage_dispatch.py, mikai_decide.py}` + tests; `eval/dismiss_rate.py` + test; outside the repo: `MIKAI_IMESSAGE=1` in `~/.mikai/launchd.env`, `com.mikai.figs-decide` LaunchAgent loaded, `~/Library/LaunchAgents/com.mikai.chrome.plist`.
+**Plain-English:** (1) Every iMessage MIKAI sends is recorded in an outbox, so a bare "done" reply is logged against the right item (`mikai_recent_surfaced`, `notif_id: "latest"`). (2) Hermes can create and update task threads from chat (`mikai_thread_upsert`; the wiki stays read-only; every edit backs up the old file to `threads/.history/`). (3) Hermes can read the user's Apple Calendar and recent iMessages, read-only (`mikai_calendar_events`, `mikai_recent_messages`; needs Full Disk Access for Hermes's Node). (4) The Surface Engine runs at 7:00/12:00/18:00 and sends to iMessage as well as ntfy. (5) Replies stored in `notification_feedback` now count in the dismiss rate. (6) MIKAI's Chrome starts at login.
+**Why:** To make the reply loop work (the first test "done" had no context), and to give MIKAI Instinct-like awareness and proactivity.
+**Blast radius:** Thread files under `~/.mikai/brain/threads/` can now be written by Hermes (backed up per edit). Up to three proactive notifications a day reach Brian's phone (2-hour cooldown, default silence). Calendar and message contents are sent to Anthropic when Hermes reads them for a reply.
+**Approver said:** "continue with your tasks" (2026-10-24); "I want it to do everything instinct can do" (2026-10-27).
+**Revert:** `launchctl bootout gui/$(id -u)/com.mikai.figs-decide`; remove the `MIKAI_IMESSAGE=1` line from `~/.mikai/launchd.env`; `rm ~/Library/LaunchAgents/com.mikai.chrome.plist`; revert the listed repo files with git and rebuild `infra/mikai-mcp`; restore any thread from `~/.mikai/brain/threads/.history/`.
+**Watch for:** Wrong-item matches on "done" when several items are recent. Thread churn from over-eager upserts. Full Disk Access revoked by a Hermes update that changes its bundled Node path. Message text steering replies (marked untrusted, not code-enforced).

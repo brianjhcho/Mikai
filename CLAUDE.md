@@ -27,6 +27,10 @@ Always start with `docs/STATUS.md` for the volatile "what's actually on main rig
 | Product vision / noonchi / positioning / moat | `docs/VISION.md` |
 | Scope boundaries vs Hermes / OpenClaw / adjacent tools · consumer-product bet | `docs/COMPARISON.md` |
 | Trust positioning vs Instinct — claims true today vs target (check before any pitch) | `docs/TRUST_POSITIONING.md` |
+| Onboarding new users (Claude connector, Apple Calendar, Apple Notes, Mac helper app, iMessage lines) | `docs/ONBOARDING_PLAN.md` |
+| Onboarding guide for testers + the setup/uninstall scripts (`infra/onboarding/mikai-setup`) | `docs/ONBOARDING_GUIDE.md` |
+| Cloud deployment (what moves vs stays on the Mac, inference-cost decision, phases, providers) | `docs/CLOUD_DEPLOYMENT_PLAN.md` |
+| Actions and purchases (skill levels, virtual card, guardrails) | `docs/ACTIONS_AND_PURCHASES.md` |
 | Architecture / port-adapter / Graphiti patch / current stack | `docs/ARCHITECTURE.md` |
 | L3 port/adapter design | `docs/ARCHITECTURE.md`, `docs/DECISIONS.md` → ARCH-024, ARCH-025 |
 | Ingestion (filesystem, MCP client, drop folder) | `docs/ARCHITECTURE.md`, `docs/DECISIONS.md` → ARCH-023 |
